@@ -1,0 +1,19 @@
+# IDE / editor
+.idea/
+.vscode/
+
+# Local Claude Code config (machine-specific)
+.claude/
+
+# Build / tooling logs
+build_output.txt
+*.log
+
+# Environment files (defense in depth — secrets must never be committed)
+.env
+*.env
+!*.env.example
+
+# OS junk
+.DS_Store
+Thumbs.db

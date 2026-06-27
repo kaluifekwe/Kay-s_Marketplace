@@ -1,0 +1,348 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+const paystackSecretKey = Deno.env.get("PAYSTACK_SECRET_KEY")!;
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+function isServiceRoleCall(authHeader: string | null): boolean {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
+  return authHeader.replace("Bearer ", "") === supabaseServiceKey;
+}
+
+function getUserIdFromToken(authHeader: string | null): string | null {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.replace("Bearer ", "");
+  if (!token || token === supabaseAnonKey) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    return payload.sub || null;
+  } catch {
+    return null;
+  }
+}
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    if (req.method !== "POST") {
+      return new Response(JSON.stringify({ error: "Method not allowed" }), {
+        status: 405,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const callerId = getUserIdFromToken(req.headers.get("Authorization"));
+    const { order_id, dispute_id, reason, refund_method } = await req.json();
+
+    if (!order_id) {
+      return new Response(
+        JSON.stringify({ error: "Missing required field: order_id" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    const { data: order, error: orderError } = await supabase
+      .from("orders")
+      .select("id, buyer_id, vendor_id, store_id, status, payment_reference")
+      .eq("id", order_id)
+      .maybeSingle();
+
+    if (orderError || !order) {
+      return new Response(
+        JSON.stringify({ error: "Order not found" }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const serviceRoleCall = isServiceRoleCall(req.headers.get("Authorization"));
+    let isAdminCaller = false;
+    if (!serviceRoleCall && callerId && callerId !== order.buyer_id) {
+      const { data: callerUser } = await supabase
+        .from("users")
+        .select("role")
+        .eq("id", callerId)
+        .maybeSingle();
+      isAdminCaller = callerUser?.role === "admin";
+    }
+
+    if (!serviceRoleCall && (!callerId || (callerId !== order.buyer_id && !isAdminCaller))) {
+      return new Response(
+        JSON.stringify({ error: "Only the buyer or an admin can request a refund" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Strict dispute flow refunds happen after delivery is confirmed (status
+    // 'confirmed'/'auto_released'), not just pre-delivery ('paid'/'shipped').
+    // Note: if escrow already released the vendor payout, this refund is
+    // funded by the platform (no clawback) — consistent with the no-commission
+    // launch model where the platform absorbs early dispute costs.
+    const refundableStatuses = dispute_id
+      ? ["paid", "shipped", "refund_requested", "confirmed", "auto_released"]
+      : ["paid", "shipped", "refund_requested"];
+    if (!refundableStatuses.includes(order.status)) {
+      return new Response(
+        JSON.stringify({ error: `Cannot refund order with status: ${order.status}` }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Check if already refunded
+    const { data: existingRefund } = await supabase
+      .from("transactions")
+      .select("id")
+      .eq("order_id", order_id)
+      .eq("type", "refund")
+      .eq("status", "success")
+      .maybeSingle();
+
+    if (existingRefund) {
+      return new Response(
+        JSON.stringify({ success: true, message: "Already refunded" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Atomically claim this refund so two concurrent calls for the same
+    // order can't both pass the checks above and both trigger a gateway
+    // refund/transfer.
+    const originalStatus = order.status;
+    const { data: claimed, error: claimError } = await supabase
+      .from("orders")
+      .update({ status: "refund_processing" })
+      .eq("id", order_id)
+      .in("status", refundableStatuses)
+      .select("id");
+
+    if (claimError) {
+      return new Response(
+        JSON.stringify({ error: "Failed to claim refund" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (!claimed || claimed.length === 0) {
+      return new Response(
+        JSON.stringify({ success: true, message: "Refund already in progress" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const { data: tx } = await supabase
+      .from("transactions")
+      .select("*")
+      .eq("order_id", order_id)
+      .eq("status", "success")
+      .eq("type", "payment")
+      .maybeSingle();
+
+    if (!tx) {
+      await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
+      return new Response(
+        JSON.stringify({ error: "No successful payment found for this order" }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const refundAmount = tx.amount;
+    const method = refund_method || "card";
+    let refundReference = "";
+
+    if (method === "credit") {
+      // Add to kays_credit instantly
+      const { data: user } = await supabase
+        .from("users")
+        .select("kays_credit")
+        .eq("id", order.buyer_id)
+        .maybeSingle();
+
+      const currentCredit = user?.kays_credit || 0;
+      await supabase
+        .from("users")
+        .update({ kays_credit: currentCredit + refundAmount })
+        .eq("id", order.buyer_id);
+
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 90);
+
+      await supabase.from("credit_transactions").insert({
+        buyer_id: order.buyer_id,
+        amount: refundAmount,
+        type: "refund",
+        order_id,
+        description: `Refund for order ${order_id.substring(0, 8)}`,
+        expires_at: expiresAt.toISOString(),
+      });
+
+      refundReference = `credit_${order_id}`;
+
+    } else if (method === "bank") {
+      // Paystack transfer to buyer bank account
+      const { data: buyerBank } = await supabase
+        .from("buyer_bank_accounts")
+        .select("paystack_recipient_code, bank_name, account_number")
+        .eq("buyer_id", order.buyer_id)
+        .maybeSingle();
+
+      if (!buyerBank || !buyerBank.paystack_recipient_code) {
+        await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
+        return new Response(
+          JSON.stringify({ error: "No bank account on file. Please add one in Profile first." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const transferResponse = await fetch("https://api.paystack.co/transfer", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${paystackSecretKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          source: "balance",
+          amount: Math.round(refundAmount * 100),
+          recipient: buyerBank.paystack_recipient_code,
+          reason: `Refund for order ${order_id.substring(0, 8)} - Kay's Marketplace`,
+          reference: `refund_${order_id}`,
+        }),
+      });
+
+      const transferData = await transferResponse.json();
+
+      if (!transferData.status) {
+        console.error("Bank transfer refund error:", transferData);
+        await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
+        return new Response(
+          JSON.stringify({ error: transferData.message || "Bank transfer failed" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      refundReference = transferData.data.reference;
+
+    } else {
+      // Card refund via Paystack
+      const refundResponse = await fetch("https://api.paystack.co/refund", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${paystackSecretKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transaction: order.payment_reference || tx.paystack_reference,
+          amount: Math.round(refundAmount * 100),
+          reason: reason || "Dispute resolved in buyer's favor",
+          merchant_note: `Refund for order ${order_id.substring(0, 8)}${dispute_id ? `, dispute: ${dispute_id}` : ""}`,
+        }),
+      });
+
+      const refundData = await refundResponse.json();
+
+      if (!refundData.status) {
+        console.error("Paystack refund error:", refundData);
+        await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
+        return new Response(
+          JSON.stringify({ error: refundData.message || "Refund failed" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      refundReference = refundData.data.reference || `ref_${order_id}`;
+    }
+
+    // Record refund transaction
+    await supabase.from("transactions").insert({
+      order_id,
+      buyer_id: order.buyer_id,
+      vendor_id: order.vendor_id,
+      store_id: order.store_id,
+      amount: refundAmount,
+      status: "success",
+      type: "refund",
+      paystack_reference: refundReference,
+      metadata: JSON.stringify({
+        refund_method: method,
+        dispute_id: dispute_id || null,
+        reason: reason || null,
+      }),
+    });
+
+    // Update order status
+    await supabase
+      .from("orders")
+      .update({
+        status: "refunded",
+        refunded_at: new Date().toISOString(),
+      })
+      .eq("id", order_id);
+
+    // Update dispute if exists, and release any vendor payout hold that was
+    // funding this refund (see release-escrow's payout_blocked check).
+    if (dispute_id) {
+      await supabase
+        .from("disputes")
+        .update({
+          status: "resolved",
+          resolution_type: "refund",
+          resolved_at: new Date().toISOString(),
+        })
+        .eq("id", dispute_id);
+
+      const { data: disputeRow } = await supabase
+        .from("disputes")
+        .select("is_post_payment, vendor_owes_refund")
+        .eq("id", dispute_id)
+        .maybeSingle();
+
+      if (disputeRow?.is_post_payment) {
+        const { data: vendorRow } = await supabase
+          .from("users")
+          .select("payout_blocked_amount")
+          .eq("id", order.vendor_id)
+          .maybeSingle();
+        const remaining = (vendorRow?.payout_blocked_amount || 0) - (disputeRow.vendor_owes_refund || 0);
+        await supabase
+          .from("users")
+          .update({
+            payout_blocked: remaining > 0,
+            payout_blocked_reason: remaining > 0 ? "Other active disputes" : null,
+            payout_blocked_amount: remaining > 0 ? remaining : 0,
+          })
+          .eq("id", order.vendor_id);
+      }
+    }
+
+    console.log(`Refund processed: order=${order_id}, amount=${refundAmount}, method=${method}`);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        amount_refunded: refundAmount,
+        refund_method: method,
+        refund_reference: refundReference,
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  } catch (error: any) {
+    console.error("Edge function error:", error);
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+});

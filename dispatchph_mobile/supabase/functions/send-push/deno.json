@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "firebase-admin/app": "npm:firebase-admin/app",
+    "firebase-admin/messaging": "npm:firebase-admin/messaging"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "545738368528",
+    "project_id": "dispatchph",
+    "storage_bucket": "dispatchph.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:545738368528:android:e42bb426f3c160bcd74c95",
+        "android_client_info": {
+          "package_name": "com.example.dispatchph_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyByH13iDL0xVNBgjUuvUmzhIoBhsm3H5eo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

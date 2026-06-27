@@ -1,0 +1,49 @@
+name: dispatchph_mobile
+description: "DispatchPH - On-demand dispatch rider app for Port Harcourt"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  http: ^1.2.2
+  provider: ^6.1.2
+  pin_code_fields: ^8.0.1
+  image_picker: ^1.1.2
+  camera: ^0.11.0+2
+  socket_io_client: ^3.0.2
+  shared_preferences: ^2.3.4
+  geolocator: ^13.0.2
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  path: ^1.9.1
+  flutter_bloc: ^9.1.0
+  uuid: ^4.5.1
+  intl: ^0.20.2
+  flutter_local_notifications: ^18.0.1
+  video_player: ^2.9.2
+  supabase_flutter: ^2.8.4
+  flutter_dotenv: ^5.2.1
+  url_launcher: ^6.3.1
+  firebase_core: ^3.12.1
+  firebase_messaging: ^15.2.1
+  share_plus: ^10.0.0
+  webview_flutter: ^4.10.0
+  cached_network_image: ^3.3.0
+  shimmer: ^3.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/bank_logos/
+    - .env

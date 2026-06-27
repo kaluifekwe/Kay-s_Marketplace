@@ -1,0 +1,14 @@
+# Paystack calls this function directly (server-to-server webhook, and a
+# GET redirect from the in-app checkout webview) with no Supabase auth
+# header — it authenticates itself via the x-paystack-signature header,
+# which the function verifies internally. Supabase's platform-level JWT
+# gateway must be disabled for this one function or every real webhook
+# call gets rejected with 401 before our code ever runs.
+[functions.paystack-webhook]
+verify_jwt = false
+
+# Shipbubble calls this directly (server-to-server webhook) with no Supabase
+# auth header — it authenticates via the x-shipbubble-signature header, which
+# the function verifies internally. Same reasoning as paystack-webhook above.
+[functions.shipbubble-webhook]
+verify_jwt = false

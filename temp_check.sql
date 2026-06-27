@@ -1,0 +1,1 @@
+SELECT id, buyer_id, vendor_id, status, shipped_at, auto_release_at, confirmed_at FROM orders ORDER BY created_at DESC LIMIT 5;

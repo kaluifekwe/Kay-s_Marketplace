@@ -46,6 +46,21 @@ function toIntlPhone(phone: string): string {
   return `+234${p}`;
 }
 
+// Terminal requires a zip/postcode to arrange deliveries; our address records
+// don't store one, so use a representative postcode per supported city.
+function cityZip(city?: string): string {
+  switch ((city || "").toLowerCase()) {
+    case "lagos":
+      return "100001";
+    case "abuja":
+      return "900001";
+    case "port harcourt":
+      return "500001";
+    default:
+      return "100001";
+  }
+}
+
 function splitName(name: string): { first: string; last: string } {
   const parts = (name || "").trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return { first: "Kay", last: "Customer" };
@@ -100,6 +115,7 @@ async function createAddress(a: Address): Promise<{ id: string | null; message?:
       city: a.city || "",
       state: normState(a.state),
       country: "NG",
+      zip: cityZip(a.city),
       is_residential: true,
     }),
   });
@@ -149,6 +165,9 @@ export const terminal: DeliveryProvider = {
       return { provider: "terminal", couriers: [], providerData: {}, reason: `parcel_failed (${parcelRes.data?.message ?? "no parcel"})` };
     }
 
+    // Rates-by-address: Terminal auto-creates a shipment behind each rate and
+    // returns its id on the rate (rate.shipment). We keep that id per option so
+    // book() can arrange the pickup against (shipment_id, rate_id).
     const ratesRes = await api("/rates/multi/shipment", {
       method: "POST",
       body: JSON.stringify({
@@ -171,19 +190,21 @@ export const terminal: DeliveryProvider = {
       fee: Number(r.amount),
       currency: r.currency ?? "NGN",
       eta: r.delivery_time,
+      meta: { shipment: r.shipment }, // shipment id needed by /shipments/pickup
     }));
 
     return {
       provider: "terminal",
       couriers,
-      providerData: { address_from: from.id, address_to: to.id, parcel: parcelId, weight: totalWeight },
+      providerData: { parcel: parcelId, weight: totalWeight },
     };
   },
 
   async book(input: BookInput): Promise<BookResult> {
+    const meta = (input.option.meta ?? {}) as any;
     const { ok, data } = await api("/shipments/pickup", {
       method: "POST",
-      body: JSON.stringify({ rate_id: input.option.optionRef }),
+      body: JSON.stringify({ rate_id: input.option.optionRef, shipment_id: meta.shipment }),
     });
     if (!ok) {
       const msg = String(data?.message ?? "booking failed");

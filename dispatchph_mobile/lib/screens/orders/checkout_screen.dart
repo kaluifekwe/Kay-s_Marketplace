@@ -294,6 +294,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               storeGroups.keys.fold<double>(0, (sum, id) => sum + (_storeDeliveryContribution[id] ?? 0));
           final totalWithDelivery = state.total + totalDeliveryFee;
           final deliveryUnagreed = storeGroups.keys.any((id) => _storeDeliveryAgreed[id] != true);
+          final unagreedStoreNames = storeGroups.keys
+              .where((id) => _storeDeliveryAgreed[id] != true)
+              .map((id) => _storeNames[id] ?? 'this vendor')
+              .toList();
 
           // Partial credit + card combination isn't supported yet — credit
           // can only be used when it fully covers the order total (incl. delivery).
@@ -452,7 +456,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Please agree on delivery fee with vendor in chat before checkout.',
+                          'Courier delivery isn\'t available for ${unagreedStoreNames.join(', ')} right now. '
+                          'Chat with the vendor to arrange a delivery fee, or remove those items to check out.',
                           style: TextStyle(color: Colors.orange[800], fontSize: 13),
                         ),
                       ),

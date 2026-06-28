@@ -33,6 +33,47 @@ function getUserIdFromToken(authHeader: string | null): string | null {
   }
 }
 
+// fetch_rates requires a real package category_id from Shipbubble's list
+// (the hardcoded "1" returns "Invalid package category selected"). Resolve a
+// sensible default once and cache it for the lifetime of the warm instance.
+let cachedCategoryId: number | null = null;
+async function getCategoryId(): Promise<number | null> {
+  if (cachedCategoryId !== null) return cachedCategoryId;
+  try {
+    const res = await fetch(`${SHIPBUBBLE_BASE}/shipping/labels/categories`, {
+      headers: { Authorization: `Bearer ${shipbubbleKey}` },
+    });
+    const data = await res.json();
+    const cats = data?.data;
+    if (Array.isArray(cats) && cats.length > 0) {
+      const preferred = cats.find((c: any) => /other|general|miscellaneous/i.test(c.category ?? "")) ?? cats[0];
+      cachedCategoryId = Number(preferred.category_id);
+      return cachedCategoryId;
+    }
+    console.error("Shipbubble categories empty:", data);
+  } catch (e) {
+    console.error("Shipbubble categories fetch failed:", e);
+  }
+  return null;
+}
+
+// Shipbubble's address validator rejects names containing digits or symbols
+// ("please provide a full name ... remove all numbers and symbols"). Marketplace
+// display names often carry unique-id suffixes/emoji, so strip everything but
+// letters and spaces and fall back to a safe two-word name.
+function cleanName(raw: string | null | undefined, fallback: string): string {
+  const words = (raw || "")
+    .replace(/[^A-Za-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter((w) => w.length > 0);
+  // Shipbubble wants a two-word "full name" with no digits/symbols.
+  if (words.length === 0) return fallback;
+  if (words.length === 1) return `${words[0]} ${fallback.split(" ").pop()}`;
+  return words.join(" ");
+}
+
 // Shipbubble requires an address to be validated into an address_code before
 // it can be used in fetch_rates. name/phone/email are required by the API.
 async function validateAddress(opts: {
@@ -42,7 +83,7 @@ async function validateAddress(opts: {
   address: string;
   latitude?: number | null;
   longitude?: number | null;
-}): Promise<string | null> {
+}): Promise<{ code: string | null; message?: string }> {
   const res = await fetch(`${SHIPBUBBLE_BASE}/shipping/address/validate`, {
     method: "POST",
     headers: {
@@ -61,9 +102,10 @@ async function validateAddress(opts: {
   const data = await res.json();
   if (!res.ok || data.status !== "success") {
     console.error("Shipbubble address validate failed:", data);
-    return null;
+    const msg = data?.message ?? (typeof data === "object" ? JSON.stringify(data) : String(data));
+    return { code: null, message: String(msg).slice(0, 160) };
   }
-  return data.data?.address_code ?? null;
+  return { code: data.data?.address_code ?? null };
 }
 
 serve(async (req) => {
@@ -136,27 +178,31 @@ serve(async (req) => {
     const { data: vendorUser } = await supabase.from("users").select("name, email, phone").eq("id", vendor_id).maybeSingle();
     const { data: buyerUser } = await supabase.from("users").select("name, email, phone").eq("id", buyer_id).maybeSingle();
 
-    const senderCode = await validateAddress({
-      name: vendorUser?.name || "Vendor",
+    const sender = await validateAddress({
+      name: cleanName(vendorUser?.name, "Kay Vendor"),
       email: vendorUser?.email || "vendor@kaysmarketplace.ng",
       phone: vendorUser?.phone || "08000000000",
       address: pickup.address,
       latitude: pickup.latitude,
       longitude: pickup.longitude,
     });
-    const receiverCode = await validateAddress({
-      name: buyerUser?.name || "Buyer",
+    const receiver = await validateAddress({
+      name: cleanName(buyerUser?.name, "Kay Customer"),
       email: buyerUser?.email || "buyer@kaysmarketplace.ng",
       phone: buyerUser?.phone || "08000000000",
       address: delivery_address,
       latitude: delivery_latitude,
       longitude: delivery_longitude,
     });
+    const senderCode = sender.code;
+    const receiverCode = receiver.code;
 
     if (!senderCode || !receiverCode) {
-      // Address couldn't be validated — fall back to chat negotiation.
+      // Address couldn't be validated — fall back to chat negotiation. The
+      // per-side detail is folded into reason so it surfaces in client logs.
+      const detail = `sender:${senderCode ? "ok" : (sender.message || "fail")} | receiver:${receiverCode ? "ok" : (receiver.message || "fail")}`;
       return new Response(
-        JSON.stringify({ quote_id: null, couriers: [], reason: "address_validation_failed" }),
+        JSON.stringify({ quote_id: null, couriers: [], reason: `address_validation_failed (${detail})` }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -170,6 +216,14 @@ serve(async (req) => {
     }));
     const totalWeight = packageItems.reduce((s: number, i: any) => s + Number(i.unit_weight) * Number(i.quantity), 0);
 
+    const categoryId = await getCategoryId();
+    if (categoryId === null) {
+      return new Response(
+        JSON.stringify({ quote_id: null, couriers: [], reason: "no_rates (could not resolve package category)" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const ratesRes = await fetch(`${SHIPBUBBLE_BASE}/shipping/fetch_rates`, {
       method: "POST",
       headers: {
@@ -180,16 +234,22 @@ serve(async (req) => {
         sender_address_code: senderCode,
         reciever_address_code: receiverCode, // Shipbubble's spelling
         pickup_date: new Date().toISOString().split("T")[0],
-        category_id: 1,
+        category_id: categoryId,
         package_items: packageItems,
+        package_dimension: { length: 10, width: 10, height: 10 },
       }),
     });
     const ratesData = await ratesRes.json();
 
-    if (!ratesRes.ok || ratesData.status !== "success" || !Array.isArray(ratesData.data?.couriers)) {
+    const courierList = ratesData?.data?.couriers;
+    if (!ratesRes.ok || ratesData.status !== "success" || !Array.isArray(courierList) || courierList.length === 0) {
       console.error("Shipbubble fetch_rates failed:", ratesData);
+      // Surface the Shipbubble detail so the client log distinguishes a real
+      // request error from a route genuinely served by no courier.
+      const n = Array.isArray(courierList) ? courierList.length : "n/a";
+      const detail = `status=${ratesData?.status} n=${n} msg=${ratesData?.message ?? "none"}`;
       return new Response(
-        JSON.stringify({ quote_id: null, couriers: [], reason: "no_rates" }),
+        JSON.stringify({ quote_id: null, couriers: [], reason: `no_rates (${String(detail).slice(0, 160)})` }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }

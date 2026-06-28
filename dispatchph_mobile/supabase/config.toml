@@ -12,3 +12,9 @@ verify_jwt = false
 # the function verifies internally. Same reasoning as paystack-webhook above.
 [functions.shipbubble-webhook]
 verify_jwt = false
+
+# Terminal Africa calls this directly (server-to-server webhook) with no
+# Supabase auth header — it authenticates via the optional x-terminal-signature
+# header (TERMINAL_WEBHOOK_SECRET). Same reasoning as the webhooks above.
+[functions.terminal-webhook]
+verify_jwt = false

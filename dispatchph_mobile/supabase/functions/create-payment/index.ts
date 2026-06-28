@@ -135,6 +135,7 @@ serve(async (req) => {
       let courierQuoteId: string | null = null;
       let courierName: string | null = null;
       let courierOptionRef: string | null = null;
+      let courierProvider: string | null = null;
 
       // Buyer chose a Shipbubble courier at checkout. The fee is verified
       // from the stored quote (never the client), and the quote id + courier
@@ -174,6 +175,7 @@ serve(async (req) => {
         courierQuoteId = vendorOrder.delivery_quote_id;
         courierName = selected.name;
         courierOptionRef = selected.optionRef;
+        courierProvider = selected.provider;
       } else if (deliveryType === "negotiate" || deliveryType === "split") {
         const { data: chats } = await supabase
           .from("chats")
@@ -218,6 +220,7 @@ serve(async (req) => {
         delivery_quote_id: courierQuoteId,
         selected_courier_name: courierName,
         selected_option_ref: courierOptionRef,
+        selected_provider: courierProvider,
       });
       serverAmount += itemSubtotal + verifiedDeliveryFee;
     }

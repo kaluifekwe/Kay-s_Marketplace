@@ -6,6 +6,7 @@ import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/delivery_service.dart';
 import '../chat/chat_screen.dart';
 import '../delivery/courier_track_tile.dart';
 import 'vendor_shipping_screen.dart';
@@ -36,11 +37,47 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
   String _buyerUniqueId = '';
   String _buyerPhone = '';
   String _buyerAddress = '';
+  bool _requestingPickup = false;
 
   @override
   void initState() {
     super.initState();
     _loadBuyerInfo();
+  }
+
+  /// Vendor taps "Request Pickup" after packaging — the server re-quotes and
+  /// books a fresh courier, then we reload so the track tile appears.
+  Future<void> _requestPickup(Order order) async {
+    if (_requestingPickup) return;
+    setState(() => _requestingPickup = true);
+    try {
+      final result = await DeliveryService.requestPickup(order.id);
+      if (!mounted) return;
+      if (result['booked'] == true) {
+        await context.read<OrderCubit>().loadVendorOrders(order.vendorId);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Courier booked! It will come to your pickup address to collect the item.'),
+            backgroundColor: AppColors.successGreen,
+          ),
+        );
+      } else {
+        final msg = (result['message'] as String?) ??
+            'No courier available right now. Please try again shortly.';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: AppColors.warningOrange),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'.replaceAll('Exception: ', '')), backgroundColor: AppColors.errorRed),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _requestingPickup = false);
+    }
   }
 
   Future<void> _loadBuyerInfo() async {
@@ -178,9 +215,48 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
                 CourierTrackTile(deliveryId: currentOrder.deliveryId!),
                 const SizedBox(height: 16),
               ],
-              // A courier was booked automatically for this order — the vendor
-              // doesn't mark it shipped; the courier's pickup drives status.
-              if (currentOrder.status == 'paid' && !currentOrder.hasShipbubbleDelivery)
+              // Courier order, not yet booked: the vendor requests pickup once
+              // the item is packed (server re-quotes + books a fresh courier).
+              if (currentOrder.status == 'paid' &&
+                  currentOrder.deliveryType == 'courier' &&
+                  !currentOrder.hasShipbubbleDelivery) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5EB),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.primaryGreen),
+                  ),
+                  child: const Text(
+                    'Package the item, then request a courier pickup. The courier will '
+                    'come to your pickup address to collect it.',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _requestingPickup ? null : () => _requestPickup(currentOrder),
+                    icon: _requestingPickup
+                        ? const SizedBox(
+                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.delivery_dining, color: Colors.white),
+                    label: Text(_requestingPickup ? 'Booking courier…' : 'Request Pickup',
+                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryGreen,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+              // Self / negotiated delivery: vendor marks shipped manually.
+              if (currentOrder.status == 'paid' &&
+                  !currentOrder.hasShipbubbleDelivery &&
+                  currentOrder.deliveryType != 'courier')
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(

@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { enabledProviders } from "../_shared/delivery/registry.ts";
-import type { Address, CourierOption, PackageItem } from "../_shared/delivery/types.ts";
+import { quoteAll } from "../_shared/delivery/orchestrate.ts";
+import type { Address, PackageItem } from "../_shared/delivery/types.ts";
 
 // Fetch live courier rates at CHECKOUT across every enabled provider
 // (Shipbubble, Terminal Africa, …) and return a merged, cheapest-first list.
@@ -123,26 +123,10 @@ serve(async (req) => {
     const totalWeight = packageItems.reduce((s, i) => s + i.weight * i.quantity, 0);
 
     // Fan out to every enabled provider, merge, sort cheapest-first.
-    const providers = enabledProviders();
-    const results = await Promise.allSettled(providers.map((p) => p.getQuotes({ sender, receiver, items: packageItems })));
-
-    const providerData: Record<string, unknown> = {};
-    let couriers: CourierOption[] = [];
-    const reasons: string[] = [];
-    results.forEach((r, idx) => {
-      const pid = providers[idx].id;
-      if (r.status !== "fulfilled") {
-        reasons.push(`${pid}:error:${r.reason}`);
-        return;
-      }
-      providerData[pid] = r.value.providerData;
-      if (r.value.couriers.length) couriers.push(...r.value.couriers);
-      else if (r.value.reason) reasons.push(`${pid}:${r.value.reason}`);
-    });
-    couriers.sort((a, b) => a.fee - b.fee);
+    const { couriers, providerData, reason } = await quoteAll({ sender, receiver, items: packageItems });
 
     if (couriers.length === 0) {
-      return json({ quote_id: null, couriers: [], reason: reasons.join(" | ") || "no_rates" });
+      return json({ quote_id: null, couriers: [], reason });
     }
 
     const { data: quote, error: quoteError } = await supabase

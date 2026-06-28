@@ -107,7 +107,7 @@ class OrderCubit extends Cubit<OrderState> {
     try {
       final data = await SupabaseService.client
           .from('orders')
-          .select('id, buyer_id, vendor_id, store_id, items, total, status, payment_reference, shipping_method, tracking_ref, rider_name, rider_phone, delivery_method, shipping_proof_url, delivery_photo_url, payment_released, paid_at, shipped_at, delivered_at, confirmed_at, auto_release_at, refunded_at, created_at')
+          .select('id, buyer_id, vendor_id, store_id, items, total, status, payment_reference, shipping_method, tracking_ref, rider_name, rider_phone, delivery_method, shipping_proof_url, delivery_photo_url, payment_released, paid_at, shipped_at, delivered_at, confirmed_at, auto_release_at, refunded_at, created_at, delivery_type, delivery_fee, vendor_delivery_contribution, total_with_delivery, has_shipbubble_delivery, delivery_id')
           .eq('buyer_id', buyerId)
           .order('created_at', ascending: false)
           .limit(100);
@@ -126,7 +126,7 @@ class OrderCubit extends Cubit<OrderState> {
     try {
       final data = await SupabaseService.client
           .from('orders')
-          .select('id, buyer_id, vendor_id, store_id, items, total, status, payment_reference, shipping_method, tracking_ref, rider_name, rider_phone, delivery_method, shipping_proof_url, delivery_photo_url, payment_released, paid_at, shipped_at, delivered_at, confirmed_at, auto_release_at, refunded_at, created_at')
+          .select('id, buyer_id, vendor_id, store_id, items, total, status, payment_reference, shipping_method, tracking_ref, rider_name, rider_phone, delivery_method, shipping_proof_url, delivery_photo_url, payment_released, paid_at, shipped_at, delivered_at, confirmed_at, auto_release_at, refunded_at, created_at, delivery_type, delivery_fee, vendor_delivery_contribution, total_with_delivery, has_shipbubble_delivery, delivery_id')
           .eq('vendor_id', vendorId)
           .order('created_at', ascending: false)
           .limit(100);

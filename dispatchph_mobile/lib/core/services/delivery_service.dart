@@ -175,6 +175,24 @@ class DeliveryService {
     return DeliveryQuote.fromJson(Map<String, dynamic>.from(response.data as Map));
   }
 
+  // ---- Vendor "Request Pickup" (book courier when the item is ready) ----
+
+  /// Vendor asks for the courier to come collect a now-packaged order. The
+  /// server re-quotes fresh and books; returns { booked, delivery_id?, reason?,
+  /// message? }. booked=false with a reason means try again / unavailable.
+  static Future<Map<String, dynamic>> requestPickup(String orderId) async {
+    final response = await SupabaseService.client.functions.invoke(
+      'request-pickup',
+      headers: _authHeaders,
+      body: {'order_id': orderId},
+    );
+    final data = response.data;
+    if (response.status != 200) {
+      throw Exception(data is Map ? (data['message'] ?? data['error'] ?? 'Pickup request failed') : 'Pickup request failed');
+    }
+    return Map<String, dynamic>.from(data as Map);
+  }
+
   // ---- Tracking ----
 
   static Future<Delivery?> getDelivery(String deliveryId) async {

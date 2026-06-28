@@ -50,7 +50,7 @@ serve(async (req) => {
     // Spends platform money — restrict to the service-role caller (webhook).
     if (!isServiceRoleCall(req.headers.get("Authorization"))) return json({ error: "Forbidden" }, 403);
 
-    const { order_id, quote_id, selected_option_ref, selected_courier_name, delivery_note, vendor_id } = await req.json();
+    const { order_id, quote_id, selected_option_ref, selected_courier_name, delivery_note, vendor_id, buyer_charged } = await req.json();
     if (!order_id || !quote_id || (!selected_option_ref && !selected_courier_name)) {
       return json({ error: "Missing required fields: order_id, quote_id, selected_option_ref|selected_courier_name" }, 400);
     }
@@ -90,6 +90,10 @@ serve(async (req) => {
     }
 
     const firstItem = (bundle.items || [])[0] || {};
+    const actualFee = result.fee ?? option.fee;
+    // buyer_charged = what the buyer actually paid (may differ from the live
+    // cost after a re-quote); markup is the platform's net on this delivery.
+    const charged = typeof buyer_charged === "number" ? buyer_charged : actualFee;
     const { data: delivery, error: deliveryError } = await supabase
       .from("deliveries")
       .insert({
@@ -117,15 +121,26 @@ serve(async (req) => {
         item_weight: quote.item_weight,
         item_quantity: firstItem.quantity ?? 1,
         item_amount: firstItem.amount ?? 0,
-        shipbubble_fee: result.fee ?? option.fee,
-        kays_markup: 0,
-        buyer_charged: result.fee ?? option.fee,
+        shipbubble_fee: actualFee,
+        kays_markup: charged - actualFee,
+        buyer_charged: charged,
         status: "pending",
       })
       .select("id")
       .single();
 
     if (deliveryError) {
+      // Unique violation => an active delivery already exists for this order
+      // (concurrent request / retry). Treat as idempotent success.
+      if ((deliveryError as any).code === "23505") {
+        const { data: existing } = await supabase
+          .from("deliveries")
+          .select("id")
+          .eq("order_id", order_id)
+          .not("status", "in", "(cancelled,failed)")
+          .maybeSingle();
+        if (existing) return json({ delivery_id: existing.id, status: "already_booked" });
+      }
       console.error("Failed to insert delivery:", deliveryError);
       return json({ error: "Failed to record delivery" }, 500);
     }

@@ -89,8 +89,10 @@ async function processPayment(supabase: any, reference: string, eventId?: string
     .from("transactions")
     .update({
       status: "success",
+      // Store as { vendor_orders, ... } — NOT a spread of the array, which would
+      // turn vendor_orders into numeric-keyed object soup and break later reads.
       metadata: JSON.stringify({
-        ...(tx?.metadata ? (typeof tx.metadata === "string" ? JSON.parse(tx.metadata) : tx.metadata) : {}),
+        vendor_orders: vendorOrders,
         paystack_event_id: eventId || null,
         paystack_paid_at: paidAt || new Date().toISOString(),
       }),
@@ -198,7 +200,7 @@ async function processPayment(supabase: any, reference: string, eventId?: string
     const vendorContribution = Number(vendorOrder.vendor_contribution) || 0;
     const courierQuoteId = vendorOrder.delivery_quote_id || null;
     const courierName = vendorOrder.selected_courier_name || null;
-    const courierOptionRef = vendorOrder.selected_option_ref || null;
+    const courierProvider = vendorOrder.selected_provider || null;
     const totalWithDelivery = subtotal + deliveryFee;
     const platformFee = 0;
     // Courier (Shipbubble/Terminal): the platform pays the courier from its
@@ -222,6 +224,11 @@ async function processPayment(supabase: any, reference: string, eventId?: string
       vendor_delivery_contribution: vendorContribution,
       total_with_delivery: totalWithDelivery,
       payment_reference: reference,
+      // Courier orders are booked later, when the vendor taps "Request Pickup".
+      // Persist the buyer's choice so request-pickup can re-quote + book it.
+      delivery_quote_id: courierQuoteId,
+      selected_courier_name: courierName,
+      selected_provider: courierProvider,
     });
 
     if (orderError) {
@@ -279,31 +286,10 @@ async function processPayment(supabase: any, reference: string, eventId?: string
       console.error(`Failed to push vendor ${vendorId}:`, pushErr);
     }
 
-    // Courier order: auto-book Shipbubble now while the checkout quote is
-    // still fresh. The delivery fee is already in escrow; book-delivery pays
-    // Shipbubble from the platform wallet. If booking fails (wallet low,
-    // courier gone), the order still stands — it just has no courier yet and
-    // admin/vendor can sort it out; we don't want to fail a paid order here.
-    if (courierQuoteId && courierName) {
-      try {
-        const bookRes = await fetch(`${supabaseUrl}/functions/v1/book-delivery`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            order_id: vendorOrderId,
-            quote_id: courierQuoteId,
-            selected_courier_name: courierName,
-            selected_option_ref: courierOptionRef,
-            vendor_id: vendorId,
-          }),
-        });
-        if (!bookRes.ok) {
-          console.error(`Courier auto-book failed for order ${vendorOrderId}:`, await bookRes.text());
-        }
-      } catch (bookErr) {
-        console.error(`Courier auto-book threw for order ${vendorOrderId}:`, bookErr);
-      }
-    }
+    // NOTE: courier orders are NOT booked here. The courier is booked later,
+    // when the vendor taps "Request Pickup" (request-pickup function), so the
+    // rider isn't summoned before the item is packed. The buyer's chosen courier
+    // is persisted on the order above for that re-quote + booking.
 
     createdOrders.push({ id: vendorOrderId, vendorId, subtotal });
     console.log(`Order created: ${vendorOrderId}, vendor: ${vendorId}, subtotal: ${subtotal}`);

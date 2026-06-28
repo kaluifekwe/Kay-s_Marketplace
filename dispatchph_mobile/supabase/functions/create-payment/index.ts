@@ -134,6 +134,7 @@ serve(async (req) => {
       let vendorContribution = 0;
       let courierQuoteId: string | null = null;
       let courierName: string | null = null;
+      let courierOptionRef: string | null = null;
 
       // Buyer chose a Shipbubble courier at checkout. The fee is verified
       // from the stored quote (never the client), and the quote id + courier
@@ -157,18 +158,22 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
+        // Merged multi-provider shape: couriers carry { provider, optionRef, name, fee }.
         const couriers = quote.available_couriers?.couriers || [];
-        const selected = couriers.find((c: any) => c.courier_name === vendorOrder.selected_courier_name);
+        const selected = couriers.find((c: any) =>
+          vendorOrder.selected_option_ref ? c.optionRef === vendorOrder.selected_option_ref : c.name === vendorOrder.selected_courier_name
+        );
         if (!selected) {
           return new Response(
             JSON.stringify({ error: "courier_unavailable", message: "Selected courier is no longer available.", vendor_id: vendorId }),
             { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-        verifiedDeliveryFee = Number(selected.total) || 0;
+        verifiedDeliveryFee = Number(selected.fee) || 0;
         deliveryType = "courier";
         courierQuoteId = vendorOrder.delivery_quote_id;
-        courierName = vendorOrder.selected_courier_name;
+        courierName = selected.name;
+        courierOptionRef = selected.optionRef;
       } else if (deliveryType === "negotiate" || deliveryType === "split") {
         const { data: chats } = await supabase
           .from("chats")
@@ -212,6 +217,7 @@ serve(async (req) => {
         vendor_contribution: vendorContribution,
         delivery_quote_id: courierQuoteId,
         selected_courier_name: courierName,
+        selected_option_ref: courierOptionRef,
       });
       serverAmount += itemSubtotal + verifiedDeliveryFee;
     }

@@ -196,6 +196,7 @@ async function processPayment(supabase: any, reference: string, eventId?: string
     const vendorContribution = Number(vendorOrder.vendor_contribution) || 0;
     const courierQuoteId = vendorOrder.delivery_quote_id || null;
     const courierName = vendorOrder.selected_courier_name || null;
+    const courierOptionRef = vendorOrder.selected_option_ref || null;
     const totalWithDelivery = subtotal + deliveryFee;
     const platformFee = 0;
     const vendorPayout = totalWithDelivery;
@@ -286,6 +287,7 @@ async function processPayment(supabase: any, reference: string, eventId?: string
             order_id: vendorOrderId,
             quote_id: courierQuoteId,
             selected_courier_name: courierName,
+            selected_option_ref: courierOptionRef,
             vendor_id: vendorId,
           }),
         });

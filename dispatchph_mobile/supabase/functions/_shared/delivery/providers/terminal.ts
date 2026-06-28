@@ -1,0 +1,229 @@
+// Terminal Africa (TShip) provider adapter.
+// Flow: GET /packaging (cached) -> POST /addresses x2 -> POST /parcels
+//       -> POST /rates/multi/shipment  (quote)
+//       -> POST /shipments/pickup with rate_id  (book)
+// Docs: https://docs.terminal.africa/tship
+import type {
+  Address,
+  BookInput,
+  BookResult,
+  CourierOption,
+  DeliveryProvider,
+  DeliveryStatus,
+  ProviderQuote,
+  QuoteInput,
+  WebhookEvent,
+} from "../types.ts";
+
+const KEY = Deno.env.get("TERMINAL_API_KEY") ?? "";
+// Test keys only work against the sandbox host; override for production.
+const BASE = Deno.env.get("TERMINAL_BASE_URL") ?? "https://sandbox.terminal.africa/v1";
+
+function headers() {
+  return { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" };
+}
+
+async function api(path: string, init?: RequestInit): Promise<any> {
+  const res = await fetch(`${BASE}${path}`, { ...init, headers: headers() });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok && data?.status !== false, status: res.status, data };
+}
+
+// Terminal needs a valid NG state string; our buyer/vendor records store "FCT (Abuja)".
+function normState(state?: string): string {
+  if (!state) return "";
+  if (/fct|abuja/i.test(state)) return "Abuja";
+  return state;
+}
+
+// Terminal requires E.164 / international phone format; our records store local
+// NG numbers (080…). Normalize to +234…
+function toIntlPhone(phone: string): string {
+  const p = (phone || "").replace(/[^\d+]/g, "");
+  if (p.startsWith("+")) return p;
+  if (p.startsWith("234")) return `+${p}`;
+  if (p.startsWith("0")) return `+234${p.slice(1)}`;
+  return `+234${p}`;
+}
+
+function splitName(name: string): { first: string; last: string } {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { first: "Kay", last: "Customer" };
+  if (parts.length === 1) return { first: parts[0], last: "Customer" };
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
+
+let cachedPackaging: string | null = null;
+async function packagingId(): Promise<string | null> {
+  if (cachedPackaging) return cachedPackaging;
+  const { ok, data } = await api("/packaging?perPage=1");
+  const list = data?.data?.packaging;
+  if (ok && Array.isArray(list) && list.length > 0) {
+    cachedPackaging = list[0].packaging_id;
+    return cachedPackaging;
+  }
+  // Fresh account has no packaging defined — create a default box so parcels
+  // (and therefore rates) can be built.
+  const created = await api("/packaging", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Kay Default Box",
+      type: "box",
+      height: 10,
+      width: 10,
+      length: 10,
+      size_unit: "cm",
+      weight: 0.5,
+      weight_unit: "kg",
+    }),
+  });
+  const pid = created.data?.data?.packaging_id;
+  if (created.ok && pid) {
+    cachedPackaging = pid;
+    return cachedPackaging;
+  }
+  console.error("Terminal packaging create failed:", created.data);
+  return null;
+}
+
+async function createAddress(a: Address): Promise<{ id: string | null; message?: string }> {
+  const { first, last } = splitName(a.name);
+  const { ok, data } = await api("/addresses", {
+    method: "POST",
+    body: JSON.stringify({
+      first_name: first,
+      last_name: last,
+      email: a.email || "customer@kaysmarketplace.ng",
+      phone: toIntlPhone(a.phone || "08000000000"),
+      // Terminal caps line1 at 45 chars; OSM/Nominatim strings are long.
+      line1: (a.address || "").slice(0, 45),
+      city: a.city || "",
+      state: normState(a.state),
+      country: "NG",
+      is_residential: true,
+    }),
+  });
+  if (ok && data?.data?.address_id) return { id: data.data.address_id };
+  return { id: null, message: data?.message ?? "address create failed" };
+}
+
+export const terminal: DeliveryProvider = {
+  id: "terminal",
+
+  async getQuotes(input: QuoteInput): Promise<ProviderQuote> {
+    if (!KEY) return { provider: "terminal", couriers: [], providerData: {}, reason: "no_api_key" };
+
+    const pkg = await packagingId();
+    if (!pkg) return { provider: "terminal", couriers: [], providerData: {}, reason: "no_packaging" };
+
+    const from = await createAddress(input.sender);
+    const to = await createAddress(input.receiver);
+    if (!from.id || !to.id) {
+      return {
+        provider: "terminal",
+        couriers: [],
+        providerData: {},
+        reason: `address_failed (sender:${from.id ? "ok" : from.message} | receiver:${to.id ? "ok" : to.message})`,
+      };
+    }
+
+    const totalWeight = input.items.reduce((s, i) => s + (i.weight || 0.5) * (i.quantity || 1), 0);
+    const parcelRes = await api("/parcels", {
+      method: "POST",
+      body: JSON.stringify({
+        packaging: pkg,
+        weight_unit: "kg",
+        items: input.items.map((i) => ({
+          name: i.name,
+          description: i.name,
+          quantity: i.quantity ?? 1,
+          weight: i.weight ?? 0.5,
+          value: i.amount,
+          currency: "NGN",
+        })),
+        description: "Marketplace order",
+      }),
+    });
+    const parcelId = parcelRes.data?.data?.parcel_id;
+    if (!parcelRes.ok || !parcelId) {
+      return { provider: "terminal", couriers: [], providerData: {}, reason: `parcel_failed (${parcelRes.data?.message ?? "no parcel"})` };
+    }
+
+    const ratesRes = await api("/rates/multi/shipment", {
+      method: "POST",
+      body: JSON.stringify({
+        currency: "NGN",
+        pickup_address: from.id,
+        delivery_address: to.id,
+        parcels: [parcelId],
+      }),
+    });
+    const rates = ratesRes.data?.data;
+    if (!ratesRes.ok || !Array.isArray(rates) || rates.length === 0) {
+      return { provider: "terminal", couriers: [], providerData: {}, reason: `no_rates (${ratesRes.data?.message ?? "empty"})` };
+    }
+
+    const couriers: CourierOption[] = rates.map((r: any) => ({
+      provider: "terminal",
+      optionRef: r.rate_id,
+      name: r.carrier_name ?? "Courier",
+      logo: r.carrier_logo,
+      fee: Number(r.amount),
+      currency: r.currency ?? "NGN",
+      eta: r.delivery_time,
+    }));
+
+    return {
+      provider: "terminal",
+      couriers,
+      providerData: { address_from: from.id, address_to: to.id, parcel: parcelId, weight: totalWeight },
+    };
+  },
+
+  async book(input: BookInput): Promise<BookResult> {
+    const { ok, data } = await api("/shipments/pickup", {
+      method: "POST",
+      body: JSON.stringify({ rate_id: input.option.optionRef }),
+    });
+    if (!ok) {
+      const msg = String(data?.message ?? "booking failed");
+      const wallet = /wallet|balance|fund/i.test(msg);
+      return { ok: false, errorCode: wallet ? "wallet_low" : "failed", message: msg };
+    }
+    const d = data?.data ?? {};
+    return {
+      ok: true,
+      providerOrderId: d.shipment_id ?? d.id,
+      courierName: input.option.name,
+      courierPhone: d.carrier?.phone ?? d.rate?.carrier?.phone,
+      trackingUrl: d.tracking_url ?? d.tracking_link,
+      fee: input.option.fee,
+    };
+  },
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async parseWebhook(_req: Request, body: unknown): Promise<WebhookEvent | null> {
+    const payload = body as { event?: string; data?: any } | null;
+    if (!payload?.data) return null;
+    const d = payload.data;
+    const providerOrderId = d.shipment_id ?? d.id;
+    if (!providerOrderId) return null;
+
+    const raw = String(d.status ?? payload.event ?? "").toLowerCase();
+    const map: Record<string, DeliveryStatus> = {
+      "pending": "pending",
+      "pickup-pending": "pending",
+      "confirmed": "confirmed",
+      "shipment.confirmed": "confirmed",
+      "picked-up": "picked_up",
+      "in-transit": "in_transit",
+      "shipment.in-transit": "in_transit",
+      "delivered": "delivered",
+      "shipment.delivered": "delivered",
+      "cancelled": "cancelled",
+      "shipment.cancelled": "cancelled",
+    };
+    const status = map[raw] ?? "in_transit";
+    return { providerOrderId, status, courierName: d.carrier?.name };
+  },
+};

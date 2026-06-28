@@ -155,6 +155,9 @@ class _PaymentSimulationScreenState extends State<PaymentSimulationScreen> {
         if (courier != null) {
           vendorOrder['delivery_quote_id'] = courier['quote_id'];
           vendorOrder['selected_courier_name'] = courier['courier_name'];
+          if (courier['option_ref'] != null) {
+            vendorOrder['selected_option_ref'] = courier['option_ref'];
+          }
         }
         vendorOrders.add(vendorOrder);
         grandTotal += subtotal + deliveryFee;

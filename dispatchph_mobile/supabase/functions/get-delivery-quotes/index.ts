@@ -1,17 +1,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { enabledProviders } from "../_shared/delivery/registry.ts";
+import type { Address, CourierOption, PackageItem } from "../_shared/delivery/types.ts";
 
-// Fetch live Shipbubble courier rates at CHECKOUT. Orders don't exist yet at
-// this point (they're created post-payment in paystack-webhook), so the quote
-// is keyed by buyer + vendor + cart, NOT order_id. An empty couriers array is
-// the client's signal to fall back to the in-chat delivery-fee negotiation.
+// Fetch live courier rates at CHECKOUT across every enabled provider
+// (Shipbubble, Terminal Africa, …) and return a merged, cheapest-first list.
+// Orders don't exist yet here (created post-payment), so quotes are keyed by
+// buyer + vendor + cart. An empty couriers array => client falls back to the
+// in-chat delivery-fee negotiation.
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-const shipbubbleKey = Deno.env.get("SHIPBUBBLE_API_KEY")!;
-
-const SHIPBUBBLE_BASE = "https://api.shipbubble.com/v1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,101 +33,31 @@ function getUserIdFromToken(authHeader: string | null): string | null {
   }
 }
 
-// fetch_rates requires a real package category_id from Shipbubble's list
-// (the hardcoded "1" returns "Invalid package category selected"). Resolve a
-// sensible default once and cache it for the lifetime of the warm instance.
-let cachedCategoryId: number | null = null;
-async function getCategoryId(): Promise<number | null> {
-  if (cachedCategoryId !== null) return cachedCategoryId;
-  try {
-    const res = await fetch(`${SHIPBUBBLE_BASE}/shipping/labels/categories`, {
-      headers: { Authorization: `Bearer ${shipbubbleKey}` },
-    });
-    const data = await res.json();
-    const cats = data?.data;
-    if (Array.isArray(cats) && cats.length > 0) {
-      const preferred = cats.find((c: any) => /other|general|miscellaneous/i.test(c.category ?? "")) ?? cats[0];
-      cachedCategoryId = Number(preferred.category_id);
-      return cachedCategoryId;
-    }
-    console.error("Shipbubble categories empty:", data);
-  } catch (e) {
-    console.error("Shipbubble categories fetch failed:", e);
+// Our records store "FCT (Abuja)"; derive a clean state from the delivery city.
+function stateForCity(city?: string): string {
+  switch ((city || "").toLowerCase()) {
+    case "lagos":
+      return "Lagos";
+    case "abuja":
+      return "FCT (Abuja)";
+    case "port harcourt":
+      return "Rivers";
+    default:
+      return "";
   }
-  return null;
 }
 
-// Shipbubble's address validator rejects names containing digits or symbols
-// ("please provide a full name ... remove all numbers and symbols"). Marketplace
-// display names often carry unique-id suffixes/emoji, so strip everything but
-// letters and spaces and fall back to a safe two-word name.
-function cleanName(raw: string | null | undefined, fallback: string): string {
-  const words = (raw || "")
-    .replace(/[^A-Za-z\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .filter((w) => w.length > 0);
-  // Shipbubble wants a two-word "full name" with no digits/symbols.
-  if (words.length === 0) return fallback;
-  if (words.length === 1) return `${words[0]} ${fallback.split(" ").pop()}`;
-  return words.join(" ");
-}
-
-// Shipbubble requires an address to be validated into an address_code before
-// it can be used in fetch_rates. name/phone/email are required by the API.
-async function validateAddress(opts: {
-  name: string;
-  email: string;
-  phone: string;
-  address: string;
-  latitude?: number | null;
-  longitude?: number | null;
-}): Promise<{ code: string | null; message?: string }> {
-  const res = await fetch(`${SHIPBUBBLE_BASE}/shipping/address/validate`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${shipbubbleKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      name: opts.name,
-      email: opts.email,
-      phone: opts.phone,
-      address: opts.address,
-      latitude: opts.latitude ?? undefined,
-      longitude: opts.longitude ?? undefined,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok || data.status !== "success") {
-    console.error("Shipbubble address validate failed:", data);
-    const msg = data?.message ?? (typeof data === "object" ? JSON.stringify(data) : String(data));
-    return { code: null, message: String(msg).slice(0, 160) };
-  }
-  return { code: data.data?.address_code ?? null };
-}
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    if (req.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method not allowed" }), {
-        status: 405,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
     const callerId = getUserIdFromToken(req.headers.get("Authorization"));
-    if (!callerId) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    if (!callerId) return json({ error: "Unauthorized" }, 401);
 
     const {
       vendor_id,
@@ -137,125 +67,83 @@ serve(async (req) => {
       delivery_city,
       delivery_latitude,
       delivery_longitude,
-      items, // [{ name, weight, quantity, amount }]
+      items,
     } = await req.json();
 
-    // Callers may only quote for themselves.
-    if (buyer_id !== callerId) {
-      return new Response(JSON.stringify({ error: "Forbidden" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
+    if (buyer_id !== callerId) return json({ error: "Forbidden" }, 403);
     if (!vendor_id || !buyer_id || !delivery_address || !Array.isArray(items) || items.length === 0) {
-      return new Response(
-        JSON.stringify({ error: "Missing required fields: vendor_id, buyer_id, delivery_address, items" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return json({ error: "Missing required fields: vendor_id, buyer_id, delivery_address, items" }, 400);
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Vendor's default pickup location is the sender. No pickup location set =>
-    // this vendor isn't set up for courier delivery; client falls back to chat.
+    // Vendor's default pickup location is the sender. None => not set up for
+    // courier delivery; client falls back to chat.
     const { data: pickup } = await supabase
       .from("vendor_locations")
-      .select("address, landmark, city, latitude, longitude")
+      .select("address, landmark, city, state, latitude, longitude")
       .eq("vendor_id", vendor_id)
       .order("is_default", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (!pickup) {
-      return new Response(
-        JSON.stringify({ quote_id: null, couriers: [], reason: "vendor_no_pickup_location" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    if (!pickup) return json({ quote_id: null, couriers: [], reason: "vendor_no_pickup_location" });
 
-    // Contact details required by Shipbubble's address validation.
     const { data: vendorUser } = await supabase.from("users").select("name, email, phone").eq("id", vendor_id).maybeSingle();
     const { data: buyerUser } = await supabase.from("users").select("name, email, phone").eq("id", buyer_id).maybeSingle();
 
-    const sender = await validateAddress({
-      name: cleanName(vendorUser?.name, "Kay Vendor"),
+    const sender: Address = {
+      name: vendorUser?.name || "Vendor",
       email: vendorUser?.email || "vendor@kaysmarketplace.ng",
       phone: vendorUser?.phone || "08000000000",
       address: pickup.address,
+      landmark: pickup.landmark,
+      city: pickup.city,
+      state: pickup.state || stateForCity(pickup.city),
       latitude: pickup.latitude,
       longitude: pickup.longitude,
-    });
-    const receiver = await validateAddress({
-      name: cleanName(buyerUser?.name, "Kay Customer"),
+    };
+    const receiver: Address = {
+      name: buyerUser?.name || "Buyer",
       email: buyerUser?.email || "buyer@kaysmarketplace.ng",
       phone: buyerUser?.phone || "08000000000",
       address: delivery_address,
+      landmark: delivery_landmark,
+      city: delivery_city,
+      state: stateForCity(delivery_city),
       latitude: delivery_latitude,
       longitude: delivery_longitude,
-    });
-    const senderCode = sender.code;
-    const receiverCode = receiver.code;
-
-    if (!senderCode || !receiverCode) {
-      // Address couldn't be validated — fall back to chat negotiation. The
-      // per-side detail is folded into reason so it surfaces in client logs.
-      const detail = `sender:${senderCode ? "ok" : (sender.message || "fail")} | receiver:${receiverCode ? "ok" : (receiver.message || "fail")}`;
-      return new Response(
-        JSON.stringify({ quote_id: null, couriers: [], reason: `address_validation_failed (${detail})` }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const packageItems = items.map((i: any) => ({
+    };
+    const packageItems: PackageItem[] = items.map((i: any) => ({
       name: i.name,
-      description: i.name,
-      unit_weight: i.weight ?? 0.5,
-      unit_amount: i.amount,
-      quantity: i.quantity ?? 1,
+      weight: Number(i.weight) || 0.5,
+      quantity: Number(i.quantity) || 1,
+      amount: Number(i.amount) || 0,
     }));
-    const totalWeight = packageItems.reduce((s: number, i: any) => s + Number(i.unit_weight) * Number(i.quantity), 0);
+    const totalWeight = packageItems.reduce((s, i) => s + i.weight * i.quantity, 0);
 
-    const categoryId = await getCategoryId();
-    if (categoryId === null) {
-      return new Response(
-        JSON.stringify({ quote_id: null, couriers: [], reason: "no_rates (could not resolve package category)" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    // Fan out to every enabled provider, merge, sort cheapest-first.
+    const providers = enabledProviders();
+    const results = await Promise.allSettled(providers.map((p) => p.getQuotes({ sender, receiver, items: packageItems })));
 
-    const ratesRes = await fetch(`${SHIPBUBBLE_BASE}/shipping/fetch_rates`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${shipbubbleKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        sender_address_code: senderCode,
-        reciever_address_code: receiverCode, // Shipbubble's spelling
-        pickup_date: new Date().toISOString().split("T")[0],
-        category_id: categoryId,
-        package_items: packageItems,
-        package_dimension: { length: 10, width: 10, height: 10 },
-      }),
+    const providerData: Record<string, unknown> = {};
+    let couriers: CourierOption[] = [];
+    const reasons: string[] = [];
+    results.forEach((r, idx) => {
+      const pid = providers[idx].id;
+      if (r.status !== "fulfilled") {
+        reasons.push(`${pid}:error:${r.reason}`);
+        return;
+      }
+      providerData[pid] = r.value.providerData;
+      if (r.value.couriers.length) couriers.push(...r.value.couriers);
+      else if (r.value.reason) reasons.push(`${pid}:${r.value.reason}`);
     });
-    const ratesData = await ratesRes.json();
+    couriers.sort((a, b) => a.fee - b.fee);
 
-    const courierList = ratesData?.data?.couriers;
-    if (!ratesRes.ok || ratesData.status !== "success" || !Array.isArray(courierList) || courierList.length === 0) {
-      console.error("Shipbubble fetch_rates failed:", ratesData);
-      // Surface the Shipbubble detail so the client log distinguishes a real
-      // request error from a route genuinely served by no courier.
-      const n = Array.isArray(courierList) ? courierList.length : "n/a";
-      const detail = `status=${ratesData?.status} n=${n} msg=${ratesData?.message ?? "none"}`;
-      return new Response(
-        JSON.stringify({ quote_id: null, couriers: [], reason: `no_rates (${String(detail).slice(0, 160)})` }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (couriers.length === 0) {
+      return json({ quote_id: null, couriers: [], reason: reasons.join(" | ") || "no_rates" });
     }
-
-    const couriers = ratesData.data.couriers;
-    const requestToken = ratesData.data.request_token; // needed at booking time
 
     const { data: quote, error: quoteError } = await supabase
       .from("delivery_quotes")
@@ -273,10 +161,8 @@ serve(async (req) => {
         delivery_latitude,
         delivery_longitude,
         item_weight: totalWeight,
-        sender_address_code: senderCode,
-        receiver_address_code: receiverCode,
-        package_items: packageItems,
-        available_couriers: { couriers, request_token: requestToken },
+        available_couriers: { couriers, sender, receiver, items: packageItems },
+        provider_data: providerData,
         expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       })
       .select("id")
@@ -284,33 +170,22 @@ serve(async (req) => {
 
     if (quoteError) {
       console.error("Failed to store quote:", quoteError);
-      return new Response(JSON.stringify({ error: "Failed to store quote" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return json({ error: "Failed to store quote" }, 500);
     }
 
-    const mapped = couriers
-      .map((c: any) => ({
-        name: c.courier_name,
-        logo: c.courier_image,
-        fee: Number(c.total),
-        currency: "NGN",
-        eta: c.delivery_eta ?? c.delivery_eta_time,
-        service_code: c.service_code,
-        courier_id: c.courier_id,
-      }))
-      .sort((a: any, b: any) => a.fee - b.fee);
+    const mapped = couriers.map((c) => ({
+      provider: c.provider,
+      option_ref: c.optionRef,
+      name: c.name,
+      logo: c.logo,
+      fee: c.fee,
+      currency: c.currency,
+      eta: c.eta,
+    }));
 
-    return new Response(
-      JSON.stringify({ quote_id: quote.id, couriers: mapped }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return json({ quote_id: quote.id, couriers: mapped });
   } catch (error: any) {
     console.error("get-delivery-quotes error:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return json({ error: error.message }, 500);
   }
 });

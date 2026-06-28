@@ -265,7 +265,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     _storeCourier.forEach((storeId, courier) {
       final quote = _storeQuotes[storeId];
       if (courier != null && quote?.quoteId != null) {
-        result[storeId] = {'quote_id': quote!.quoteId!, 'courier_name': courier.name};
+        result[storeId] = {
+          'quote_id': quote!.quoteId!,
+          'courier_name': courier.name,
+          if (courier.optionRef != null) 'option_ref': courier.optionRef!,
+        };
       }
     });
     return result;

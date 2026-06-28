@@ -108,6 +108,8 @@ class CourierOption {
   final String? eta;
   final String? serviceCode;
   final String? courierId;
+  final String? provider;   // 'shipbubble' | 'terminal' | …
+  final String? optionRef;  // unique id used to book this exact option
 
   CourierOption({
     required this.name,
@@ -117,6 +119,8 @@ class CourierOption {
     this.eta,
     this.serviceCode,
     this.courierId,
+    this.provider,
+    this.optionRef,
   });
 
   factory CourierOption.fromJson(Map<String, dynamic> json) => CourierOption(
@@ -127,6 +131,8 @@ class CourierOption {
         eta: json['eta']?.toString(),
         serviceCode: json['service_code']?.toString(),
         courierId: json['courier_id']?.toString(),
+        provider: json['provider'] as String?,
+        optionRef: json['option_ref']?.toString(),
       );
 }
 

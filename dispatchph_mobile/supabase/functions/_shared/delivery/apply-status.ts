@@ -94,6 +94,23 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     timestamp: nowIso,
   });
 
+  // Failed pickup: courier dispatched but the vendor had nothing ready (failed
+  // BEFORE pickup). The platform already paid the courier fee, so record it as a
+  // pending charge against the vendor — release-escrow nets it off a future
+  // payout. Idempotent via the unique (order_id, reason) index.
+  if (status === "failed" && !delivery.picked_up_at) {
+    await supabase.from("vendor_charges").upsert(
+      {
+        vendor_id: delivery.vendor_id,
+        order_id: delivery.order_id,
+        amount: delivery.shipbubble_fee ?? delivery.buyer_charged ?? 0,
+        reason: "failed_pickup",
+        status: "pending",
+      },
+      { onConflict: "order_id,reason", ignoreDuplicates: true },
+    );
+  }
+
   // Reflect onto the order. On delivery, start the 24h escrow window from the
   // real delivered event (courier orders only). The order moves to 'shipped'
   // so the buyer "Confirm & Release" / "Request Refund" UI and the auto-release

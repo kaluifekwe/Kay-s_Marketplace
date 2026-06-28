@@ -176,6 +176,32 @@ serve(async (req) => {
 
     const vendorPayout = tx.vendor_payout || tx.amount;
 
+    // Net any pending charges (e.g. failed-pickup courier fees) off this payout.
+    // Settle whole charges that fit within the payout; larger ones wait for the
+    // next one. The vendor only ever loses what they actually cost the platform.
+    const { data: pendingCharges } = await supabase
+      .from("vendor_charges")
+      .select("id, amount")
+      .eq("vendor_id", vendor_id)
+      .eq("status", "pending");
+    let chargeDeduct = 0;
+    const chargesToSettle: string[] = [];
+    for (const c of pendingCharges || []) {
+      if (chargeDeduct + Number(c.amount) <= vendorPayout) {
+        chargeDeduct += Number(c.amount);
+        chargesToSettle.push(c.id);
+      }
+    }
+    const netPayout = vendorPayout - chargeDeduct;
+    const settleCharges = async () => {
+      if (chargesToSettle.length > 0) {
+        await supabase
+          .from("vendor_charges")
+          .update({ status: "settled", settled_at: new Date().toISOString() })
+          .in("id", chargesToSettle);
+      }
+    };
+
     const { data: bankAccount } = await supabase
       .from("vendor_bank_accounts")
       .select("*")
@@ -207,6 +233,28 @@ serve(async (req) => {
       );
     }
 
+    // Payout fully consumed by pending charges — nothing to transfer.
+    if (netPayout <= 0) {
+      await settleCharges();
+      await supabase.from("orders").update({ payment_released: true, status: "auto_released" }).eq("id", order_id);
+      await supabase.from("transactions").insert({
+        order_id,
+        buyer_id: order.buyer_id,
+        vendor_id,
+        store_id: order.store_id,
+        amount: 0,
+        platform_fee: tx.platform_fee,
+        vendor_payout: 0,
+        status: "success",
+        type: "release",
+        metadata: JSON.stringify({ reason: "offset_by_charges", charge_deduct: chargeDeduct, gross_payout: vendorPayout }),
+      });
+      return new Response(
+        JSON.stringify({ success: true, amount_released: 0, message: "Payout fully offset by pending charges" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const transferResponse = await fetch("https://api.paystack.co/transfer", {
       method: "POST",
       headers: {
@@ -215,7 +263,7 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         source: "balance",
-        amount: Math.round(vendorPayout * 100),
+        amount: Math.round(netPayout * 100),
         recipient: bankAccount.paystack_recipient_code,
         reason: `Order ${order_id.substring(0, 8)} payment release`,
         reference: `rel_${order_id}`,
@@ -234,18 +282,25 @@ serve(async (req) => {
       );
     }
 
+    // Transfer went out — settle the charges we netted against it.
+    await settleCharges();
+
     await supabase.from("transactions").insert({
       order_id,
       buyer_id: order.buyer_id,
       vendor_id,
       store_id: order.store_id,
-      amount: vendorPayout,
+      amount: netPayout,
       platform_fee: tx.platform_fee,
-      vendor_payout: vendorPayout,
+      vendor_payout: netPayout,
       status: "success",
       type: "release",
       paystack_reference: transferData.data.reference,
-      metadata: JSON.stringify({ transfer_code: transferData.data.transfer_code }),
+      metadata: JSON.stringify({
+        transfer_code: transferData.data.transfer_code,
+        charge_deduct: chargeDeduct,
+        gross_payout: vendorPayout,
+      }),
     });
 
     await supabase
@@ -256,12 +311,12 @@ serve(async (req) => {
       })
       .eq("id", order_id);
 
-    console.log(`Escrow released: order=${order_id}, vendor=${vendor_id}, amount=${vendorPayout}`);
+    console.log(`Escrow released: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct})`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        amount_released: vendorPayout,
+        amount_released: netPayout,
         transfer_reference: transferData.data.reference,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

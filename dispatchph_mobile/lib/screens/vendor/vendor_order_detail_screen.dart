@@ -45,6 +45,32 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
     _loadBuyerInfo();
   }
 
+  /// Confirm the item is actually packaged before dispatching a courier — a
+  /// premature booking means a wasted pickup (and, once enabled, a charge to
+  /// the vendor for the failed-pickup courier fee).
+  Future<void> _confirmAndRequestPickup(Order order) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Is the order packaged and ready?'),
+        content: const Text(
+          'The courier will be dispatched to your pickup address to collect it now. '
+          'Only request pickup once the item is packaged — a failed pickup wastes the '
+          'courier trip and may be charged to you.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not yet')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primaryGreen, foregroundColor: Colors.white),
+            child: const Text('Yes, it\'s ready'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await _requestPickup(order);
+  }
+
   /// Vendor taps "Request Pickup" after packaging — the server re-quotes and
   /// books a fresh courier, then we reload so the track tile appears.
   Future<void> _requestPickup(Order order) async {
@@ -250,7 +276,7 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: _requestingPickup ? null : () => _requestPickup(currentOrder),
+                    onPressed: _requestingPickup ? null : () => _confirmAndRequestPickup(currentOrder),
                     icon: _requestingPickup
                         ? const SizedBox(
                             width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))

@@ -209,6 +209,12 @@ async function processPayment(supabase: any, reference: string, eventId?: string
     // free/negotiate the vendor arranges delivery and keeps the fee.
     const vendorPayout = deliveryType === "courier" ? subtotal : totalWithDelivery;
 
+    // Courier orders: the vendor must tap "Request Pickup" before this deadline,
+    // else expire-unbooked-pickups reminds them, then auto-cancels + refunds.
+    const PICKUP_WINDOW_HOURS = 24;
+    const pickupDeadline =
+      deliveryType === "courier" ? new Date(Date.now() + PICKUP_WINDOW_HOURS * 60 * 60 * 1000).toISOString() : null;
+
     // Insert order for this vendor
     const { error: orderError } = await supabase.from("orders").insert({
       id: vendorOrderId,
@@ -229,6 +235,7 @@ async function processPayment(supabase: any, reference: string, eventId?: string
       delivery_quote_id: courierQuoteId,
       selected_courier_name: courierName,
       selected_provider: courierProvider,
+      pickup_deadline: pickupDeadline,
     });
 
     if (orderError) {

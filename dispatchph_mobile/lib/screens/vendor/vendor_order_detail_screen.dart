@@ -227,10 +227,23 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(color: AppColors.primaryGreen),
                   ),
-                  child: const Text(
-                    'Package the item, then request a courier pickup. The courier will '
-                    'come to your pickup address to collect it.',
-                    style: TextStyle(fontSize: 13),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Package the item, then request a courier pickup. The courier will '
+                        'come to your pickup address to collect it.',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                      if (currentOrder.pickupDeadline != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          '⏰ Request pickup before ${DateFormat('MMM d, h:mm a').format(currentOrder.pickupDeadline!.toLocal())} — '
+                          'otherwise the order is auto-cancelled and the buyer refunded.',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.warningOrange),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
                 const SizedBox(height: 12),

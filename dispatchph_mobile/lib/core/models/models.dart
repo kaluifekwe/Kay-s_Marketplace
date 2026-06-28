@@ -303,6 +303,7 @@ class Order {
   final double? totalWithDelivery;
   final bool hasShipbubbleDelivery;
   final String? deliveryId;
+  final DateTime? pickupDeadline;
 
   Order({
     required this.id,
@@ -335,6 +336,7 @@ class Order {
     this.totalWithDelivery,
     this.hasShipbubbleDelivery = false,
     this.deliveryId,
+    this.pickupDeadline,
   });
 
   factory Order.fromJson(Map<String, dynamic> json) => Order(
@@ -370,6 +372,7 @@ class Order {
         totalWithDelivery: json['total_with_delivery'] != null ? (json['total_with_delivery'] as num).toDouble() : null,
         hasShipbubbleDelivery: json['has_shipbubble_delivery'] as bool? ?? false,
         deliveryId: json['delivery_id'] as String?,
+        pickupDeadline: json['pickup_deadline'] != null ? DateTime.tryParse(json['pickup_deadline'] as String) : null,
       );
 
   Map<String, dynamic> toJson() => {

@@ -156,6 +156,9 @@ serve(async (req) => {
         selected_option_ref: chosen.optionRef,
         vendor_id: order.vendor_id,
         buyer_charged: paidFee,
+        // What the buyer picked at checkout, so book-delivery can tell them if
+        // a different courier ended up being booked.
+        original_courier_name: order.selected_courier_name,
       }),
     });
     const bookData = await bookRes.json().catch(() => ({}));

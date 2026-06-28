@@ -50,7 +50,7 @@ serve(async (req) => {
     // Spends platform money — restrict to the service-role caller (webhook).
     if (!isServiceRoleCall(req.headers.get("Authorization"))) return json({ error: "Forbidden" }, 403);
 
-    const { order_id, quote_id, selected_option_ref, selected_courier_name, delivery_note, vendor_id, buyer_charged } = await req.json();
+    const { order_id, quote_id, selected_option_ref, selected_courier_name, delivery_note, vendor_id, buyer_charged, original_courier_name } = await req.json();
     if (!order_id || !quote_id || (!selected_option_ref && !selected_courier_name)) {
       return json({ error: "Missing required fields: order_id, quote_id, selected_option_ref|selected_courier_name" }, 400);
     }
@@ -156,7 +156,15 @@ serve(async (req) => {
       description: "Courier booking received",
     });
 
-    await sendPush(quote.buyer_id, "🚚 Courier Booked!", `${result.courierName ?? option.name} will pick up your order soon.`, {
+    // If the buyer's originally-chosen courier wasn't available at pickup and a
+    // different one was booked, say so (at no extra cost) so they aren't
+    // surprised to see a different courier arriving.
+    const bookedName = result.courierName ?? option.name;
+    const courierChanged = original_courier_name && original_courier_name !== bookedName;
+    const pushBody = courierChanged
+      ? `${original_courier_name} wasn't available, so we booked ${bookedName} at no extra cost to you. Tap to track.`
+      : `${bookedName} will pick up your order soon.`;
+    await sendPush(quote.buyer_id, "🚚 Courier Booked!", pushBody, {
       type: "courier_booked",
       order_id,
       delivery_id: delivery.id,

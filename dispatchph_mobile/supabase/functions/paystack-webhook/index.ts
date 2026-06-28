@@ -188,9 +188,11 @@ async function processPayment(supabase: any, reference: string, eventId?: string
     // uuid" (silently caught below, leaving orderCount stuck at 0).
     const vendorOrderId = crypto.randomUUID();
 
-    // No commission at launch — vendor receives 100% of item price plus
-    // the full delivery fee. deliveryFee/deliveryType were already verified
-    // server-side by create-payment against the accepted chat message.
+    // No commission at launch on the item price. The delivery fee is treated
+    // differently by delivery type (see vendorPayout below): for courier orders
+    // the platform pays the courier, so the fee stays with the platform; for
+    // free/negotiate the vendor delivers and keeps the fee. deliveryFee/
+    // deliveryType were verified server-side by create-payment.
     const deliveryFee = Number(vendorOrder.delivery_fee) || 0;
     const deliveryType = vendorOrder.delivery_type || null;
     const vendorContribution = Number(vendorOrder.vendor_contribution) || 0;
@@ -199,7 +201,11 @@ async function processPayment(supabase: any, reference: string, eventId?: string
     const courierOptionRef = vendorOrder.selected_option_ref || null;
     const totalWithDelivery = subtotal + deliveryFee;
     const platformFee = 0;
-    const vendorPayout = totalWithDelivery;
+    // Courier (Shipbubble/Terminal): the platform pays the courier from its
+    // prepaid wallet, so the delivery fee must NOT be paid out to the vendor —
+    // it nets against the courier cost. The vendor isn't delivering. For
+    // free/negotiate the vendor arranges delivery and keeps the fee.
+    const vendorPayout = deliveryType === "courier" ? subtotal : totalWithDelivery;
 
     // Insert order for this vendor
     const { error: orderError } = await supabase.from("orders").insert({

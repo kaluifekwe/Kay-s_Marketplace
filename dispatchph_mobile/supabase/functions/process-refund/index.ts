@@ -58,7 +58,7 @@ serve(async (req) => {
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("id, buyer_id, vendor_id, store_id, status, payment_reference")
+      .select("id, buyer_id, vendor_id, store_id, status, payment_reference, delivery_type, total, delivery_fee, delivered_at")
       .eq("id", order_id)
       .maybeSingle();
 
@@ -159,7 +159,13 @@ serve(async (req) => {
       );
     }
 
-    const refundAmount = tx.amount;
+    // Once a COURIER order has actually been delivered, the courier was used and
+    // the delivery fee was earned — a post-delivery dispute refunds the ITEM
+    // value only, not the delivery fee. Before delivery (incl. "not received"),
+    // or for vendor-handled delivery, the full amount is refundable.
+    const courierDelivered = order.delivery_type === "courier" && order.delivered_at != null;
+    const itemSubtotal = Number(order.total) || (Number(tx.amount) - (Number(order.delivery_fee) || 0));
+    const refundAmount = courierDelivered ? itemSubtotal : tx.amount;
     const method = refund_method || "card";
     let refundReference = "";
 

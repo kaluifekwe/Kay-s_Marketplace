@@ -5,6 +5,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/store_service.dart';
 import '../../core/constants/nigerian_states.dart';
 import 'home_router.dart';
 
@@ -101,12 +102,15 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       // Step 3: For vendors, create store with correct vendor_id
       if (_isVendor) {
         final storeId = const Uuid().v4();
-        print('[Registration] Creating store: storeId=$storeId vendorId=$userId');
+        final storeName = _storeNameController.text.trim();
+        final handle = await StoreService.generateUniqueHandle(storeName);
+        print('[Registration] Creating store: storeId=$storeId vendorId=$userId handle=$handle');
 
         await SupabaseService.client.from('stores').insert({
           'id': storeId,
           'vendor_id': userId,
-          'name': _storeNameController.text.trim(),
+          'name': storeName,
+          'handle': handle,
           'description': _storeDescController.text.trim().isEmpty
               ? null
               : _storeDescController.text.trim(),

@@ -47,15 +47,24 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done
 - ⬜ Fill the real effective date in `docs/policy.md` / `app_policy.dart`.
 - ⬜ Decide whether to name a legal entity + support contact in the policy.
 
-## 5. Product sharing
+## 5. Product & store sharing
 
-- 🟡 In-app **Share** button on products (native share sheet) — being built.
-- 🟡 **`share-product` Edge Function** (public Open Graph page) — being built.
-  - ⬜ Deploy it: `supabase functions deploy share-product` (verify_jwt=false).
-  - ⬜ Set `APP_PLAY_STORE_URL` (and `APP_STORE_URL`) secrets so the page's
-    "Get the app" button links to the real store listings.
-  - ⬜ Until published, the button shows a "coming soon" message — replace once
-    the app is live.
+- ✅ In-app **Share** button on products (native share sheet).
+- ✅ **`share-product` Edge Function** (public Open Graph page) — deployed +
+  verified live (verify_jwt=false).
+- ✅ **`share-store` Edge Function** (public storefront: all of a vendor's
+  listings, "buy in app") — deployed + verified live.
+- ✅ In-app **"Share My Store"** action on the vendor dashboard + store `handle`
+  (clean slug) auto-generated at registration.
+- ⬜ **Apply `store_handle.sql`** to Supabase (`takuhbkpagvhmxsncdls`) — adds the
+  `stores.handle` column + backfills existing stores. REQUIRED before the new
+  app build (registration writes `handle`) and before handle-based store links
+  work.
+- ⬜ Set `APP_PLAY_STORE_URL` (and `APP_STORE_URL`) secrets so the "Get the app"
+  button links to the real store listings (shows "coming soon" until set).
+- ⬜ Phase 2: when the Next.js site exists, set `SHARE_BASE_URL` to the domain —
+  share links become `/p/<id>` and `/store/<handle>`, and the two share-* edge
+  functions become redundant.
 
 ## 6. Storage & security
 

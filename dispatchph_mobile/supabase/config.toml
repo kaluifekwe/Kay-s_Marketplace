@@ -24,3 +24,8 @@ verify_jwt = false
 # JWT gateway must be off — it only reads public product data.
 [functions.share-product]
 verify_jwt = false
+
+# Public storefront page (a vendor's whole catalogue). Same reasoning as
+# share-product — public, read-only, must be reachable without a JWT.
+[functions.share-store]
+verify_jwt = false

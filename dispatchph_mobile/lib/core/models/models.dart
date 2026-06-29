@@ -74,6 +74,7 @@ class Store {
   final String? storeBannerUrl;
   final String? responseTime;
   final bool isVerified;
+  final String? handle;
 
   Store({
     required this.id,
@@ -89,6 +90,7 @@ class Store {
     this.storeBannerUrl,
     this.responseTime,
     this.isVerified = false,
+    this.handle,
   });
 
   factory Store.fromJson(Map<String, dynamic> json) => Store(
@@ -105,6 +107,7 @@ class Store {
         storeBannerUrl: json['store_banner_url'] as String?,
         responseTime: json['response_time'] as String?,
         isVerified: json['is_verified'] as bool? ?? false,
+        handle: json['handle'] as String?,
       );
 
   Map<String, dynamic> toJson() => {

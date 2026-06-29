@@ -30,6 +30,23 @@ class ShareService {
         : '$base/p/$productId';
   }
 
+  /// Public storefront URL for a vendor. Prefers the clean handle; falls back
+  /// to the store id. On a custom domain it's `/store/<handle>`; on the edge
+  /// function it's the `share-store` sibling with `?handle=`/`?id=`.
+  static String storeUrl({String? handle, String? storeId}) {
+    final override = dotenv.env['SHARE_BASE_URL'];
+    final hasDomain = override != null && override.isNotEmpty;
+    final slug = (handle != null && handle.isNotEmpty) ? handle : null;
+    if (hasDomain) {
+      final base = override.replaceAll(RegExp(r'/+$'), '');
+      return slug != null ? '$base/store/$slug' : '$base/store/$storeId';
+    }
+    final supabaseUrl =
+        (dotenv.env['SUPABASE_URL'] ?? '').replaceAll(RegExp(r'/+$'), '');
+    final fn = '$supabaseUrl/functions/v1/share-store';
+    return slug != null ? '$fn?handle=$slug' : '$fn?id=$storeId';
+  }
+
   static String _naira(double price) {
     final digits = price.toStringAsFixed(0);
     final buf = StringBuffer();
@@ -63,5 +80,30 @@ class ShareService {
       debugPrint('[ShareService] image share failed, falling back to text: $e');
     }
     await SharePlus.instance.share(ShareParams(text: caption, subject: name));
+  }
+
+  /// Open the share sheet for a whole store (the vendor's "store link"). Shares
+  /// the store banner/logo if available, plus a caption + storefront link.
+  static Future<void> shareStore({
+    String? handle,
+    String? storeId,
+    required String storeName,
+    String? imageUrl,
+  }) async {
+    final url = storeUrl(handle: handle, storeId: storeId);
+    final caption =
+        "🛍️ $storeName on Kay's Marketplace\n\nBrowse all my products here:\n$url";
+    try {
+      if (imageUrl != null && imageUrl.startsWith('http')) {
+        final file = await DefaultCacheManager().getSingleFile(imageUrl);
+        await SharePlus.instance.share(
+          ShareParams(text: caption, files: [XFile(file.path)]),
+        );
+        return;
+      }
+    } catch (e) {
+      debugPrint('[ShareService] store image share failed, text only: $e');
+    }
+    await SharePlus.instance.share(ShareParams(text: caption, subject: storeName));
   }
 }

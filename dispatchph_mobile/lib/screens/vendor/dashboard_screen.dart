@@ -63,7 +63,7 @@ class _VendorDashboardState extends State<VendorDashboard> {
     try {
       final data = await SupabaseService.client
           .from('stores')
-          .select('id, name, vendor_id, description, logo_path, address, phone, created_at')
+          .select('id, name, vendor_id, description, logo_path, address, phone, created_at, handle, store_banner_url, is_verified')
           .eq('id', _storeId)
           .maybeSingle();
       if (data != null && mounted) {
@@ -563,7 +563,35 @@ class _VendorDashboardState extends State<VendorDashboard> {
             ),
           ),
         ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: _buildFilledActionButton(
+            context,
+            'Share My Store',
+            Icons.ios_share,
+            AppColors.primaryGreen,
+            _shareStore,
+          ),
+        ),
       ],
+    );
+  }
+
+  void _shareStore() {
+    if (_storeId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Your store is still loading — try again in a moment.')),
+      );
+      return;
+    }
+    final banner = _store?.storeBannerUrl;
+    final logo = _store?.logoPath;
+    ShareService.shareStore(
+      handle: _store?.handle,
+      storeId: _storeId,
+      storeName: _store?.name ?? _vendorName,
+      imageUrl: (banner != null && banner.isNotEmpty) ? banner : logo,
     );
   }
 

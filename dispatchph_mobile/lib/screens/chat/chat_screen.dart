@@ -194,6 +194,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    // Tear down this chat's realtime channels + typing timers on exit. The
+    // ChatCubit is app-scoped, so reopening a chat re-subscribes cleanly.
+    context.read<ChatCubit>().disposeRealtime();
     _msgController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -243,6 +246,21 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _cancelReply() {
     setState(() => _replyToMessage = null);
+  }
+
+  /// Tick state for one of MY messages: sending → sent → delivered → read
+  /// (or failed). Delivered/read are derived from the other participant's
+  /// per-conversation markers, so there are no per-message status writes.
+  String _tickFor(dynamic msg, ChatState state) {
+    final ls = state.localStatus[msg.id];
+    if (ls == 'sending') return 'sending';
+    if (ls == 'failed') return 'failed';
+    final created = msg.createdAt as DateTime;
+    if (state.otherLastRead != null && !state.otherLastRead!.isBefore(created)) return 'read';
+    if (state.otherLastDelivered != null && !state.otherLastDelivered!.isBefore(created)) {
+      return 'delivered';
+    }
+    return 'sent';
   }
 
   Future<void> _sendImage() async {
@@ -442,6 +460,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       isMine: isMine,
                       senderName: senderName,
                       isVendor: _currentRole == 'vendor',
+                      deliveryTick: isMine ? _tickFor(msg, state) : null,
                       onReply: () {
                         setState(() => _replyToMessage = msg);
                       },
@@ -498,6 +517,26 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           if (_uploading)
             const LinearProgressIndicator(minHeight: 3),
+          BlocBuilder<ChatCubit, ChatState>(
+            buildWhen: (a, b) => a.otherTyping != b.otherTyping,
+            builder: (context, state) {
+              if (!state.otherTyping) return const SizedBox.shrink();
+              final otherName = _currentRole == 'vendor' ? widget.buyerName : widget.vendorName;
+              return Container(
+                width: double.infinity,
+                color: Colors.white,
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                child: Text(
+                  '$otherName is typing…',
+                  style: const TextStyle(
+                    color: AppColors.primaryGreen,
+                    fontSize: 12,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              );
+            },
+          ),
           Container(
             padding: const EdgeInsets.all(8),
             decoration: const BoxDecoration(
@@ -526,6 +565,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _sendMessage(),
+                      onChanged: (_) {
+                        final chatId = context.read<ChatCubit>().state.currentChatId;
+                        if (chatId != null) context.read<ChatCubit>().sendTyping(chatId);
+                      },
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -834,6 +877,7 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback? onDownload;
   final VoidCallback? onAcceptDelivery;
   final VoidCallback? onDeclineDelivery;
+  final String? deliveryTick;
 
   const _MessageBubble({
     required this.message,
@@ -844,7 +888,26 @@ class _MessageBubble extends StatelessWidget {
     this.onDownload,
     this.onAcceptDelivery,
     this.onDeclineDelivery,
+    this.deliveryTick,
   });
+
+  Widget? _buildTick() {
+    if (!isMine || deliveryTick == null) return null;
+    switch (deliveryTick) {
+      case 'sending':
+        return const Icon(Icons.access_time, size: 12, color: Colors.white70);
+      case 'failed':
+        return const Icon(Icons.error_outline, size: 13, color: Color(0xFFFFCDD2));
+      case 'sent':
+        return const Icon(Icons.done, size: 14, color: Colors.white70);
+      case 'delivered':
+        return const Icon(Icons.done_all, size: 14, color: Colors.white70);
+      case 'read':
+        return const Icon(Icons.done_all, size: 14, color: Color(0xFF7CC6FF));
+      default:
+        return null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1008,12 +1071,21 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 6),
-              Text(
-                _formatTime(message.createdAt),
-                style: TextStyle(
-                  color: isMine ? Colors.white70 : AppColors.mediumGray,
-                  fontSize: 10,
-                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _formatTime(message.createdAt),
+                    style: TextStyle(
+                      color: isMine ? Colors.white70 : AppColors.mediumGray,
+                      fontSize: 10,
+                    ),
+                  ),
+                  if (_buildTick() != null) ...[
+                    const SizedBox(width: 4),
+                    _buildTick()!,
+                  ],
+                ],
               ),
             ],
           ),

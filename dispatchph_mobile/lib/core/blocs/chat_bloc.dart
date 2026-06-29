@@ -14,8 +14,14 @@ const _messagesPageSize = 50;
 class ChatCubit extends Cubit<ChatState> {
   final EscrowService _escrow;
   RealtimeChannel? _messagesChannel;
+  RealtimeChannel? _membersChannel;
   Timer? _reconnectTimer;
   Timer? _heartbeatTimer;
+  Timer? _typingClearTimer;
+  Timer? _stopTypingTimer;
+  DateTime? _lastTypingSentAt;
+  String? _currentUserId;
+  String? _otherUserId;
 
   ChatCubit(this._escrow) : super(ChatState());
   EscrowService get escrow => _escrow;
@@ -195,11 +201,18 @@ class ChatCubit extends Cubit<ChatState> {
       final chat = Chat.fromJson(chatData);
 
       if (currentUserId != null) {
+        _currentUserId = currentUserId;
+        _otherUserId = currentUserId == chat.buyerId ? chat.vendorId : chat.buyerId;
+
         // Phase 3: Load only last 50 messages (paginated, newest first)
         final messages = await _getMessagesByChatPaginated(chat.id, limit: _messagesPageSize);
 
         // Phase 4: Parallelize markChatRead + emit
         await markChatRead(chat.id, currentUserId);
+        // Opening the chat = read (which implies delivered) for the scalable
+        // per-conversation receipt markers.
+        await _touchMember(chat.id, 'read');
+        final markers = await _loadOtherMarkers(chat.id);
 
         sw.stop();
         print('[ChatCubit] Loaded ${messages.length} messages [${sw.elapsedMilliseconds}ms]');
@@ -207,9 +220,14 @@ class ChatCubit extends Cubit<ChatState> {
           currentChatId: chat.id,
           messages: messages.reversed.toList(),
           hasMoreMessages: messages.length >= _messagesPageSize,
+          otherLastRead: markers.$1,
+          otherLastDelivered: markers.$2,
+          otherTyping: false,
+          localStatus: const {},
         ));
 
         _subscribeToMessages(chat.id);
+        _subscribeToMembers(chat.id);
       }
     } catch (e) {
       print('[ChatCubit] openChat error: $e');
@@ -273,7 +291,30 @@ class ChatCubit extends Cubit<ChatState> {
     String? replyToSender,
     String? recipientId,
   }) async {
-    final sw = Stopwatch()..start();
+    // Show the message INSTANTLY with a temporary id + 'sending' status, then
+    // reconcile to the real row id once the insert returns ('sent'), or mark
+    // 'failed' so the UI can offer a retry. This removes the round-trip lag.
+    final tempId = 'temp_${DateTime.now().microsecondsSinceEpoch}';
+    final optimisticMsg = Message(
+      id: tempId,
+      chatId: chatId,
+      senderId: senderId,
+      senderRole: senderRole,
+      content: content,
+      type: type,
+      replyToId: replyToId,
+      replyToContent: replyToContent,
+      replyToSender: replyToSender,
+      createdAt: DateTime.now(),
+    );
+    emit(state.copyWith(
+      messages: [...state.messages, optimisticMsg],
+      localStatus: {...state.localStatus, tempId: 'sending'},
+    ));
+
+    // Stop broadcasting "typing" now that a message is sent.
+    _broadcastTyping(chatId, false);
+
     try {
       final result = await SupabaseService.client.from('messages').insert({
         'chat_id': chatId,
@@ -288,38 +329,34 @@ class ChatCubit extends Cubit<ChatState> {
 
       if (result == null) {
         print('[ChatCubit] sendMessage FAILED - RLS blocked insert');
+        emit(state.copyWith(localStatus: {...state.localStatus, tempId: 'failed'}));
         return;
       }
 
-      // Phase 3: Optimistically append the new message to state
-      final optimisticMsg = Message(
-        id: result['id'] as String,
-        chatId: chatId,
-        senderId: senderId,
-        senderRole: senderRole,
-        content: content,
-        type: type,
-        replyToId: replyToId,
-        replyToContent: replyToContent,
-        replyToSender: replyToSender,
+      // Reconcile: swap the temp message for the real row (dedupe in case the
+      // realtime INSERT for our own message already arrived).
+      final realId = result['id'] as String;
+      final realMsg = optimisticMsg.copyWith(
+        id: realId,
         createdAt: DateTime.parse(result['created_at'] as String),
       );
-      final updated = List<Message>.from(state.messages)..add(optimisticMsg);
-      emit(state.copyWith(messages: updated));
+      final msgs = state.messages.where((m) => m.id != tempId && m.id != realId).toList()
+        ..add(realMsg);
+      final ls = Map<String, String>.from(state.localStatus)..remove(tempId);
+      emit(state.copyWith(messages: msgs, localStatus: ls));
 
       if (recipientId != null) {
         final senderDisplay = senderRole == 'buyer' ? 'Buyer' : 'Vendor';
         final notifBody = type == 'text' ? content : 'Sent a $type';
-        await NotificationService.showChatNotification(title: senderDisplay, body: notifBody);
-
+        // Fire-and-forget so notifications never delay the send.
+        NotificationService.showChatNotification(title: senderDisplay, body: notifBody);
         PushService.sendPush(
           userId: recipientId,
           title: senderDisplay,
           body: notifBody,
           data: {'type': 'chat', 'chatId': chatId},
         );
-
-        await NotificationCubit.create(
+        NotificationCubit.create(
           userId: recipientId,
           title: 'New Message',
           body: '$senderDisplay: ${notifBody.length > 80 ? '${notifBody.substring(0, 80)}...' : notifBody}',
@@ -327,11 +364,9 @@ class ChatCubit extends Cubit<ChatState> {
           referenceId: chatId,
         );
       }
-
-      sw.stop();
-      print('[ChatCubit] sendMessage total=${sw.elapsedMilliseconds}ms');
     } catch (e) {
       print('[ChatCubit] sendMessage error: $e');
+      emit(state.copyWith(localStatus: {...state.localStatus, tempId: 'failed'}));
     }
   }
 
@@ -637,6 +672,12 @@ class ChatCubit extends Cubit<ChatState> {
             if (state.messages.any((m) => m.id == newMsg.id)) return;
             final updated = List<Message>.from(state.messages)..add(newMsg);
             emit(state.copyWith(messages: updated));
+            // Incoming message while I have the chat open — I've received it and
+            // am looking at it, so mark read (implies delivered). One marker
+            // upsert, so the sender's ticks update without per-message writes.
+            if (_currentUserId != null && newMsg.senderId != _currentUserId) {
+              _touchMember(newMsg.chatId, 'read');
+            }
           },
         )
         .onPostgresChanges(
@@ -656,6 +697,22 @@ class ChatCubit extends Cubit<ChatState> {
               final refreshed = Message.fromJson(updatedRecord);
               final updated = state.messages.map((m) => m.id == msgId ? refreshed : m).toList();
               emit(state.copyWith(messages: updated));
+            }
+          },
+        )
+        .onBroadcast(
+          event: 'typing',
+          callback: (payload) {
+            final fromUser = payload['userId'];
+            if (_currentUserId == null || fromUser == _currentUserId) return;
+            final isTyping = payload['isTyping'] == true;
+            emit(state.copyWith(otherTyping: isTyping));
+            _typingClearTimer?.cancel();
+            if (isTyping) {
+              // Self-clear in case the "stopped" event is missed.
+              _typingClearTimer = Timer(const Duration(seconds: 5), () {
+                emit(state.copyWith(otherTyping: false));
+              });
             }
           },
         )
@@ -683,11 +740,100 @@ class ChatCubit extends Cubit<ChatState> {
     });
   }
 
+  // ── Receipts (scalable per-conversation markers) + typing ──
+
+  /// Stamp my marker for this chat. kind = 'read' (implies delivered) | 'delivered'.
+  Future<void> _touchMember(String chatId, String kind) async {
+    try {
+      await SupabaseService.client.rpc('touch_chat_member', params: {
+        'p_chat_id': chatId,
+        'p_kind': kind,
+      });
+    } catch (e) {
+      print('[ChatCubit] touch_chat_member($kind) error: $e');
+    }
+  }
+
+  /// (lastRead, lastDelivered) for the OTHER participant — drives my ticks.
+  Future<(DateTime?, DateTime?)> _loadOtherMarkers(String chatId) async {
+    if (_otherUserId == null) return (null, null);
+    try {
+      final row = await SupabaseService.client
+          .from('chat_members')
+          .select('last_read_at, last_delivered_at')
+          .eq('chat_id', chatId)
+          .eq('user_id', _otherUserId!)
+          .maybeSingle();
+      if (row == null) return (null, null);
+      return (
+        row['last_read_at'] != null ? DateTime.parse(row['last_read_at'] as String) : null,
+        row['last_delivered_at'] != null ? DateTime.parse(row['last_delivered_at'] as String) : null,
+      );
+    } catch (e) {
+      print('[ChatCubit] _loadOtherMarkers error: $e');
+      return (null, null);
+    }
+  }
+
+  void _subscribeToMembers(String chatId) {
+    _membersChannel?.unsubscribe();
+    _membersChannel = SupabaseService.client
+        .channel('chat_members:$chatId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'chat_members',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'chat_id',
+            value: chatId,
+          ),
+          callback: (payload) {
+            final rec = payload.newRecord;
+            if (rec.isEmpty || _otherUserId == null || rec['user_id'] != _otherUserId) return;
+            emit(state.copyWith(
+              otherLastRead: rec['last_read_at'] != null ? DateTime.parse(rec['last_read_at'] as String) : null,
+              otherLastDelivered: rec['last_delivered_at'] != null ? DateTime.parse(rec['last_delivered_at'] as String) : null,
+            ));
+          },
+        )
+        .subscribe();
+  }
+
+  void _broadcastTyping(String chatId, bool isTyping) {
+    final ch = _messagesChannel;
+    if (ch == null || _currentUserId == null) return;
+    ch.sendBroadcastMessage(
+      event: 'typing',
+      payload: {'userId': _currentUserId, 'isTyping': isTyping},
+    );
+  }
+
+  /// Called from the text field's onChanged. Throttles "typing" broadcasts and
+  /// schedules a "stopped" after the user pauses. Ephemeral — no DB writes.
+  void sendTyping(String chatId) {
+    final now = DateTime.now();
+    if (_lastTypingSentAt == null ||
+        now.difference(_lastTypingSentAt!) > const Duration(milliseconds: 1500)) {
+      _lastTypingSentAt = now;
+      _broadcastTyping(chatId, true);
+    }
+    _stopTypingTimer?.cancel();
+    _stopTypingTimer = Timer(const Duration(seconds: 3), () {
+      _broadcastTyping(chatId, false);
+      _lastTypingSentAt = null;
+    });
+  }
+
   void disposeRealtime() {
     _messagesChannel?.unsubscribe();
     _messagesChannel = null;
+    _membersChannel?.unsubscribe();
+    _membersChannel = null;
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _typingClearTimer?.cancel();
+    _stopTypingTimer?.cancel();
   }
 
   @override
@@ -705,6 +851,18 @@ class ChatState {
   final Map<String, Message> lastMessages;
   final bool hasMoreMessages;
 
+  /// The OTHER participant's receipt markers for the open chat, used to derive
+  /// per-message delivered/read ticks for messages I sent.
+  final DateTime? otherLastRead;
+  final DateTime? otherLastDelivered;
+
+  /// Whether the other participant is currently typing in the open chat.
+  final bool otherTyping;
+
+  /// Client-side send status for optimistic messages: messageId -> 'sending' |
+  /// 'failed'. A message with no entry here is considered persisted ('sent').
+  final Map<String, String> localStatus;
+
   ChatState({
     this.chats = const [],
     this.currentChatId,
@@ -712,6 +870,10 @@ class ChatState {
     this.unreadCounts = const {},
     this.lastMessages = const {},
     this.hasMoreMessages = true,
+    this.otherLastRead,
+    this.otherLastDelivered,
+    this.otherTyping = false,
+    this.localStatus = const {},
   });
 
   ChatState copyWith({
@@ -721,6 +883,10 @@ class ChatState {
     Map<String, int>? unreadCounts,
     Map<String, Message>? lastMessages,
     bool? hasMoreMessages,
+    DateTime? otherLastRead,
+    DateTime? otherLastDelivered,
+    bool? otherTyping,
+    Map<String, String>? localStatus,
   }) {
     return ChatState(
       chats: chats ?? this.chats,
@@ -729,6 +895,10 @@ class ChatState {
       unreadCounts: unreadCounts ?? this.unreadCounts,
       lastMessages: lastMessages ?? this.lastMessages,
       hasMoreMessages: hasMoreMessages ?? this.hasMoreMessages,
+      otherLastRead: otherLastRead ?? this.otherLastRead,
+      otherLastDelivered: otherLastDelivered ?? this.otherLastDelivered,
+      otherTyping: otherTyping ?? this.otherTyping,
+      localStatus: localStatus ?? this.localStatus,
     );
   }
 }

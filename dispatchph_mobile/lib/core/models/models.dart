@@ -510,6 +510,24 @@ class Message {
         'buyer_fee_amount': buyerFeeAmount,
         'delivery_fee_status': deliveryFeeStatus,
       };
+
+  Message copyWith({String? id, DateTime? createdAt, DateTime? readAt}) => Message(
+        id: id ?? this.id,
+        chatId: chatId,
+        senderId: senderId,
+        senderRole: senderRole,
+        content: content,
+        type: type,
+        replyToId: replyToId,
+        replyToContent: replyToContent,
+        replyToSender: replyToSender,
+        readAt: readAt ?? this.readAt,
+        createdAt: createdAt ?? this.createdAt,
+        deliveryFeeAmount: deliveryFeeAmount,
+        vendorContribution: vendorContribution,
+        buyerFeeAmount: buyerFeeAmount,
+        deliveryFeeStatus: deliveryFeeStatus,
+      );
 }
 
 class Dispute {

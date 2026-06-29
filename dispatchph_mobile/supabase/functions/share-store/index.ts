@@ -159,7 +159,7 @@ serve(async (req) => {
     // Look up the store by handle (preferred) or id.
     let q = supabase
       .from("stores")
-      .select("id, name, description, logo_path, store_banner_url, is_verified");
+      .select("id, name, description, logo_path, store_banner_url, is_verified, address");
     q = handle ? q.eq("handle", handle) : q.eq("id", id);
     const { data: store, error } = await q.maybeSingle();
     if (error || !store) return notFound();
@@ -197,6 +197,7 @@ serve(async (req) => {
         <div>
           <h1 class="sname">${esc(store.name)}${store.is_verified ? ` <span class="verified" title="Verified">✔</span>` : ""}</h1>
           ${store.description ? `<p class="sdesc">${esc(store.description as string)}</p>` : ""}
+          ${store.address ? `<p class="sdesc">📍 ${esc(store.address as string)}</p>` : ""}
         </div>
       </div>
       <p class="count">${list.length} ${list.length === 1 ? "item" : "items"}</p>

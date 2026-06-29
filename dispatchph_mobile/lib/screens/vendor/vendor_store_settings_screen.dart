@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
+import '../../widgets/app_image.dart';
 import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/storage_service.dart';
 import '../../widgets/state_change_request_dialog.dart';
 
 class VendorStoreSettingsScreen extends StatefulWidget {
@@ -19,12 +22,18 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
   late TextEditingController _descController;
   late TextEditingController _phoneController;
   late TextEditingController _whatsappController;
-  late TextEditingController _bannerUrlController;
+  late TextEditingController _addressController;
   late bool _showPhoneToBuyers;
   late String _responseTime;
   bool _isLoading = false;
   String? _vendorState;
   bool _loadingState = true;
+
+  final _picker = ImagePicker();
+  String? _logoUrl;
+  String? _bannerUrl;
+  bool _uploadingLogo = false;
+  bool _uploadingBanner = false;
 
   final _responseOptions = const {
     'usually_fast': 'Usually fast (minutes)',
@@ -38,7 +47,9 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
     _descController = TextEditingController(text: widget.store.description ?? '');
     _phoneController = TextEditingController(text: widget.store.phone ?? '');
     _whatsappController = TextEditingController(text: widget.store.whatsappNumber ?? '');
-    _bannerUrlController = TextEditingController(text: widget.store.storeBannerUrl ?? '');
+    _addressController = TextEditingController(text: widget.store.address ?? '');
+    _logoUrl = widget.store.logoPath;
+    _bannerUrl = widget.store.storeBannerUrl;
     _showPhoneToBuyers = widget.store.showPhoneToBuyers;
     _responseTime = widget.store.responseTime ?? 'usually_fast';
     _loadVendorState();
@@ -68,8 +79,47 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
     _descController.dispose();
     _phoneController.dispose();
     _whatsappController.dispose();
-    _bannerUrlController.dispose();
+    _addressController.dispose();
     super.dispose();
+  }
+
+  /// Pick, compress and upload a store image (logo or banner) into the vendor's
+  /// own storage folder, then keep the public URL to save with the store.
+  Future<void> _pickImage({required bool isLogo}) async {
+    final picked = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 70,
+      maxWidth: 1200,
+      maxHeight: 1200,
+    );
+    if (picked == null) return;
+    setState(() {
+      if (isLogo) {
+        _uploadingLogo = true;
+      } else {
+        _uploadingBanner = true;
+      }
+    });
+    final compressed = await StorageService.compressImage(picked);
+    final url = await StorageService.uploadProductImage(
+      (compressed ?? picked).path,
+      widget.store.vendorId,
+    );
+    if (!mounted) return;
+    setState(() {
+      if (isLogo) {
+        if (url != null) _logoUrl = url;
+        _uploadingLogo = false;
+      } else {
+        if (url != null) _bannerUrl = url;
+        _uploadingBanner = false;
+      }
+    });
+    if (url == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Image upload failed, please try again')),
+      );
+    }
   }
 
   Future<void> _save() async {
@@ -77,11 +127,13 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
     try {
       await SupabaseService.client.from('stores').update({
         'description': _descController.text.trim().isEmpty ? null : _descController.text.trim(),
+        'address': _addressController.text.trim().isEmpty ? null : _addressController.text.trim(),
         'phone': _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
         'whatsapp_number': _whatsappController.text.trim().isEmpty ? null : _whatsappController.text.trim(),
         'show_phone_to_buyers': _showPhoneToBuyers,
         'response_time': _responseTime,
-        'store_banner_url': _bannerUrlController.text.trim().isEmpty ? null : _bannerUrlController.text.trim(),
+        'logo_path': _logoUrl,
+        'store_banner_url': _bannerUrl,
       }).eq('id', widget.store.id);
 
       if (!mounted) return;
@@ -106,6 +158,23 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const Text('Store Branding', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            _buildBannerPicker(),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _buildLogoPicker(),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Text(
+                    'Add a logo (profile picture) and a banner. These appear on your store page and shared links.',
+                    style: TextStyle(fontSize: 12, color: AppColors.mediumGray),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
             const Text('Your State', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             if (_loadingState)
@@ -156,11 +225,15 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
               ),
             ),
             const SizedBox(height: 16),
+            const Text('Store Address', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
             TextFormField(
-              controller: _bannerUrlController,
+              controller: _addressController,
+              maxLines: 2,
               decoration: InputDecoration(
-                labelText: 'Store banner image URL (optional)',
-                helperText: 'Shown at the top of your store profile',
+                hintText: 'e.g., 14 Eneka Road, Rumuokoro, Port Harcourt',
+                helperText: 'Shown on your store page so buyers know where you are',
+                prefixIcon: const Icon(Icons.location_on, color: AppColors.primaryGreen),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),
@@ -217,6 +290,95 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildLogoPicker() {
+    return GestureDetector(
+      onTap: _uploadingLogo ? null : () => _pickImage(isLogo: true),
+      child: Stack(
+        children: [
+          Container(
+            width: 84,
+            height: 84,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.lightGray,
+              border: Border.all(color: AppColors.primaryGreen.withAlpha(80), width: 2),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: _uploadingLogo
+                ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+                : (_logoUrl != null && _logoUrl!.isNotEmpty)
+                    ? AppImage(source: _logoUrl, fit: BoxFit.cover)
+                    : const Icon(Icons.storefront, color: AppColors.mediumGray, size: 32),
+          ),
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.all(5),
+              decoration: const BoxDecoration(
+                color: AppColors.primaryGreen,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.camera_alt, size: 14, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBannerPicker() {
+    return GestureDetector(
+      onTap: _uploadingBanner ? null : () => _pickImage(isLogo: false),
+      child: Container(
+        height: 120,
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: AppColors.lightGray,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.primaryGreen.withAlpha(60)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: _uploadingBanner
+            ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+            : (_bannerUrl != null && _bannerUrl!.isNotEmpty)
+                ? Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      AppImage(source: _bannerUrl, fit: BoxFit.cover),
+                      Positioned(
+                        right: 8,
+                        bottom: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withAlpha(120),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.camera_alt, size: 14, color: Colors.white),
+                              SizedBox(width: 6),
+                              Text('Change banner', style: TextStyle(color: Colors.white, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : const Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.add_photo_alternate, size: 32, color: AppColors.primaryGreen),
+                      SizedBox(height: 6),
+                      Text('Add store banner', style: TextStyle(color: AppColors.primaryGreen, fontWeight: FontWeight.w500)),
+                    ],
+                  ),
       ),
     );
   }

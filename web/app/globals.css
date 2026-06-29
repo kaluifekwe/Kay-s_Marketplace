@@ -136,6 +136,11 @@ a {
   font-size: 14px;
   margin: 4px 0 0;
 }
+.saddr {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 6px 0 0;
+}
 .count {
   color: var(--muted);
   font-size: 13px;

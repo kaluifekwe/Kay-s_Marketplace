@@ -7,7 +7,8 @@ export const dynamic = "force-dynamic";
 
 type Params = { params: { handle: string } };
 
-const STORE_FIELDS = "id, name, description, logo_path, store_banner_url, is_verified";
+const STORE_FIELDS =
+  "id, name, description, logo_path, store_banner_url, is_verified, address";
 
 // Look up by clean handle first, then fall back to a raw store id.
 async function getStore(handleOrId: string) {
@@ -101,6 +102,9 @@ export default async function StorePage({ params }: Params) {
             </h1>
             {store.description ? (
               <p className="sdesc">{store.description as string}</p>
+            ) : null}
+            {store.address ? (
+              <p className="saddr">📍 {store.address as string}</p>
             ) : null}
           </div>
         </div>

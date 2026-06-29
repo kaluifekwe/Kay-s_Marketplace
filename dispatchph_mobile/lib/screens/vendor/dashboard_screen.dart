@@ -19,6 +19,7 @@ import '../marketplace/vendor_store_screen.dart';
 import 'orders_screen.dart';
 import '../disputes/vendor_disputes_screen.dart';
 import 'bank_account_screen.dart';
+import '../policy/policy_screen.dart';
 
 class VendorDashboard extends StatefulWidget {
   const VendorDashboard({super.key});
@@ -252,6 +253,18 @@ class _VendorDashboardState extends State<VendorDashboard> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const BankAccountScreen()),
+                );
+              },
+            ),
+            _buildMenuItem(
+              context,
+              Icons.description_outlined,
+              'Terms & Policy',
+              () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PolicyScreen()),
                 );
               },
             ),

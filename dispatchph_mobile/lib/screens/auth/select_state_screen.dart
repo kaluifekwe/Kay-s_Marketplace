@@ -3,8 +3,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../core/constants/nigerian_states.dart';
 import '../../core/services/supabase_service.dart';
-import '../marketplace/home_screen.dart';
-import '../vendor/dashboard_screen.dart';
+import 'home_router.dart';
 
 /// Shown once for accounts created before the state field existed. Once
 /// saved here, the state is locked — any further change must go through
@@ -33,11 +32,10 @@ class _SelectStateScreenState extends State<SelectStateScreen> {
           .eq('id', widget.userId);
 
       if (!mounted) return;
-      if (widget.role == 'vendor') {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const VendorDashboard()));
-      } else {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const MarketplaceHome()));
-      }
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => HomeRouter(role: widget.role)),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

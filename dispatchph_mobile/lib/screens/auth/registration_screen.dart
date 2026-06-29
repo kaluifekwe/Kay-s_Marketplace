@@ -6,8 +6,7 @@ import '../../widgets/primary_button.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/constants/nigerian_states.dart';
-import '../marketplace/home_screen.dart';
-import '../vendor/dashboard_screen.dart';
+import 'home_router.dart';
 
 class RegistrationScreen extends StatefulWidget {
   final String userType;
@@ -137,34 +136,16 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       if (_isVendor) {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const VendorDashboard()),
+          MaterialPageRoute(builder: (_) => const HomeRouter(role: 'vendor')),
         );
       } else {
-        await showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (_) => AlertDialog(
-            icon: const Icon(Icons.celebration, color: AppColors.primaryGreen, size: 64),
-            title: const Text('Welcome to DispatchPH!'),
-            content: const Text(
-              'Congratulations! 🎉\nYou\'ve received ₦200 welcome credit to use on your first purchase.',
-              textAlign: TextAlign.center,
-            ),
-            actions: [
-              SizedBox(
-                width: double.infinity,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Start Shopping'),
-                ),
-              ),
-            ],
-          ),
-        );
-        if (!mounted) return;
+        // Policy gate comes first; the welcome-credit dialog shows on the home
+        // screen once the buyer has accepted.
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const MarketplaceHome()),
+          MaterialPageRoute(
+            builder: (_) => const HomeRouter(role: 'buyer', showWelcomeCredit: true),
+          ),
         );
       }
     } catch (e) {

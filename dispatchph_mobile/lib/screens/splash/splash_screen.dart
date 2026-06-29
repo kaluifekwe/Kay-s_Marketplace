@@ -5,8 +5,7 @@ import '../../core/services/fcm_service.dart';
 import '../../core/services/supabase_service.dart';
 import '../auth/welcome_screen.dart';
 import '../auth/select_state_screen.dart';
-import '../marketplace/home_screen.dart';
-import '../vendor/dashboard_screen.dart';
+import '../auth/home_router.dart';
 import '../admin/admin_state_requests_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -85,11 +84,7 @@ class _SplashScreenState extends State<SplashScreen>
           return;
         }
 
-        if (role == 'vendor') {
-          Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const VendorDashboard()));
-        } else {
-          Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const MarketplaceHome()));
-        }
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeRouter(role: role)));
         return;
       }
     }
@@ -102,11 +97,7 @@ class _SplashScreenState extends State<SplashScreen>
 
     if (loggedIn) {
       FCMService.init();
-      if (role == 'vendor') {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const VendorDashboard()));
-      } else {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const MarketplaceHome()));
-      }
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeRouter(role: role ?? 'buyer')));
     } else {
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const WelcomeScreen()));
     }

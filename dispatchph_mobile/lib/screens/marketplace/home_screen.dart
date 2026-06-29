@@ -25,10 +25,20 @@ import '../auth/welcome_screen.dart';
 import 'my_rewards_screen.dart';
 import 'buyer_bank_account_screen.dart';
 import '../delivery/buyer_addresses_screen.dart';
+import '../policy/policy_screen.dart';
 
 class MarketplaceHome extends StatefulWidget {
   final int initialIndex;
-  const MarketplaceHome({super.key, this.initialIndex = 0});
+
+  /// Set once, right after a new buyer registers and accepts the policy, to
+  /// show the one-time welcome-credit dialog on top of the home screen.
+  final bool showWelcomeCredit;
+
+  const MarketplaceHome({
+    super.key,
+    this.initialIndex = 0,
+    this.showWelcomeCredit = false,
+  });
 
   @override
   State<MarketplaceHome> createState() => _MarketplaceHomeState();
@@ -55,7 +65,32 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       _notifPoll = Timer.periodic(const Duration(seconds: 15), (_) {
         _loadNotifications();
       });
+      if (widget.showWelcomeCredit) _showWelcomeCreditDialog();
     });
+  }
+
+  void _showWelcomeCreditDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        icon: const Icon(Icons.celebration, color: AppColors.primaryGreen, size: 64),
+        title: const Text("Welcome to Kay's Marketplace!"),
+        content: const Text(
+          "Congratulations! 🎉\nYou've received ₦200 welcome credit to use on your first purchase.",
+          textAlign: TextAlign.center,
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Start Shopping'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1018,6 +1053,18 @@ class ProfileTab extends StatelessWidget {
                     ),
                     icon: const Icon(Icons.account_balance),
                     label: const Text('Bank Account'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const PolicyScreen()),
+                    ),
+                    icon: const Icon(Icons.description_outlined),
+                    label: const Text('Terms & Policy'),
                   ),
                 ),
                 const Spacer(),

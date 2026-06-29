@@ -3,8 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../core/services/auth_service.dart';
-import '../marketplace/home_screen.dart';
-import '../vendor/dashboard_screen.dart';
+import 'home_router.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -55,9 +54,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (_) => role == 'vendor' ? const VendorDashboard() : const MarketplaceHome(),
-        ),
+        MaterialPageRoute(builder: (_) => HomeRouter(role: role)),
       );
     } else {
       setState(() {

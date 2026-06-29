@@ -2,12 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:http/http.dart' as http;
+import 'package:gal/gal.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
@@ -344,35 +344,45 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _saveMediaToDevice(String url) async {
+  /// Save a chat image/video into the device's photo gallery (a "Kay's
+  /// Marketplace" album). Reuses the cached file (images are already cached, so
+  /// no re-download), copies it with a proper extension, then hands it to Gal,
+  /// which handles Android MediaStore / iOS Photos + permissions.
+  Future<void> _saveMediaToDevice(String url, {bool isVideo = false}) async {
     if (_downloading) return;
     setState(() => _downloading = true);
     final snack = ScaffoldMessenger.of(context);
     try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode != 200) {
-        snack.showSnackBar(const SnackBar(content: Text('Download failed'), backgroundColor: Colors.red));
-        return;
+      if (!await Gal.hasAccess()) {
+        await Gal.requestAccess();
       }
-      final ext = p.extension(Uri.parse(url).path);
-      final fileName = 'Kays_${DateTime.now().millisecondsSinceEpoch}$ext';
-      final file = File('${Directory.systemTemp.path}/$fileName');
-      await file.writeAsBytes(response.bodyBytes);
+      final cached = await DefaultCacheManager().getSingleFile(url);
+      final ext = p.extension(Uri.parse(url).path).isNotEmpty
+          ? p.extension(Uri.parse(url).path)
+          : (isVideo ? '.mp4' : '.jpg');
+      final tmpPath = '${Directory.systemTemp.path}/Kays_${DateTime.now().millisecondsSinceEpoch}$ext';
+      final tmp = await cached.copy(tmpPath);
+
+      if (isVideo) {
+        await Gal.putVideo(tmp.path, album: "Kay's Marketplace");
+      } else {
+        await Gal.putImage(tmp.path, album: "Kay's Marketplace");
+      }
 
       if (!mounted) return;
-      snack.showSnackBar(SnackBar(
-        content: Text('Saved to $fileName'),
+      snack.showSnackBar(const SnackBar(
+        content: Text('Saved to your gallery'),
         backgroundColor: AppColors.primaryGreen,
-        action: SnackBarAction(
-          label: 'Open',
-          textColor: Colors.white,
-          onPressed: () => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
-        ),
+      ));
+    } on GalException catch (e) {
+      if (!mounted) return;
+      snack.showSnackBar(SnackBar(
+        content: Text('Could not save: ${e.type.message}'),
+        backgroundColor: Colors.red,
       ));
     } catch (e) {
       if (!mounted) return;
       snack.showSnackBar(const SnackBar(content: Text('Could not save media'), backgroundColor: Colors.red));
-      launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
@@ -465,7 +475,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         setState(() => _replyToMessage = msg);
                       },
                       onDownload: (msg.type == 'image' || msg.type == 'video')
-                          ? () => _saveMediaToDevice(msg.content)
+                          ? () => _saveMediaToDevice(msg.content, isVideo: msg.type == 'video')
                           : null,
                       onAcceptDelivery: () => _acceptDeliveryFee(msg),
                       onDeclineDelivery: () => _declineDeliveryFee(msg),

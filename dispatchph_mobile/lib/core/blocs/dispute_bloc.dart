@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:uuid/uuid.dart';
 import '../services/supabase_service.dart';
-import '../services/notification_service.dart';
 import '../services/push_service.dart';
 import '../services/storage_service.dart';
 import '../services/payment_service.dart';
@@ -310,11 +309,6 @@ class DisputeCubit extends Cubit<DisputeState> {
         'vendor_responded_at': DateTime.now().toIso8601String(),
       }).eq('id', disputeId);
 
-      await NotificationService.showOrderNotification(
-        title: 'Vendor responded to your dispute',
-        body: response,
-      );
-
       final disputeData = await SupabaseService.client
           .from('disputes').select('buyer_id').eq('id', disputeId).maybeSingle();
       if (disputeData != null) {
@@ -395,11 +389,6 @@ class DisputeCubit extends Cubit<DisputeState> {
         'resolution_type': 'replacement',
         'status': 'replacement_offered',
       }).eq('id', disputeId);
-
-      await NotificationService.showOrderNotification(
-        title: 'Replacement offered',
-        body: 'The vendor offered a replacement product. Review and accept or reject.',
-      );
 
       final disputeData = await SupabaseService.client
           .from('disputes').select('buyer_id').eq('id', disputeId).maybeSingle();
@@ -563,11 +552,6 @@ class DisputeCubit extends Cubit<DisputeState> {
         'escalated_to_admin': true,
         'status': 'escalated',
       }).eq('id', disputeId);
-
-      await NotificationService.showOrderNotification(
-        title: 'Dispute escalated',
-        body: 'This dispute has been escalated to platform admin for review.',
-      );
 
       final disputeData = await SupabaseService.client
           .from('disputes').select('buyer_id, vendor_id').eq('id', disputeId).maybeSingle();

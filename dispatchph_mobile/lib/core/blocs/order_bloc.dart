@@ -4,7 +4,6 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/supabase_service.dart';
 import '../services/escrow_service.dart';
-import '../services/notification_service.dart';
 import '../services/push_service.dart';
 import '../services/storage_service.dart';
 import '../services/payment_service.dart';
@@ -68,15 +67,12 @@ class OrderCubit extends Cubit<OrderState> {
           .eq('id', buyerId)
           .maybeSingle();
 
-      await NotificationService.showOrderNotification(
-        title: 'New Order!',
-        body: 'You received a new order of ₦${total.toStringAsFixed(0)} from ${buyerProfile?['name'] ?? 'a buyer'}',
-      );
-
+      // Notify the vendor via push only (no local notification on the buyer's
+      // device, which performed this action).
       PushService.sendPush(
         userId: vendorId,
         title: 'New Order!',
-        body: 'You received a new order of ₦${total.toStringAsFixed(0)}',
+        body: 'You received a new order of ₦${total.toStringAsFixed(0)} from ${buyerProfile?['name'] ?? 'a buyer'}',
         data: {'type': 'order', 'orderId': id},
       );
 
@@ -353,11 +349,6 @@ class OrderCubit extends Cubit<OrderState> {
       await SupabaseService.client.from('orders').update({
         'status': 'cancelled',
       }).eq('id', orderId);
-
-      await NotificationService.showOrderNotification(
-        title: 'Order Cancelled',
-        body: 'A buyer cancelled their order (refund issued).',
-      );
 
       PushService.sendPush(
         userId: orderData['vendor_id'] as String,

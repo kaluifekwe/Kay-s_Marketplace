@@ -4,7 +4,6 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/supabase_service.dart';
 import '../services/escrow_service.dart';
-import '../services/notification_service.dart';
 import '../services/push_service.dart';
 import '../models/models.dart';
 import 'notification_bloc.dart';
@@ -348,8 +347,8 @@ class ChatCubit extends Cubit<ChatState> {
       if (recipientId != null) {
         final senderDisplay = senderRole == 'buyer' ? 'Buyer' : 'Vendor';
         final notifBody = type == 'text' ? content : 'Sent a $type';
-        // Fire-and-forget so notifications never delay the send.
-        NotificationService.showChatNotification(title: senderDisplay, body: notifBody);
+        // Notify the RECIPIENT via push only (their foreground handler renders
+        // the local notification). No local notification on the sender's device.
         PushService.sendPush(
           userId: recipientId,
           title: senderDisplay,
@@ -448,7 +447,6 @@ class ChatCubit extends Cubit<ChatState> {
       emit(state.copyWith(messages: updated));
 
       if (recipientId != null) {
-        await NotificationService.showChatNotification(title: 'Vendor', body: content);
         PushService.sendPush(
           userId: recipientId,
           title: 'Delivery Fee Request',

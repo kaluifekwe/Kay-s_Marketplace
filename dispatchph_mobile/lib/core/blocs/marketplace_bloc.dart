@@ -13,6 +13,10 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
 
   Timer? _searchDebounce;
 
+  /// The store whose products are currently shown on the vendor dashboard, so
+  /// add/edit/delete can refresh that view without the caller passing it back.
+  String? _activeStoreId;
+
   /// Debounced wrapper for [searchProducts] — call this from the search
   /// field's onChanged so a query isn't fired on every keystroke (each one
   /// is a real network round-trip, costly on slow/metered connections).
@@ -80,6 +84,34 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
       print('[MarketplaceCubit] loadProducts error: $e');
       emit(state.copyWith(isLoading: false));
     }
+  }
+
+  /// Loads ALL of one store's products for the vendor dashboard, newest first.
+  /// Unlike [loadProducts] this is filtered by store and not paginated, so the
+  /// vendor always sees their full catalogue regardless of how many products
+  /// exist platform-wide.
+  Future<void> loadStoreProducts(String storeId) async {
+    _activeStoreId = storeId;
+    emit(state.copyWith(isLoadingStoreProducts: true));
+    try {
+      final data = await SupabaseService.client
+          .from('products')
+          .select(_productFields)
+          .eq('store_id', storeId)
+          .order('created_at', ascending: false);
+
+      final products = (data as List).map((p) => Product.fromJson(p)).toList();
+      emit(state.copyWith(storeProducts: products, isLoadingStoreProducts: false));
+    } catch (e) {
+      print('[MarketplaceCubit] loadStoreProducts error: $e');
+      emit(state.copyWith(isLoadingStoreProducts: false));
+    }
+  }
+
+  /// Re-fetch the active store's products after a mutation, so the dashboard
+  /// updates without a manual refresh.
+  Future<void> _refreshActiveStore() async {
+    if (_activeStoreId != null) await loadStoreProducts(_activeStoreId!);
   }
 
   Future<void> loadMoreProducts() async {
@@ -317,7 +349,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
           }
         }
       }
-      await loadProducts();
+      await loadStoreProducts(storeId);
       return null;
     } catch (e) {
       print('[MarketplaceCubit] addProduct error: $e');
@@ -343,7 +375,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
         'stock': stock,
         if (deliveryType != null) 'delivery_type': deliveryType,
       }).eq('id', productId);
-      await loadProducts();
+      await _refreshActiveStore();
     } catch (e) {
       print('[MarketplaceCubit] updateProduct error: $e');
     }
@@ -354,7 +386,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
       await SupabaseService.client.from('products').update({
         'images': jsonEncode(images),
       }).eq('id', productId);
-      await loadProducts();
+      await _refreshActiveStore();
     } catch (e) {
       print('[MarketplaceCubit] updateProductImages error: $e');
     }
@@ -363,7 +395,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
   Future<void> deleteProduct(String productId) async {
     try {
       await SupabaseService.client.from('products').delete().eq('id', productId);
-      await loadProducts();
+      await _refreshActiveStore();
     } catch (e) {
       print('[MarketplaceCubit] deleteProduct error: $e');
     }
@@ -459,6 +491,12 @@ class MarketplaceState {
   final Store? searchedStore;
   final String? buyerState;
 
+  /// The vendor dashboard's own product list (one store, full catalogue).
+  /// Kept separate from [products] (the paginated buyer feed) so buyer-side
+  /// browsing never clobbers what the vendor sees on their dashboard.
+  final List<Product> storeProducts;
+  final bool isLoadingStoreProducts;
+
   MarketplaceState({
     this.isLoading = false,
     this.isLoadingMore = false,
@@ -471,7 +509,10 @@ class MarketplaceState {
     this.variants = const {},
     this.searchedStore,
     this.buyerState,
-  }) : products = products ?? [];
+    List<Product>? storeProducts,
+    this.isLoadingStoreProducts = false,
+  })  : products = products ?? [],
+        storeProducts = storeProducts ?? [];
 
   MarketplaceState copyWith({
     bool? isLoading,
@@ -485,6 +526,8 @@ class MarketplaceState {
     Map<String, List<ProductVariant>>? variants,
     Store? searchedStore,
     String? buyerState,
+    List<Product>? storeProducts,
+    bool? isLoadingStoreProducts,
   }) {
     return MarketplaceState(
       isLoading: isLoading ?? this.isLoading,
@@ -498,6 +541,8 @@ class MarketplaceState {
       variants: variants ?? this.variants,
       searchedStore: searchedStore ?? this.searchedStore,
       buyerState: buyerState ?? this.buyerState,
+      storeProducts: storeProducts ?? this.storeProducts,
+      isLoadingStoreProducts: isLoadingStoreProducts ?? this.isLoadingStoreProducts,
     );
   }
 }

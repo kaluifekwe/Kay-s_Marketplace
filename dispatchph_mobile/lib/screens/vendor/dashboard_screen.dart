@@ -6,6 +6,7 @@ import '../auth/welcome_screen.dart';
 import '../../bloc_exports.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/share_service.dart';
 import '../../core/models/models.dart';
 import '../../widgets/app_image.dart';
 import '../delivery/vendor_locations_screen.dart';
@@ -45,6 +46,7 @@ class _VendorDashboardState extends State<VendorDashboard> {
     _vendorName = await AuthService.getUserName();
     if (_storeId.isNotEmpty) {
       _loadStore();
+      context.read<MarketplaceCubit>().loadStoreProducts(_storeId);
       context.read<DisputeCubit>().loadDisputesForVendor(_storeId);
     }
     final userId = await AuthService.getUserId();
@@ -94,15 +96,15 @@ class _VendorDashboardState extends State<VendorDashboard> {
         appBar: _buildAppBar(context),
         body: BlocBuilder<MarketplaceCubit, MarketplaceState>(
           builder: (context, state) {
-            if (state.isLoading) {
+            if (state.isLoadingStoreProducts && state.storeProducts.isEmpty) {
               return _buildLoadingSkeleton();
             }
-            final storeProducts = state.products
-                .where((p) => p.storeId == _storeId)
-                .toList();
+            final storeProducts = state.storeProducts;
             return RefreshIndicator(
               onRefresh: () async {
-                context.read<MarketplaceCubit>().loadProducts();
+                if (_storeId.isNotEmpty) {
+                  context.read<MarketplaceCubit>().loadStoreProducts(_storeId);
+                }
                 _loadStore();
                 final userId = await AuthService.getUserId();
                 context.read<OrderCubit>().loadVendorOrders(userId);
@@ -896,6 +898,14 @@ class _PopupMenu extends StatelessWidget {
             context,
             MaterialPageRoute(builder: (_) => EditProductScreen(product: product)),
           );
+        } else if (value == 'share') {
+          final imgs = product.imageList;
+          ShareService.shareProduct(
+            productId: product.id,
+            name: product.name,
+            price: product.price,
+            imageUrl: imgs.isNotEmpty ? imgs.first : null,
+          );
         } else if (value == 'delete') {
           _confirmDelete(context, product);
         }
@@ -908,6 +918,16 @@ class _PopupMenu extends StatelessWidget {
               Icon(Icons.edit, size: 16, color: AppColors.primaryGreen),
               SizedBox(width: 8),
               Text('Edit'),
+            ],
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'share',
+          child: Row(
+            children: [
+              Icon(Icons.share, size: 16, color: AppColors.primaryGreen),
+              SizedBox(width: 8),
+              Text('Share'),
             ],
           ),
         ),
@@ -941,13 +961,9 @@ class _PopupMenu extends StatelessWidget {
             onPressed: () async {
               Navigator.pop(context);
               try {
-                await SupabaseService.client
-                    .from('products')
-                    .delete()
-                    .eq('id', product.id);
-                if (context.mounted) {
-                  context.read<MarketplaceCubit>().loadProducts();
-                }
+                // Delete via the cubit so the dashboard's store list refreshes
+                // automatically (it re-fetches the active store).
+                await context.read<MarketplaceCubit>().deleteProduct(product.id);
               } catch (e) {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(

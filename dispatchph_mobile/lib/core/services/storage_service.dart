@@ -1,7 +1,8 @@
 import 'dart:io';
-import 'dart:ui' as ui;
 import 'package:uuid/uuid.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show FileOptions;
 import 'supabase_service.dart';
 
 class StorageService {
@@ -30,28 +31,43 @@ class StorageService {
     return file.lengthSync() <= maxFileSize;
   }
 
-  /// Compress image to fit within size and dimension limits
+  /// Compress an image to fit within the size/dimension limits, re-encoding as
+  /// JPEG (much smaller than PNG for photos). Returns the original if it's
+  /// already under the limit or if compression fails.
   static Future<XFile?> compressImage(XFile xfile) async {
     try {
       final file = File(xfile.path);
       if (!file.existsSync()) return xfile;
       if (file.lengthSync() <= maxFileSize) return xfile;
 
-      final bytes = await file.readAsBytes();
-      final codec = await ui.instantiateImageCodec(bytes,
-          targetWidth: maxDimension, targetHeight: maxDimension);
-      final frame = await codec.getNextFrame();
-      final resized = await frame.image.toByteData(format: ui.ImageByteFormat.png);
-
-      if (resized == null) return xfile;
-
-      final tempDir = Directory.systemTemp;
-      final tempPath = '${tempDir.path}/${_uuid.v4()}.jpg';
-      await File(tempPath).writeAsBytes(resized.buffer.asUint8List());
-      return XFile(tempPath);
+      final tempPath = '${Directory.systemTemp.path}/${_uuid.v4()}.jpg';
+      final result = await FlutterImageCompress.compressAndGetFile(
+        xfile.path,
+        tempPath,
+        quality: 70,
+        minWidth: maxDimension,
+        minHeight: maxDimension,
+        format: CompressFormat.jpeg,
+      );
+      return result ?? xfile;
     } catch (e) {
       print('[StorageService] compressImage error: $e');
       return xfile;
+    }
+  }
+
+  /// MIME type for an image file extension, so Storage serves it with the right
+  /// Content-Type (otherwise it may default to application/octet-stream).
+  static String _contentType(String ext) {
+    switch (ext.toLowerCase()) {
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      default:
+        return 'image/jpeg';
     }
   }
 
@@ -77,6 +93,13 @@ class StorageService {
       await SupabaseService.client.storage.from(_productsBucket).upload(
             path,
             file,
+            // Product images are immutable (uuid filenames), so let the CDN and
+            // clients cache them for a long time.
+            fileOptions: FileOptions(
+              contentType: _contentType(ext),
+              cacheControl: '2592000', // 30 days
+              upsert: false,
+            ),
           );
 
       final url = SupabaseService.client.storage.from(_productsBucket).getPublicUrl(path);
@@ -90,12 +113,12 @@ class StorageService {
 
   static Future<List<String>> uploadProductImages(
       List<String> filePaths, String vendorId) async {
-    final urls = <String>[];
-    for (final path in filePaths) {
-      final url = await uploadProductImage(path, vendorId);
-      if (url != null) urls.add(url);
-    }
-    return urls;
+    // Upload in parallel — faster "Save" on multi-image products. Future.wait
+    // preserves order, so the cover image (index 0) stays first.
+    final results = await Future.wait(
+      filePaths.map((p) => uploadProductImage(p, vendorId)),
+    );
+    return results.whereType<String>().toList();
   }
 
   static Future<void> deleteImage(String url) async {

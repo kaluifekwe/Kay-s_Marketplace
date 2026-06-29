@@ -7,6 +7,7 @@ import '../../widgets/app_image.dart';
 import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/share_service.dart';
 import 'vendor_store_screen.dart';
 import '../chat/chat_screen.dart';
 
@@ -129,7 +130,24 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final hasImages = images.isNotEmpty;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Product Details')),
+      appBar: AppBar(
+        title: const Text('Product Details'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            tooltip: 'Share',
+            onPressed: () {
+              final imgs = widget.product.imageList;
+              ShareService.shareProduct(
+                productId: widget.product.id,
+                name: widget.product.name,
+                price: widget.product.price,
+                imageUrl: imgs.isNotEmpty ? imgs.first : null,
+              );
+            },
+          ),
+        ],
+      ),
       body: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

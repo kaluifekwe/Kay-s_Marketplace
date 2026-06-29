@@ -18,3 +18,9 @@ verify_jwt = false
 # header (TERMINAL_WEBHOOK_SECRET). Same reasoning as the webhooks above.
 [functions.terminal-webhook]
 verify_jwt = false
+
+# Public product share page (Open Graph). Social-media crawlers and people who
+# tap a shared link fetch this with no Supabase auth header, so the platform
+# JWT gateway must be off — it only reads public product data.
+[functions.share-product]
+verify_jwt = false

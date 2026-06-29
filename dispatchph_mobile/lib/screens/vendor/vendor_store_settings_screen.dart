@@ -22,7 +22,6 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
   late TextEditingController _descController;
   late TextEditingController _phoneController;
   late TextEditingController _whatsappController;
-  late TextEditingController _addressController;
   late bool _showPhoneToBuyers;
   late String _responseTime;
   bool _isLoading = false;
@@ -47,7 +46,6 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
     _descController = TextEditingController(text: widget.store.description ?? '');
     _phoneController = TextEditingController(text: widget.store.phone ?? '');
     _whatsappController = TextEditingController(text: widget.store.whatsappNumber ?? '');
-    _addressController = TextEditingController(text: widget.store.address ?? '');
     _logoUrl = widget.store.logoPath;
     _bannerUrl = widget.store.storeBannerUrl;
     _showPhoneToBuyers = widget.store.showPhoneToBuyers;
@@ -79,7 +77,6 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
     _descController.dispose();
     _phoneController.dispose();
     _whatsappController.dispose();
-    _addressController.dispose();
     super.dispose();
   }
 
@@ -127,7 +124,6 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
     try {
       await SupabaseService.client.from('stores').update({
         'description': _descController.text.trim().isEmpty ? null : _descController.text.trim(),
-        'address': _addressController.text.trim().isEmpty ? null : _addressController.text.trim(),
         'phone': _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
         'whatsapp_number': _whatsappController.text.trim().isEmpty ? null : _whatsappController.text.trim(),
         'show_phone_to_buyers': _showPhoneToBuyers,
@@ -221,19 +217,6 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
               maxLines: 3,
               decoration: InputDecoration(
                 hintText: 'Tell buyers about your store',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text('Store Address', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _addressController,
-              maxLines: 2,
-              decoration: InputDecoration(
-                hintText: 'e.g., 14 Eneka Road, Rumuokoro, Port Harcourt',
-                helperText: 'Shown on your store page so buyers know where you are',
-                prefixIcon: const Icon(Icons.location_on, color: AppColors.primaryGreen),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),

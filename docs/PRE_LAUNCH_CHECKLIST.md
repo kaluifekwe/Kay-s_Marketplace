@@ -104,6 +104,9 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done
 
 ## 10. Final pass
 
+- ⬜ **Apply outstanding SQL migrations** to Supabase: `chat_receipts.sql` (chat
+  delivery/read ticks). Already applied: `policy_acceptance.sql`,
+  `store_handle.sql`.
 - ⬜ Full end-to-end test: register → accept policy → browse → buy → pay →
   vendor request pickup → deliver → confirm → payout, plus refund path.
 - ⬜ Smoke-test the policy gate for existing users (everyone re-signs once).
@@ -143,3 +146,41 @@ phase 2 on the same backend. Do not build both frontends at once.
 Parity note: aim for ~full parity, but a few things adapt to the medium —
 product photos become a file upload (vs camera), push becomes web-push/email.
 The buyer/vendor/escrow experience can otherwise be identical.
+
+---
+
+## 12. Post-launch / scale (do NOT build pre-launch — watch signals)
+
+Chat already has: realtime, optimistic send, delivery/read ticks, typing, and
+scalable per-conversation receipt markers. The two enhancements below are
+**not** launch blockers — implement them based on real usage signals, not a
+date. Below the threshold, the current `postgres_changes` approach is fine.
+
+**A. True "delivered" tick (✓✓ grey before read) — UX polish.**
+- How: give each logged-in user ONE global subscription for messages addressed
+  to them (add `messages.recipient_id`, filter on it), and mark
+  `touch_chat_member(chat,'delivered')` on receipt — even when the chat isn't
+  open. Today ticks usually jump straight sent → read.
+- Cost: ~half a day to build; runtime = one extra realtime connection per online
+  user + one small upsert per delivered message. Low risk.
+- **Do it when:** users ask "did they get it?" / you want WhatsApp parity. Can be
+  an early post-launch polish pass.
+
+**B. Broadcast-from-Database for message fan-out — the scalability lever.**
+- How: a Postgres trigger on `messages` calls `realtime.broadcast_changes('chat:'
+  ||chat_id, …)`; clients subscribe to that private topic instead of
+  `postgres_changes` on the table. Authorization is checked once at subscribe,
+  not per-message-per-subscriber (which is what makes `postgres_changes` strain
+  under high concurrency).
+- Cost: ~1 day (trigger + client switch + Realtime channel authorization RLS).
+  Runtime: sharply lower Realtime CPU per message — the main win.
+- **Do it when:** monitoring shows it's time — message send→appear latency
+  rising, missed/late messages, Realtime reconnects in logs, or Supabase
+  dashboard Realtime CPU / connection count climbing under peak. Rough guide:
+  `postgres_changes` is comfortable into the low thousands of *concurrent
+  online* users (not 30k registered). Plan it as you approach a few thousand
+  concurrent, or when bumping the Supabase compute tier.
+
+**Monitoring:** weekly glance at Supabase → Realtime (peak connections,
+messages/month) and Database (CPU), plus user complaints about chat speed. Those
+trends are the trigger for B.

@@ -1007,16 +1007,45 @@ class ProfileTab extends StatelessWidget {
           final state = snapshot.data!['state'] as String?;
           final userId = snapshot.data!['userId'] as String?;
           final avatarUrl = snapshot.data!['avatarUrl'] as String?;
-          return Padding(
-            padding: const EdgeInsets.all(24),
+          Widget tile(IconData icon, String label, VoidCallback onTap, {bool danger = false}) {
+            final color = danger ? AppColors.errorRed : AppColors.primaryGreen;
+            return ListTile(
+              leading: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: color.withAlpha(20), borderRadius: BorderRadius.circular(10)),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              title: Text(label,
+                  style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 14,
+                      color: danger ? AppColors.errorRed : AppColors.charcoal)),
+              trailing: danger ? null : const Icon(Icons.chevron_right, size: 18, color: AppColors.mediumGray),
+              onTap: onTap,
+            );
+          }
+
+          Widget card(List<Widget> children) => Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.mediumGray.withAlpha(40)),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Column(children: children),
+              );
+          const divider = Divider(height: 1, indent: 60, color: Color(0xFFEFEFEF));
+
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 24, 16, 28),
             child: Column(
               children: [
                 _BuyerAvatar(userId: userId, initialUrl: avatarUrl),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
                 Text(name, style: Theme.of(context).textTheme.headlineMedium),
-                const SizedBox(height: 8),
+                const SizedBox(height: 4),
                 const Text('Buyer', style: TextStyle(color: AppColors.mediumGray)),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
                 GestureDetector(
                   onTap: () => _showStateInfoDialog(context, state),
                   child: Container(
@@ -1044,96 +1073,38 @@ class ProfileTab extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.push(
+                const SizedBox(height: 22),
+                card([
+                  tile(Icons.card_giftcard, 'My Rewards & Credit',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MyRewardsScreen()))),
+                  divider,
+                  tile(Icons.location_on_outlined, 'My Delivery Addresses',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BuyerAddressesScreen()))),
+                  divider,
+                  tile(Icons.account_balance, 'Bank Account',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BuyerBankAccountScreen()))),
+                  divider,
+                  tile(Icons.storefront_outlined, 'My Stores',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MyStoresScreen()))),
+                  divider,
+                  tile(Icons.verified_user_outlined, 'Verify Identity (KYC)',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KycScreen()))),
+                  divider,
+                  tile(Icons.description_outlined, 'Terms & Policy',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PolicyScreen()))),
+                ]),
+                const SizedBox(height: 14),
+                card([
+                  tile(Icons.logout, 'Logout', () async {
+                    await AuthService.logout();
+                    if (!context.mounted) return;
+                    Navigator.pushAndRemoveUntil(
                       context,
-                      MaterialPageRoute(builder: (_) => const MyRewardsScreen()),
-                    ),
-                    icon: const Icon(Icons.card_giftcard),
-                    label: const Text('My Rewards & Credit'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const BuyerAddressesScreen()),
-                    ),
-                    icon: const Icon(Icons.location_on_outlined),
-                    label: const Text('My Delivery Addresses'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const BuyerBankAccountScreen()),
-                    ),
-                    icon: const Icon(Icons.account_balance),
-                    label: const Text('Bank Account'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const MyStoresScreen()),
-                    ),
-                    icon: const Icon(Icons.storefront_outlined),
-                    label: const Text('My Stores'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const KycScreen()),
-                    ),
-                    icon: const Icon(Icons.verified_user_outlined),
-                    label: const Text('Verify Identity (KYC)'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const PolicyScreen()),
-                    ),
-                    icon: const Icon(Icons.description_outlined),
-                    label: const Text('Terms & Policy'),
-                  ),
-                ),
-                const Spacer(),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      await AuthService.logout();
-                      if (!context.mounted) return;
-                      Navigator.pushAndRemoveUntil(
-                        context,
-                        MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-                        (route) => false,
-                      );
-                    },
-                    icon: const Icon(Icons.logout),
-                    label: const Text('Logout'),
-                    style: OutlinedButton.styleFrom(foregroundColor: AppColors.errorRed),
-                  ),
-                ),
+                      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+                      (route) => false,
+                    );
+                  }, danger: true),
+                ]),
               ],
             ),
           );

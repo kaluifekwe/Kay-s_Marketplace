@@ -270,14 +270,17 @@ class _VendorDashboardState extends State<VendorDashboard> {
   void _showVendorMenu(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
             Container(
               width: 40,
               height: 4,
@@ -403,7 +406,9 @@ class _VendorDashboardState extends State<VendorDashboard> {
               },
             ),
             const SizedBox(height: 8),
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );

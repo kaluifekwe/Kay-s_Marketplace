@@ -339,6 +339,74 @@ async function processPayment(supabase: any, reference: string, eventId?: string
   return { alreadyProcessed: false, orderCount: createdOrders.length, orders: createdOrders };
 }
 
+// Reconcile an async Paystack transfer (vendor payout). release-escrow records
+// the payout as 'processing'; here we confirm it 'paid' or, on failure, mark it
+// 'failed' and revert payment_released so it re-enters the payout queue.
+async function processTransferEvent(supabase: any, event: any) {
+  const type = event.event as string; // transfer.success | transfer.failed | transfer.reversed
+  const reference = event?.data?.reference;
+  if (!reference) return { ignored: true, reason: "no_reference" };
+
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("id, order_id, vendor_id, status, metadata")
+    .eq("paystack_reference", reference)
+    .eq("type", "release")
+    .maybeSingle();
+  if (!txn) return { ignored: true, reason: "txn_not_found" };
+
+  if (type === "transfer.success") {
+    if (txn.status === "success") return { alreadyProcessed: true };
+    await supabase.from("transactions").update({ status: "success" }).eq("id", txn.id);
+    await supabase.from("orders").update({ payout_status: "paid" }).eq("id", txn.order_id);
+
+    // Now (and only now) settle the charges we netted against this payout.
+    try {
+      const meta = typeof txn.metadata === "string" ? JSON.parse(txn.metadata) : (txn.metadata || {});
+      const ids: string[] = meta.charges_to_settle || [];
+      if (ids.length > 0) {
+        await supabase
+          .from("vendor_charges")
+          .update({ status: "settled", settled_at: new Date().toISOString() })
+          .in("id", ids);
+      }
+    } catch (_) { /* metadata parse — non-fatal */ }
+
+    await supabase.from("notifications").insert({
+      user_id: txn.vendor_id,
+      title: "Payout Received",
+      body: "Your payout for a completed order has been sent to your bank.",
+      type: "vendor_order",
+      reference_id: txn.order_id,
+    });
+    return { success: true, state: "paid" };
+  }
+
+  if (type === "transfer.failed" || type === "transfer.reversed") {
+    await supabase.from("transactions").update({ status: "failed" }).eq("id", txn.id);
+    // Revert so the payout can be retried (with a fresh reference) by the
+    // buyer/admin/cron. Charges were NOT settled, so nothing to unwind.
+    await supabase
+      .from("orders")
+      .update({ payout_status: "failed", payment_released: false })
+      .eq("id", txn.order_id);
+
+    const { data: admins } = await supabase.from("users").select("id").eq("role", "admin");
+    for (const admin of admins || []) {
+      await supabase.from("notifications").insert({
+        user_id: admin.id,
+        title: "Vendor payout failed",
+        body: `Payout for order ${String(txn.order_id).substring(0, 8)} failed (${type}). It needs review/retry.`,
+        type: "admin",
+        reference_id: txn.order_id,
+      });
+    }
+    return { success: true, state: "failed" };
+  }
+
+  return { ignored: true, reason: "unhandled_event" };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -421,6 +489,11 @@ serve(async (req) => {
 
       const result = await processPayment(supabase, reference, eventId, paidAt, event.data.amount);
       console.log(`Webhook process result:`, JSON.stringify(result));
+    } else if (typeof event.event === "string" && event.event.startsWith("transfer.")) {
+      // Vendor payout reconciliation (Paystack sends all events to this one URL).
+      console.log(`Webhook ${event.event}: ref=${event?.data?.reference}`);
+      const result = await processTransferEvent(supabase, event);
+      console.log(`Webhook transfer result:`, JSON.stringify(result));
     }
 
     return new Response(

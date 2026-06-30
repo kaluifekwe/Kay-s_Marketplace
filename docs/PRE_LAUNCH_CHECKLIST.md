@@ -27,6 +27,25 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done
   secrets and any `.env`.
 - ⬜ Verify escrow auto-release, refunds, and payouts against **live** Paystack.
 - ⬜ Confirm webhook signature verification is on for the live Paystack webhook.
+- ⬜ **Apply `transfer_reconciliation.sql`** (adds `orders.payout_status` /
+  `payout_attempts`). MUST run before deploying the updated `release-escrow` /
+  `paystack-webhook`, or releases error on the missing columns.
+- ⬜ In the Paystack dashboard, **enable Transfer events** on the webhook (same
+  URL as charge events) so payout success/failure reconcile. (Code: payouts are
+  marked `processing` on initiation and confirmed `paid`/`failed` by the
+  `transfer.success`/`transfer.failed`/`transfer.reversed` webhook.)
+- ⬜ **Disable OTP on transfers** (Paystack → Settings → Transfers) so automated
+  payouts don't stall waiting for approval; confirm transfer **limits/KYC** are
+  raised for expected volume.
+- ⬜ Ensure Paystack **settlement** funds the transfer balance in time (instant
+  settlement or keep a float buffer) — payouts use `source: balance`.
+- ⬜ Work the **payout-attention queue** before launch dry-run: orders with
+  `payout_status IN ('failed','pending_bank')` need retry / vendor bank fix.
+- ⬜ **Card chargebacks:** consider a longer hold or a small rolling reserve —
+  a card payment can be charged back after the vendor has been paid.
+- ⬜ **Confirm `pg_cron` is actually scheduled in prod** (auto-release +
+  pickup-SLA). Add a heartbeat/alert if it stops — if it silently dies, nothing
+  auto-releases and vendors go unpaid.
 
 ## 3. Delivery providers (Shipbubble + Terminal)
 

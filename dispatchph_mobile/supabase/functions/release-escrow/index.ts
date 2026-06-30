@@ -57,7 +57,7 @@ serve(async (req) => {
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("id, buyer_id, vendor_id, store_id, status, payment_released, total, has_dispute")
+      .select("id, buyer_id, vendor_id, store_id, status, payment_released, total, has_dispute, payout_attempts")
       .eq("id", order_id)
       .maybeSingle();
 
@@ -211,9 +211,12 @@ serve(async (req) => {
 
     if (!bankAccount || !bankAccount.paystack_recipient_code) {
       console.error(`No verified bank account for vendor ${vendor_id}`);
+      // Held for the vendor but can't be transferred yet — surfaced in the
+      // payout-attention queue (payout_status='pending_bank') so it's chased up,
+      // not silently stuck.
       await supabase
         .from("orders")
-        .update({ payment_released: true, status: "auto_released" })
+        .update({ payment_released: true, status: "auto_released", payout_status: "pending_bank" })
         .eq("id", order_id);
 
       await supabase.from("transactions").insert({
@@ -236,7 +239,7 @@ serve(async (req) => {
     // Payout fully consumed by pending charges — nothing to transfer.
     if (netPayout <= 0) {
       await settleCharges();
-      await supabase.from("orders").update({ payment_released: true, status: "auto_released" }).eq("id", order_id);
+      await supabase.from("orders").update({ payment_released: true, status: "auto_released", payout_status: "paid" }).eq("id", order_id);
       await supabase.from("transactions").insert({
         order_id,
         buyer_id: order.buyer_id,
@@ -255,6 +258,11 @@ serve(async (req) => {
       );
     }
 
+    // A fresh reference per attempt — a failed transfer can be retried without
+    // Paystack rejecting it as a duplicate reference.
+    const attempt = (order.payout_attempts ?? 0) + 1;
+    const reference = `rel_${order_id}_${attempt}`;
+
     const transferResponse = await fetch("https://api.paystack.co/transfer", {
       method: "POST",
       headers: {
@@ -266,7 +274,7 @@ serve(async (req) => {
         amount: Math.round(netPayout * 100),
         recipient: bankAccount.paystack_recipient_code,
         reason: `Order ${order_id.substring(0, 8)} payment release`,
-        reference: `rel_${order_id}`,
+        reference,
       }),
     });
 
@@ -274,17 +282,20 @@ serve(async (req) => {
 
     if (!transferData.status) {
       console.error("Paystack transfer error:", transferData);
-      // Release the claim so this can be retried — the transfer never went out.
-      await supabase.from("orders").update({ payment_released: false }).eq("id", order_id);
+      // The transfer never left Paystack — fully revert so it can be retried.
+      await supabase
+        .from("orders")
+        .update({ payment_released: false, payout_status: "failed", payout_attempts: attempt })
+        .eq("id", order_id);
       return new Response(
         JSON.stringify({ error: transferData.message || "Transfer failed" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Transfer went out — settle the charges we netted against it.
-    await settleCharges();
-
+    // Paystack transfers complete ASYNCHRONOUSLY. Do NOT mark paid yet — record
+    // it as 'processing' and let the transfer.success webhook confirm it (and
+    // settle the netted charges then). transfer.failed reverts for retry.
     await supabase.from("transactions").insert({
       order_id,
       buyer_id: order.buyer_id,
@@ -293,13 +304,14 @@ serve(async (req) => {
       amount: netPayout,
       platform_fee: tx.platform_fee,
       vendor_payout: netPayout,
-      status: "success",
+      status: "processing",
       type: "release",
-      paystack_reference: transferData.data.reference,
+      paystack_reference: transferData.data.reference || reference,
       metadata: JSON.stringify({
         transfer_code: transferData.data.transfer_code,
         charge_deduct: chargeDeduct,
         gross_payout: vendorPayout,
+        charges_to_settle: chargesToSettle,
       }),
     });
 
@@ -308,16 +320,19 @@ serve(async (req) => {
       .update({
         payment_released: true,
         status: "auto_released",
+        payout_status: "processing",
+        payout_attempts: attempt,
       })
       .eq("id", order_id);
 
-    console.log(`Escrow released: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct})`);
+    console.log(`Escrow payout initiated: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct}), ref=${reference}`);
 
     return new Response(
       JSON.stringify({
         success: true,
+        status: "processing",
         amount_released: netPayout,
-        transfer_reference: transferData.data.reference,
+        transfer_reference: transferData.data.reference || reference,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

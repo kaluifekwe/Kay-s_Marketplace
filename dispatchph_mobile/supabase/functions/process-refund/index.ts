@@ -58,7 +58,7 @@ serve(async (req) => {
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("id, buyer_id, vendor_id, store_id, status, payment_reference, delivery_type, total, delivery_fee, delivered_at")
+      .select("id, buyer_id, vendor_id, store_id, status, payment_reference, delivery_type, total, delivery_fee, delivered_at, has_shipbubble_delivery")
       .eq("id", order_id)
       .maybeSingle();
 
@@ -84,6 +84,20 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({ error: "Only the buyer or an admin can request a refund" }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // A buyer cannot self-cancel once a rider has been booked: the courier fee is
+    // already committed and the rider is on the way, so cancellation is closed —
+    // the buyer waits for delivery or opens a dispute. (dispute_id is the dispute
+    // path; admin/service-role can still override for support cases.)
+    const riderBooked = order.delivery_type === "courier" && order.has_shipbubble_delivery === true;
+    if (!dispute_id && riderBooked && !serviceRoleCall && !isAdminCaller) {
+      return new Response(
+        JSON.stringify({
+          error: "A rider has already been booked for this order, so it can no longer be cancelled. If there's a problem with the delivery, please report an issue once it ships.",
+        }),
+        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 

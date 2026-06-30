@@ -304,20 +304,27 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                       ),
                     ],
                     if (order.status == 'paid') ...[
-                      _InfoRow(icon: Icons.hourglass_empty, text: 'Awaiting vendor to mark as shipped'),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: () => _cancelOrder(context, order),
-                          icon: const Icon(Icons.cancel_outlined),
-                          label: const Text('Cancel Order'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.mediumGray,
-                            side: const BorderSide(color: AppColors.mediumGray),
+                      if (order.hasShipbubbleDelivery) ...[
+                        // A rider has been booked (see the tracking tile above).
+                        // The order can no longer be cancelled — the buyer waits
+                        // for delivery, or reports a problem once it ships.
+                        _InfoRow(icon: Icons.motorcycle, text: 'A rider has been booked for your order'),
+                      ] else ...[
+                        _InfoRow(icon: Icons.hourglass_empty, text: 'Awaiting the vendor to ship your order'),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () => _cancelOrder(context, order),
+                            icon: const Icon(Icons.cancel_outlined),
+                            label: const Text('Cancel Order'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.mediumGray,
+                              side: const BorderSide(color: AppColors.mediumGray),
+                            ),
                           ),
                         ),
-                      ),
+                      ],
                     ],
                     if (order.status == 'confirmed' && !_hasReviewed) ...[
                       _InfoRow(icon: Icons.check_circle, text: 'Payment released to vendor', color: AppColors.successGreen),
@@ -420,6 +427,9 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   }
 
   void _cancelOrder(BuildContext context, Order order) {
+    // Cancellation is only offered before a rider is booked, so this is always a
+    // full refund. Once a rider is booked the button is hidden (and the server
+    // rejects it) — the buyer waits for delivery or reports a problem.
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -428,9 +438,14 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Keep Order')),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              final cubit = context.read<OrderCubit>();
               Navigator.pop(context);
-              context.read<OrderCubit>().cancelOrder(order.id, order.buyerId);
+              final error = await cubit.cancelOrder(order.id, order.buyerId);
+              messenger.showSnackBar(SnackBar(
+                content: Text(error ?? 'Order cancelled and refunded to Kay\'s Credit.'),
+              ));
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.mediumGray, foregroundColor: Colors.white),
             child: const Text('Yes, Cancel'),

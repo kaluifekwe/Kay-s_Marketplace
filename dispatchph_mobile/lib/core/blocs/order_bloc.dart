@@ -334,33 +334,58 @@ class OrderCubit extends Cubit<OrderState> {
   }
 
   /// Buyer cancels order BEFORE vendor ships — full refund
-  Future<void> cancelOrder(String orderId, String buyerId) async {
+  /// Buyer-initiated cancellation. Returns null on success, or an error message
+  /// to show the buyer. Only allowed BEFORE a rider is booked — once the vendor
+  /// has requested a rider the order can no longer be cancelled (the courier fee
+  /// is committed and the rider is on the way); the buyer waits for delivery or
+  /// reports a problem. The refund is issued by the `process-refund` edge
+  /// function (idempotent, server-authorised) to Kay's Credit (instant).
+  Future<String?> cancelOrder(String orderId, String buyerId) async {
     try {
       final orderData = await SupabaseService.client
           .from('orders')
-          .select('id, status, vendor_id')
+          .select('id, status, vendor_id, has_shipbubble_delivery')
           .eq('id', orderId)
           .maybeSingle();
 
-      if (orderData == null) return;
+      if (orderData == null) return 'Order not found.';
       final status = orderData['status'] as String;
-      if (status != 'paid') return;
+      if (status != 'paid') return 'This order can no longer be cancelled.';
+      if (orderData['has_shipbubble_delivery'] as bool? ?? false) {
+        return 'A rider has already been booked, so this order can no longer be cancelled.';
+      }
 
-      await SupabaseService.client.from('orders').update({
-        'status': 'cancelled',
-      }).eq('id', orderId);
+      final session = SupabaseService.client.auth.currentSession;
+      final response = await SupabaseService.client.functions.invoke(
+        'process-refund',
+        headers: {
+          'Content-Type': 'application/json',
+          if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
+        },
+        body: {
+          'order_id': orderId,
+          'refund_method': 'credit',
+          'reason': 'buyer_cancelled',
+        },
+      );
 
+      if (response.status != 200) {
+        final msg = (response.data is Map) ? response.data['error'] as String? : null;
+        return msg ?? 'Could not cancel the order. Please try again.';
+      }
+
+      final vendorId = orderData['vendor_id'] as String;
       PushService.sendPush(
-        userId: orderData['vendor_id'] as String,
+        userId: vendorId,
         title: 'Order Cancelled',
-        body: 'A buyer cancelled their order (refund issued)',
+        body: 'A buyer cancelled their order (refund issued).',
         data: {'type': 'order', 'orderId': orderId},
       );
 
       await NotificationCubit.create(
-        userId: orderData['vendor_id'] as String,
+        userId: vendorId,
         title: 'Order Cancelled',
-        body: 'A buyer cancelled their order (refund issued)',
+        body: 'A buyer cancelled their order (refund issued).',
         type: 'vendor_order',
         referenceId: orderId,
       );
@@ -368,14 +393,16 @@ class OrderCubit extends Cubit<OrderState> {
       await NotificationCubit.create(
         userId: buyerId,
         title: 'Order Cancelled',
-        body: 'Your order #$orderId has been cancelled. Refund issued.',
+        body: 'Your order was cancelled and fully refunded to Kay\'s Credit.',
         type: 'order',
         referenceId: orderId,
       );
 
       await loadBuyerOrders(buyerId);
+      return null;
     } catch (e) {
       print('[OrderCubit] cancelOrder error: $e');
+      return 'Could not cancel the order. Please try again.';
     }
   }
 

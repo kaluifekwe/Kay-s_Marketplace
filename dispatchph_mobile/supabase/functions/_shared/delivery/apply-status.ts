@@ -111,6 +111,21 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     );
   }
 
+  // Don't let a late courier event resurrect a CLOSED order. If the order was
+  // already refunded or cancelled (e.g. an admin refund on a booked order), a
+  // stray 'delivered'/'picked_up' webhook must NOT flip it back to shipped/
+  // in_transit or open a fresh 24h escrow window (which could pay the vendor on
+  // a refunded order). The delivery/tracking rows above still update so the
+  // courier record stays accurate; we just leave the order state and the
+  // buyer/vendor delivery prompts alone.
+  const { data: ord } = await supabase
+    .from("orders")
+    .select("status")
+    .eq("id", delivery.order_id)
+    .maybeSingle();
+  const orderClosed = !!ord && ["refunded", "refund_processing", "cancelled"].includes(ord.status);
+  if (orderClosed) return;
+
   // Reflect onto the order. On delivery, start the 24h escrow window from the
   // real delivered event (courier orders only). The order moves to 'shipped'
   // so the buyer "Confirm & Release" / "Request Refund" UI and the auto-release

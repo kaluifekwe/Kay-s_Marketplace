@@ -46,6 +46,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   String? _disputeId;
   Timer? _refreshTimer;
   bool _hasReviewed = false;
+  bool _loadFailed = false;
 
   @override
   void initState() {
@@ -56,9 +57,31 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
   Future<void> _loadOrder() async {
     final cubit = context.read<OrderCubit>();
-    final orders = cubit.state.buyerOrders;
-    final order = orders.where((o) => o.id == widget.orderId).firstOrNull;
-    if (order != null) {
+    Order? order = cubit.state.buyerOrders.where((o) => o.id == widget.orderId).firstOrNull
+        ?? cubit.state.vendorOrders.where((o) => o.id == widget.orderId).firstOrNull;
+
+    // Fallback: fetch the order directly when it isn't in the in-memory lists
+    // (e.g. opened from a notification before the orders list has loaded).
+    // Without this the screen spun forever.
+    if (order == null) {
+      try {
+        final data = await SupabaseService.client
+            .from('orders')
+            .select('id, buyer_id, vendor_id, store_id, items, total, status, payment_reference, shipping_method, tracking_ref, rider_name, rider_phone, delivery_method, shipping_proof_url, delivery_photo_url, payment_released, paid_at, shipped_at, delivered_at, confirmed_at, auto_release_at, refunded_at, created_at, delivery_type, delivery_fee, vendor_delivery_contribution, total_with_delivery, has_shipbubble_delivery, delivery_id, pickup_deadline')
+            .eq('id', widget.orderId)
+            .maybeSingle();
+        if (data != null) order = Order.fromJson(data);
+      } catch (e) {
+        print('[OrderDetail] load error: $e');
+      }
+    }
+
+    if (order == null) {
+      if (mounted) setState(() => _loadFailed = true);
+      return;
+    }
+
+    {
       setState(() => _order = order);
       final storeData = await SupabaseService.client.from('stores').select('id, name, vendor_id, description, logo_path, address, phone').eq('vendor_id', order.vendorId).maybeSingle();
       final store = storeData != null ? Store.fromJson(storeData) : null;
@@ -143,7 +166,30 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     return Scaffold(
       appBar: AppBar(title: Text('Order #${widget.orderId.substring(0, 8)}')),
       body: _order == null
-          ? const Center(child: CircularProgressIndicator())
+          ? (_loadFailed
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error_outline, size: 48, color: AppColors.mediumGray),
+                        const SizedBox(height: 12),
+                        const Text("Couldn't load this order. It may have been removed.",
+                            textAlign: TextAlign.center, style: TextStyle(color: AppColors.mediumGray)),
+                        const SizedBox(height: 16),
+                        TextButton(
+                          onPressed: () {
+                            setState(() => _loadFailed = false);
+                            _loadOrder();
+                          },
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : const Center(child: CircularProgressIndicator()))
           : BlocBuilder<OrderCubit, OrderState>(
               builder: (context, state) {
                 final order = state.buyerOrders.where((o) => o.id == widget.orderId).firstOrNull ?? _order!;

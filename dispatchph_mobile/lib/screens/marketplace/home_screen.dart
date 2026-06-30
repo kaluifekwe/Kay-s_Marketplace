@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:image_picker/image_picker.dart';
+import '../../core/services/storage_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
@@ -927,19 +929,21 @@ class ProfileTab extends StatelessWidget {
     final name = await AuthService.getUserName();
     final userId = await AuthService.getUserId();
     String? state;
+    String? avatarUrl;
     if (userId != null) {
       try {
         final data = await SupabaseService.client
             .from('users')
-            .select('state')
+            .select('state, avatar_url')
             .eq('id', userId)
             .maybeSingle();
         state = data?['state'] as String?;
+        avatarUrl = data?['avatar_url'] as String?;
       } catch (e) {
         print('[ProfileTab] loadState error: $e');
       }
     }
-    return {'name': name, 'state': state};
+    return {'name': name, 'state': state, 'userId': userId, 'avatarUrl': avatarUrl};
   }
 
   void _showStateInfoDialog(BuildContext context, String? state) {
@@ -984,15 +988,13 @@ class ProfileTab extends StatelessWidget {
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
           final name = snapshot.data!['name'] as String;
           final state = snapshot.data!['state'] as String?;
+          final userId = snapshot.data!['userId'] as String?;
+          final avatarUrl = snapshot.data!['avatarUrl'] as String?;
           return Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
               children: [
-                const CircleAvatar(
-                  radius: 40,
-                  backgroundColor: AppColors.primaryGreen,
-                  child: Icon(Icons.person, size: 40, color: Colors.white),
-                ),
+                _BuyerAvatar(userId: userId, initialUrl: avatarUrl),
                 const SizedBox(height: 16),
                 Text(name, style: Theme.of(context).textTheme.headlineMedium),
                 const SizedBox(height: 8),
@@ -1107,6 +1109,92 @@ class ProfileTab extends StatelessWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+/// Tappable buyer avatar with pick + upload to the user's own storage folder,
+/// saved to users.avatar_url. Encapsulates upload state so ProfileTab can stay
+/// a simple FutureBuilder.
+class _BuyerAvatar extends StatefulWidget {
+  final String? userId;
+  final String? initialUrl;
+  const _BuyerAvatar({required this.userId, required this.initialUrl});
+
+  @override
+  State<_BuyerAvatar> createState() => _BuyerAvatarState();
+}
+
+class _BuyerAvatarState extends State<_BuyerAvatar> {
+  final _picker = ImagePicker();
+  String? _url;
+  bool _uploading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _url = widget.initialUrl;
+  }
+
+  Future<void> _pick() async {
+    if (widget.userId == null || _uploading) return;
+    final picked = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 70,
+      maxWidth: 800,
+      maxHeight: 800,
+    );
+    if (picked == null) return;
+    setState(() => _uploading = true);
+    final compressed = await StorageService.compressImage(picked);
+    final url = await StorageService.uploadProductImage((compressed ?? picked).path, widget.userId!);
+    if (url != null) {
+      try {
+        await SupabaseService.client.from('users').update({'avatar_url': url}).eq('id', widget.userId!);
+        if (mounted) setState(() => _url = url);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not save photo')));
+        }
+      }
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Upload failed, please try again')));
+    }
+    if (mounted) setState(() => _uploading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: _uploading ? null : _pick,
+      child: Stack(
+        children: [
+          Container(
+            width: 84,
+            height: 84,
+            decoration: const BoxDecoration(shape: BoxShape.circle, color: AppColors.primaryGreen),
+            clipBehavior: Clip.antiAlias,
+            child: _uploading
+                ? const Center(child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : (_url != null && _url!.isNotEmpty)
+                    ? AppImage(source: _url, fit: BoxFit.cover)
+                    : const Icon(Icons.person, size: 44, color: Colors.white),
+          ),
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.all(5),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.primaryGreen),
+              ),
+              child: const Icon(Icons.camera_alt, size: 14, color: AppColors.primaryGreen),
+            ),
+          ),
+        ],
       ),
     );
   }

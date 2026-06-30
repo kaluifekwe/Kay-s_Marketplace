@@ -93,7 +93,7 @@ Fixes from the review:
 - ✅ **Price tampering** — `create-payment` now derives item prices from the DB
   (was trusting the client `subtotal` → pay ₦1 for anything). Deployed.
 - ⬜ **Apply `harden_rls.sql`** — BEFORE UPDATE triggers stop clients writing
-  privileged columns: `users.role/kays_credit/dispute_flags/payout_blocked` +
+  privileged columns: `users.role/payout_blocked` +
   the intrastate **state lock**, and `orders` money/release fields + only the
   buyer/service can change `has_dispute`. (Closes admin/credit escalation +
   payout tampering.) Test dispute + state-change flows after applying.

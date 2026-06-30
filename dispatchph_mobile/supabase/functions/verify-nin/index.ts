@@ -42,11 +42,10 @@ function norm(s: string): string {
   return (s ?? "").toLowerCase().replace(/[^a-z]/g, "");
 }
 
+const providerConfigured = !!(dojahApiKey && dojahAppId);
+
 // Returns { ok, record?, reason? }. Swap this function to change provider.
 async function verifyNinWithProvider(nin: string): Promise<{ ok: boolean; record?: any; reason?: string }> {
-  if (!dojahApiKey || !dojahAppId) {
-    return { ok: false, reason: "KYC provider not configured" };
-  }
   const res = await fetch(`${dojahBase}/api/v1/kyc/nin?nin=${encodeURIComponent(nin)}`, {
     headers: { Authorization: dojahApiKey, AppId: dojahAppId },
   });
@@ -80,27 +79,41 @@ serve(async (req) => {
       .maybeSingle();
     if (me?.kyc_status === "verified") return json({ success: true, status: "verified" });
 
-    const result = await verifyNinWithProvider(String(nin));
-    if (!result.ok) {
-      await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
-      return json({ error: result.reason || "NIN verification failed", status: "rejected" }, 400);
+    // One account per NIN — reject if another account already verified with it.
+    const { data: clash } = await supabase
+      .from("users")
+      .select("id")
+      .eq("nin", String(nin))
+      .eq("kyc_status", "verified")
+      .neq("id", uid)
+      .maybeSingle();
+    if (clash) {
+      return json({ error: "This NIN is already linked to another account." }, 409);
     }
 
-    // Optional name match: if the provider returns names, they should resemble
-    // the account name (or the names supplied). Lenient — first OR last match.
-    const rec = result.record || {};
-    const provFirst = norm(rec.first_name || rec.firstname || "");
-    const provLast = norm(rec.last_name || rec.surname || rec.lastname || "");
-    const claimed = norm(`${first_name ?? ""} ${last_name ?? ""}` + " " + (me?.name ?? ""));
-    if ((provFirst || provLast) && claimed) {
-      const matches = (provFirst && claimed.includes(provFirst)) || (provLast && claimed.includes(provLast));
-      if (!matches) {
+    // Real verification only when a provider is configured (paid). Without it we
+    // run in free mode: 11-digit format + uniqueness only (see notes above).
+    if (providerConfigured) {
+      const result = await verifyNinWithProvider(String(nin));
+      if (!result.ok) {
         await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
-        return json({ error: "NIN name does not match your account name", status: "rejected" }, 400);
+        return json({ error: result.reason || "NIN verification failed", status: "rejected" }, 400);
+      }
+      // Lenient name match: provider first/last should resemble the account/claimed name.
+      const rec = result.record || {};
+      const provFirst = norm(rec.first_name || rec.firstname || "");
+      const provLast = norm(rec.last_name || rec.surname || rec.lastname || "");
+      const claimed = norm(`${first_name ?? ""} ${last_name ?? ""}` + " " + (me?.name ?? ""));
+      if ((provFirst || provLast) && claimed) {
+        const matches = (provFirst && claimed.includes(provFirst)) || (provLast && claimed.includes(provLast));
+        if (!matches) {
+          await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
+          return json({ error: "NIN name does not match your account name", status: "rejected" }, 400);
+        }
       }
     }
 
-    await supabase
+    const { error: upErr } = await supabase
       .from("users")
       .update({
         nin: String(nin),
@@ -108,6 +121,10 @@ serve(async (req) => {
         kyc_verified_at: new Date().toISOString(),
       })
       .eq("id", uid);
+    if (upErr) {
+      // Unique-index race: the NIN got linked to another account first.
+      return json({ error: "This NIN is already linked to another account." }, 409);
+    }
 
     return json({ success: true, status: "verified" });
   } catch (e: any) {

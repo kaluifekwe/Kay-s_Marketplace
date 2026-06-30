@@ -44,3 +44,9 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- One verified account per NIN — the core of "one account per buyer". DB-level
+-- so it's race-proof even if two verifications hit the same NIN at once.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_verified_nin
+  ON users (nin)
+  WHERE nin IS NOT NULL AND kyc_status = 'verified';

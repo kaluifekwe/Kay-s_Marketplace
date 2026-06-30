@@ -93,38 +93,42 @@ class _VendorDashboardState extends State<VendorDashboard> {
       },
       child: Scaffold(
         backgroundColor: AppColors.lightGray,
-        appBar: _buildAppBar(context),
         body: BlocBuilder<MarketplaceCubit, MarketplaceState>(
           builder: (context, state) {
-            if (state.isLoadingStoreProducts && state.storeProducts.isEmpty) {
-              return _buildLoadingSkeleton();
-            }
             final storeProducts = state.storeProducts;
-            return RefreshIndicator(
-              onRefresh: () async {
-                if (_storeId.isNotEmpty) {
-                  context.read<MarketplaceCubit>().loadStoreProducts(_storeId);
-                }
-                _loadStore();
-                final userId = await AuthService.getUserId();
-                context.read<OrderCubit>().loadVendorOrders(userId);
-                context.read<NotificationCubit>().loadNotifications(userId);
-                if (_storeId.isNotEmpty) {
-                  context.read<DisputeCubit>().loadDisputesForVendor(_storeId);
-                }
-              },
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  _buildGreetingCard(),
-                  const SizedBox(height: 16),
-                  _buildQuickStats(context, storeProducts),
-                  const SizedBox(height: 16),
-                  _buildQuickActions(context),
-                  const SizedBox(height: 20),
-                  _buildProductsSection(context, storeProducts),
-                ],
-              ),
+            final loading = state.isLoadingStoreProducts && storeProducts.isEmpty;
+            return Column(
+              children: [
+                _buildHeader(context),
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: () async {
+                      if (_storeId.isNotEmpty) {
+                        context.read<MarketplaceCubit>().loadStoreProducts(_storeId);
+                      }
+                      _loadStore();
+                      final userId = await AuthService.getUserId();
+                      context.read<OrderCubit>().loadVendorOrders(userId);
+                      context.read<NotificationCubit>().loadNotifications(userId);
+                      if (_storeId.isNotEmpty) {
+                        context.read<DisputeCubit>().loadDisputesForVendor(_storeId);
+                      }
+                    },
+                    child: loading
+                        ? _buildLoadingSkeleton()
+                        : ListView(
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                            children: [
+                              _buildStatsStrip(context, storeProducts),
+                              const SizedBox(height: 16),
+                              _buildPrimaryActions(context),
+                              const SizedBox(height: 22),
+                              _buildProductsSection(context, storeProducts),
+                            ],
+                          ),
+                  ),
+                ),
+              ],
             );
           },
         ),
@@ -142,37 +146,124 @@ class _VendorDashboardState extends State<VendorDashboard> {
     );
   }
 
-  PreferredSizeWidget _buildAppBar(BuildContext context) {
-    return AppBar(
-      backgroundColor: AppColors.primaryGreen,
-      elevation: 0,
-      title: const Text(
-        'Vendor Dashboard',
-        style: TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-          fontSize: 20,
+  // Compact ₦ formatter for the stats strip (e.g. ₦310k, ₦1.2M).
+  String _money(num v) {
+    if (v >= 1000000) return '₦${(v / 1000000).toStringAsFixed(v % 1000000 == 0 ? 0 : 1)}M';
+    if (v >= 1000) return '₦${(v / 1000).toStringAsFixed(v % 1000 == 0 ? 0 : 1)}k';
+    return '₦${v.toStringAsFixed(0)}';
+  }
+
+  // Full-bleed green store header: top bar (menu/title/bell/chat) + store
+  // identity (logo, name, verified, handle, view-store shortcut).
+  Widget _buildHeader(BuildContext context) {
+    final topPad = MediaQuery.of(context).padding.top;
+    final handle = _store?.handle;
+    final subtitle = (handle != null && handle.isNotEmpty)
+        ? '@$handle'
+        : 'Tap “View store” to preview your shop';
+    return Container(
+      padding: EdgeInsets.fromLTRB(16, topPad + 10, 16, 18),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [AppColors.primaryGreen, AppColors.darkGreen],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
       ),
-      leading: IconButton(
-        icon: const Icon(Icons.menu_rounded, color: Colors.white),
-        onPressed: () => _showVendorMenu(context),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                icon: const Icon(Icons.menu_rounded, color: Colors.white, size: 26),
+                onPressed: () => _showVendorMenu(context),
+              ),
+              const SizedBox(width: 10),
+              const Text('My Store',
+                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              NotificationBellIcon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const NotificationScreen()),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chat_bubble_outline, color: Colors.white),
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ChatListScreen()),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 27,
+                backgroundColor: Colors.white.withAlpha(40),
+                child: (_store?.logoPath != null && _store!.logoPath!.isNotEmpty)
+                    ? ClipOval(
+                        child: AppImage(source: _store!.logoPath, width: 54, height: 54, fit: BoxFit.cover))
+                    : Text(
+                        _vendorName.isNotEmpty ? _vendorName[0].toUpperCase() : 'S',
+                        style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            _store?.name ?? _vendorName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (_store?.isVerified == true) ...[
+                          const SizedBox(width: 6),
+                          const Icon(Icons.verified, color: Colors.white, size: 17),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Colors.white.withAlpha(210), fontSize: 12)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () {
+                  if (_storeId.isNotEmpty) {
+                    Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => VendorStoreScreen(storeId: _storeId)));
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withAlpha(46),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text('View store →',
+                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
-      actions: [
-        NotificationBellIcon(
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const NotificationScreen()),
-          ),
-        ),
-        IconButton(
-          icon: const Icon(Icons.chat_bubble_outline, color: Colors.white),
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const ChatListScreen()),
-          ),
-        ),
-      ],
     );
   }
 
@@ -243,6 +334,18 @@ class _VendorDashboardState extends State<VendorDashboard> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const VendorDisputesScreen()),
+                );
+              },
+            ),
+            _buildMenuItem(
+              context,
+              Icons.location_on,
+              'Pickup Locations',
+              () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const VendorLocationsScreen()),
                 );
               },
             ),
@@ -322,256 +425,80 @@ class _VendorDashboardState extends State<VendorDashboard> {
     );
   }
 
-  Widget _buildGreetingCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [AppColors.primaryGreen, AppColors.darkGreen],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primaryGreen.withAlpha(60),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+  Widget _buildStatsStrip(BuildContext context, List<Product> products) {
+    final ordersCount = context.watch<OrderCubit>().state.vendorOrders
+        .where((o) => o.status == 'paid').length;
+    final earnings = context.watch<OrderCubit>().state.vendorOrders
+        .where((o) => o.status == 'confirmed' || o.status == 'auto_released')
+        .fold<double>(0, (s, o) => s + o.total);
+    final productsCount = products.length;
+
+    Widget metric(String value, String label, Color color) => Expanded(
+          child: Column(
+            children: [
+              Text(value,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: color)),
+              const SizedBox(height: 3),
+              Text(label, style: const TextStyle(fontSize: 11, color: AppColors.mediumGray)),
+            ],
           ),
-        ],
+        );
+    Widget divider() => Container(width: 1, height: 32, color: AppColors.lightGray);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [BoxShadow(color: Colors.black.withAlpha(12), blurRadius: 10, offset: const Offset(0, 3))],
       ),
       child: Row(
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Hello, $_vendorName',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Welcome back to your store',
-                  style: TextStyle(
-                    color: Colors.white.withAlpha(200),
-                    fontSize: 14,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          CircleAvatar(
-            radius: 30,
-            backgroundColor: Colors.white.withAlpha(30),
-            child: _store?.logoPath != null
-                ? ClipOval(
-                    child: AppImage(
-                      source: _store!.logoPath,
-                      width: 60,
-                      height: 60,
-                      fit: BoxFit.cover,
-                    ),
-                  )
-                : const Icon(Icons.store, color: Colors.white, size: 30),
-          ),
+          metric('$ordersCount', 'Open orders', AppColors.primaryGreen),
+          divider(),
+          metric(_money(earnings), 'Earnings', AppColors.charcoal),
+          divider(),
+          metric('$productsCount', 'Products', AppColors.primaryBlue),
         ],
       ),
     );
   }
 
-  Widget _buildQuickStats(BuildContext context, List<Product> products) {
-    final disputesCount = context.watch<DisputeCubit>().state.vendorDisputes.length;
-    final ordersCount = context.watch<OrderCubit>().state.vendorOrders
-        .where((o) => o.status == 'paid').length;
-    final productsCount = products.length;
-
+  Widget _buildPrimaryActions(BuildContext context) {
     return Row(
       children: [
         Expanded(
-          child: _buildStatCard(
-            icon: Icons.shopping_bag,
-            value: '$ordersCount',
-            label: 'Orders',
-            color: AppColors.primaryGreen,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildStatCard(
-            icon: Icons.warning_amber,
-            value: '$disputesCount',
-            label: 'Disputes',
-            color: AppColors.warningOrange,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildStatCard(
-            icon: Icons.inventory_2,
-            value: '$productsCount',
-            label: 'Products',
-            color: AppColors.primaryBlue,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatCard({
-    required IconData icon,
-    required String value,
-    required String label,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: color.withAlpha(30),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: color.withAlpha(20),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: color, size: 22),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            value,
-            style: TextStyle(
-              color: color,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.mediumGray,
-              fontSize: 11,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickActions(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Quick Actions',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: AppColors.charcoal,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: _buildFilledActionButton(
-                context,
-                'Edit Store',
-                Icons.storefront,
-                AppColors.primaryGreen,
-                () {
-                  if (_storeId.isNotEmpty) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => VendorStoreScreen(storeId: _storeId)),
-                    );
-                  }
-                },
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _buildFilledActionButton(
-                context,
-                'Add Product',
-                Icons.add_box,
-                AppColors.riderYellow,
-                () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AddProductScreen()),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: _buildFilledActionButton(
-                context,
-                'Orders',
-                Icons.shopping_bag,
-                AppColors.primaryBlue,
-                () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const VendorOrdersScreen()),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _buildFilledActionButton(
-                context,
-                'Disputes',
-                Icons.warning_amber,
-                AppColors.warningOrange,
-                () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const VendorDisputesScreen()),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          child: _buildFilledActionButton(
-            context,
-            'Pickup Locations',
-            Icons.location_on,
-            AppColors.darkGreen,
-            () => Navigator.push(
+          child: ElevatedButton.icon(
+            onPressed: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const VendorLocationsScreen()),
+              MaterialPageRoute(builder: (_) => const AddProductScreen()),
+            ),
+            icon: const Icon(Icons.add, size: 20),
+            label: const Text('Add Product'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryGreen,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             ),
           ),
         ),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          child: _buildFilledActionButton(
-            context,
-            'Share My Store',
-            Icons.ios_share,
-            AppColors.primaryGreen,
-            _shareStore,
+        const SizedBox(width: 12),
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: _shareStore,
+            icon: const Icon(Icons.ios_share, size: 18),
+            label: const Text('Share Store'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.primaryGreen,
+              side: const BorderSide(color: AppColors.primaryGreen, width: 1.5),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            ),
           ),
         ),
       ],
@@ -595,47 +522,6 @@ class _VendorDashboardState extends State<VendorDashboard> {
     );
   }
 
-  Widget _buildFilledActionButton(
-    BuildContext context,
-    String label,
-    IconData icon,
-    Color color,
-    VoidCallback onTap,
-  ) {
-    final isYellow = color == AppColors.riderYellow;
-    return Material(
-      color: color,
-      borderRadius: BorderRadius.circular(12),
-      elevation: 2,
-      shadowColor: color.withAlpha(60),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          child: Column(
-            children: [
-              Icon(
-                icon,
-                color: isYellow ? AppColors.charcoal : Colors.white,
-                size: 24,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: isYellow ? AppColors.charcoal : Colors.white,
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildProductsSection(BuildContext context, List<Product> products) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -645,33 +531,37 @@ class _VendorDashboardState extends State<VendorDashboard> {
           children: [
             const Text(
               'My Products',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: AppColors.charcoal,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.charcoal),
+            ),
+            if (products.isNotEmpty)
+              GestureDetector(
+                onTap: () {
+                  if (_storeId.isNotEmpty) {
+                    Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => VendorStoreScreen(storeId: _storeId)));
+                  }
+                },
+                child: const Text('Manage all →',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.primaryGreen)),
               ),
-            ),
-            Text(
-              '${products.length} items',
-              style: const TextStyle(color: AppColors.mediumGray),
-            ),
           ],
         ),
         const SizedBox(height: 12),
         if (products.isEmpty)
           _buildEmptyProducts()
         else
-          SizedBox(
-            height: 200,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: products.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 12),
-              itemBuilder: (context, index) {
-                final product = products[index];
-                return _buildProductCard(context, product);
-              },
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: EdgeInsets.zero,
+            itemCount: products.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              childAspectRatio: 0.74,
             ),
+            itemBuilder: (context, index) => _buildProductCard(context, products[index]),
           ),
       ],
     );
@@ -741,10 +631,9 @@ class _VendorDashboardState extends State<VendorDashboard> {
         MaterialPageRoute(builder: (_) => EditProductScreen(product: product)),
       ),
       child: Container(
-        width: 150,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withAlpha(15),
@@ -755,119 +644,92 @@ class _VendorDashboardState extends State<VendorDashboard> {
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
           children: [
-            Stack(
-              children: [
-                Container(
-                  height: 120,
-                  width: double.infinity,
-                  decoration: const BoxDecoration(
-                    color: AppColors.lightGray,
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
                     child: imageUrl != null
-                        ? AppImage(
-                            source: imageUrl,
-                            width: double.infinity,
-                            height: 120,
-                            fit: BoxFit.cover,
-                          )
-                        : const Center(
-                            child: Icon(Icons.inventory_2, color: AppColors.mediumGray, size: 32),
+                        ? AppImage(source: imageUrl, fit: BoxFit.cover)
+                        : Container(
+                            color: AppColors.lightGray,
+                            child: const Center(
+                              child: Icon(Icons.inventory_2, color: AppColors.mediumGray, size: 32),
+                            ),
                           ),
                   ),
-                ),
-                if (isOutOfStock)
-                  Positioned.fill(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withAlpha(100),
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                  if (isOutOfStock)
+                    Container(
+                      decoration: const BoxDecoration(
+                        color: Color(0x66000000),
+                        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
                       ),
                       alignment: Alignment.center,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
                           color: AppColors.errorRed,
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(10),
                         ),
                         child: const Text(
                           'OUT OF STOCK',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 11,
-                          ),
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10),
                         ),
                       ),
                     ),
-                  ),
-                Positioned(
-                  top: 8,
-                  right: 8,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withAlpha(150),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      '₦${product.price.toStringAsFixed(0)}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-            Flexible(
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      product.name,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 4, 9),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          product.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                        ),
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: isOutOfStock
-                                ? AppColors.errorRed.withAlpha(20)
-                                : AppColors.primaryGreen.withAlpha(20),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            isOutOfStock ? 'Out of Stock' : 'In Stock',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: isOutOfStock ? AppColors.errorRed : AppColors.primaryGreen,
-                            ),
+                      _PopupMenu(product: product),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(
+                        '₦${product.price.toStringAsFixed(0)}',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 14, color: AppColors.primaryGreen),
+                      ),
+                      const Spacer(),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: isOutOfStock
+                              ? AppColors.errorRed.withAlpha(20)
+                              : AppColors.primaryGreen.withAlpha(20),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          isOutOfStock ? 'Out' : 'In stock',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: isOutOfStock ? AppColors.errorRed : AppColors.primaryGreen,
                           ),
                         ),
-                        const Spacer(),
-                        _PopupMenu(product: product),
-                      ],
-                    ),
-                  ],
-                ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ],
@@ -878,32 +740,30 @@ class _VendorDashboardState extends State<VendorDashboard> {
 
   Widget _buildLoadingSkeleton() {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
       children: [
-        LoadingSkeleton(height: 100, borderRadius: 16),
+        LoadingSkeleton(height: 74, borderRadius: 16),
         const SizedBox(height: 16),
         Row(
           children: [
-            Expanded(child: LoadingSkeleton(height: 120, borderRadius: 12)),
+            Expanded(child: LoadingSkeleton(height: 48, borderRadius: 14)),
             const SizedBox(width: 12),
-            Expanded(child: LoadingSkeleton(height: 120, borderRadius: 12)),
-            const SizedBox(width: 12),
-            Expanded(child: LoadingSkeleton(height: 120, borderRadius: 12)),
+            Expanded(child: LoadingSkeleton(height: 48, borderRadius: 14)),
           ],
         ),
-        const SizedBox(height: 16),
-        LoadingSkeleton(height: 80, borderRadius: 12),
-        const SizedBox(height: 16),
-        SizedBox(
-          height: 200,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: 4,
-            itemBuilder: (_, __) => const Padding(
-              padding: EdgeInsets.only(right: 12),
-              child: ProductCardSkeleton(),
-            ),
+        const SizedBox(height: 22),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          itemCount: 4,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 0.74,
           ),
+          itemBuilder: (_, __) => LoadingSkeleton(height: double.infinity, borderRadius: 14),
         ),
       ],
     );

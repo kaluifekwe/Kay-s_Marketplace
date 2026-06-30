@@ -15,6 +15,7 @@ import '../../bloc_exports.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
 import 'search_screen.dart';
+import 'all_vendors_screen.dart';
 import 'product_detail_screen.dart';
 import 'vendor_store_screen.dart';
 import '../orders/cart_screen.dart';
@@ -429,27 +430,34 @@ class _MarketplaceFeed extends StatelessWidget {
             buildWhen: (prev, curr) => prev.buyerState != curr.buyerState,
             builder: (context, state) {
               if (state.buyerState == null) return const SizedBox.shrink();
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                color: AppColors.primaryGreen.withAlpha(20),
-                child: Row(
-                  children: [
-                    const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 18),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${state.buyerState} Marketplace',
-                      style: const TextStyle(
-                        color: AppColors.primaryGreen,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
+              return InkWell(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AllVendorsScreen()),
+                ),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  color: AppColors.primaryGreen.withAlpha(20),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 18),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${state.buyerState} Marketplace',
+                        style: const TextStyle(
+                          color: AppColors.primaryGreen,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
                       ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      'Showing all vendors',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 11),
-                    ),
-                  ],
+                      const Spacer(),
+                      const Text(
+                        'View all vendors',
+                        style: TextStyle(color: AppColors.primaryGreen, fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                      const Icon(Icons.chevron_right, color: AppColors.primaryGreen, size: 18),
+                    ],
+                  ),
                 ),
               );
             },
@@ -1137,8 +1145,38 @@ class _BuyerAvatarState extends State<_BuyerAvatar> {
     _url = widget.initialUrl;
   }
 
-  Future<void> _pick() async {
+  void _onTap() {
     if (widget.userId == null || _uploading) return;
+    final hasPhoto = _url != null && _url!.isNotEmpty;
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: AppColors.primaryGreen),
+              title: Text(hasPhoto ? 'Change photo' : 'Add photo'),
+              onTap: () {
+                Navigator.pop(context);
+                _pick();
+              },
+            ),
+            if (hasPhoto)
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: AppColors.errorRed),
+                title: const Text('Remove photo', style: TextStyle(color: AppColors.errorRed)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _remove();
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pick() async {
     final picked = await _picker.pickImage(
       source: ImageSource.gallery,
       imageQuality: 70,
@@ -1164,10 +1202,23 @@ class _BuyerAvatarState extends State<_BuyerAvatar> {
     if (mounted) setState(() => _uploading = false);
   }
 
+  Future<void> _remove() async {
+    setState(() => _uploading = true);
+    try {
+      await SupabaseService.client.from('users').update({'avatar_url': null}).eq('id', widget.userId!);
+      if (mounted) setState(() => _url = null);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not remove photo')));
+      }
+    }
+    if (mounted) setState(() => _uploading = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: _uploading ? null : _pick,
+      onTap: _uploading ? null : _onTap,
       child: Stack(
         children: [
           Container(

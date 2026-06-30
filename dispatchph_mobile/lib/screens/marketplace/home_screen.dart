@@ -16,6 +16,7 @@ import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
 import 'search_screen.dart';
 import 'all_vendors_screen.dart';
+import 'my_stores_screen.dart';
 import 'product_detail_screen.dart';
 import 'vendor_store_screen.dart';
 import '../orders/cart_screen.dart';
@@ -345,6 +346,14 @@ class _MarketplaceFeed extends StatelessWidget {
         ),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.storefront_outlined, color: Colors.white),
+            tooltip: 'My Stores',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const MyStoresScreen()),
+            ),
+          ),
           NotificationBellIcon(
             onPressed: () => Navigator.push(
               context,
@@ -1069,6 +1078,18 @@ class ProfileTab extends StatelessWidget {
                     ),
                     icon: const Icon(Icons.account_balance),
                     label: const Text('Bank Account'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const MyStoresScreen()),
+                    ),
+                    icon: const Icon(Icons.storefront_outlined),
+                    label: const Text('My Stores'),
                   ),
                 ),
                 const SizedBox(height: 12),

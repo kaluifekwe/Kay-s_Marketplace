@@ -205,6 +205,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           deliveryAddress: addr.address,
           deliveryLandmark: addr.landmark,
           deliveryCity: addr.city,
+          deliveryState: addr.state,
           deliveryLatitude: addr.latitude,
           deliveryLongitude: addr.longitude,
           items: items,

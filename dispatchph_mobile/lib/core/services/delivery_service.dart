@@ -148,6 +148,7 @@ class DeliveryService {
     required String deliveryAddress,
     String? deliveryLandmark,
     String? deliveryCity,
+    String? deliveryState,
     double? deliveryLatitude,
     double? deliveryLongitude,
     required List<Map<String, dynamic>> items, // [{name, weight, quantity, amount}]
@@ -161,6 +162,7 @@ class DeliveryService {
         'delivery_address': deliveryAddress,
         'delivery_landmark': deliveryLandmark,
         'delivery_city': deliveryCity,
+        'delivery_state': deliveryState,
         'delivery_latitude': deliveryLatitude,
         'delivery_longitude': deliveryLongitude,
         'items': items,

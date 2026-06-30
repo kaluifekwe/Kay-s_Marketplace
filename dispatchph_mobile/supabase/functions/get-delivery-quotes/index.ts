@@ -65,6 +65,7 @@ serve(async (req) => {
       delivery_address,
       delivery_landmark,
       delivery_city,
+      delivery_state,
       delivery_latitude,
       delivery_longitude,
       items,
@@ -110,7 +111,10 @@ serve(async (req) => {
       address: delivery_address,
       landmark: delivery_landmark,
       city: delivery_city,
-      state: stateForCity(delivery_city),
+      // Use the real state stored on the buyer's address; couriers zone-price by
+      // state, so this is what makes the fee vary by destination. Fall back to
+      // the 3-city lookup only when the address has no state.
+      state: delivery_state || stateForCity(delivery_city),
       latitude: delivery_latitude,
       longitude: delivery_longitude,
     };

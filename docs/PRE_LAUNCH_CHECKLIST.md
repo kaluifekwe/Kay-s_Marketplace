@@ -101,7 +101,7 @@ Fixes from the review:
   (email, phone, NIN, kays_credit, role) to any logged-in user. Replace with a
   `public_profiles` view (id, name, unique_id) and repoint name lookups. (App
   change — pending.)
-- ⬜ **Notifications** — `notifications` insert is open to any authenticated
+- ✅ **Notifications** — insert scoped to self/counterparty/admin (`secure_notifications.sql`); was open to any authenticated
   user (in-app phishing). Move bell-row creation server-side; make insert
   service-role-only. (Pending.)
 - ⬜ **Verify Storage RLS** on the `products` bucket: a vendor can only write to

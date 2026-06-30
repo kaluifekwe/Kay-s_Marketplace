@@ -8,6 +8,7 @@ import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/share_service.dart';
+import '../kyc/kyc_screen.dart';
 import 'vendor_store_screen.dart';
 import '../chat/chat_screen.dart';
 
@@ -537,6 +538,18 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   }
 
   Future<void> _contactVendor(BuildContext context) async {
+    // Cross-state: view only — can't chat a vendor outside your state.
+    if (!_isAvailableInState) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(
+          'This vendor is in ${widget.product.vendorState}. You can only chat vendors in your own state.')),
+      );
+      return;
+    }
+    // KYC: must be verified to chat a vendor.
+    if (!await requireKyc(context)) return;
+    if (!context.mounted) return;
+
     final prefs = await SharedPreferences.getInstance();
     final buyerId = prefs.getString('auth_user_id') ?? '';
     if (buyerId.isEmpty) {

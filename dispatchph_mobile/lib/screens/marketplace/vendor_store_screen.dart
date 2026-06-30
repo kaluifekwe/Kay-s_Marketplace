@@ -16,6 +16,7 @@ import 'product_detail_screen.dart';
 import '../auth/welcome_screen.dart';
 import '../chat/chat_screen.dart';
 import '../vendor/vendor_store_settings_screen.dart';
+import '../kyc/kyc_screen.dart';
 
 class VendorStoreScreen extends StatefulWidget {
   final String storeId;
@@ -541,8 +542,25 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
     );
   }
 
-  void _openChatWithVendor(BuildContext context, Store store) {
+  Future<void> _openChatWithVendor(BuildContext context, Store store) async {
     if (_currentUserId == null) return;
+    final cubit = context.read<MarketplaceCubit>();
+    final buyerState = cubit.state.buyerState;
+    final storeProducts = cubit.state.products.where((p) => p.storeId == store.id);
+    final vendorState = storeProducts.isNotEmpty ? storeProducts.first.vendorState : null;
+
+    // Cross-state: view only — can't chat a vendor outside your state.
+    if (buyerState != null && vendorState != null && vendorState != buyerState) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(
+          'This vendor is in $vendorState. You can only chat vendors in your own state.')),
+      );
+      return;
+    }
+    // KYC: must be verified to chat a vendor.
+    if (!await requireKyc(context)) return;
+    if (!context.mounted) return;
+
     Navigator.push(
       context,
       MaterialPageRoute(

@@ -49,14 +49,18 @@ class _VendorDisputeScreenState extends State<VendorDisputeScreen> {
         .maybeSingle();
     if (orderData != null) _order = Order.fromJson(orderData);
 
-    final buyerData = await SupabaseService.client
-        .from('public_profiles')
-        .select('id, name, phone')
-        .eq('id', _dispute!.raisedBy)
-        .maybeSingle();
-    if (buyerData != null) {
-      _buyerName = buyerData['name'] as String? ?? 'Buyer';
-      _buyerPhone = buyerData['phone'] as String? ?? '';
+    // Scoped RPC: a vendor may read the buyer's contact for their own order
+    // (buyer rows aren't readable cross-user via public_profiles anymore).
+    try {
+      final rows = await SupabaseService.client
+          .rpc('order_buyer_contact', params: {'p_order_id': _dispute!.orderId});
+      final buyerData = (rows is List && rows.isNotEmpty) ? rows.first as Map<String, dynamic> : null;
+      if (buyerData != null) {
+        _buyerName = buyerData['name'] as String? ?? 'Buyer';
+        _buyerPhone = buyerData['phone'] as String? ?? '';
+      }
+    } catch (e) {
+      print('[VendorDispute] buyer contact error: $e');
     }
 
     if (_dispute!.replacementProductId != null) {

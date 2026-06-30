@@ -64,9 +64,9 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
       final store = Store.fromJson(storeData);
       Map<String, dynamic>? vendorData;
       try {
-        vendorData = await SupabaseService.client.from('public_profiles').select('id, name, phone, last_active, unique_id').eq('id', store.vendorId).maybeSingle();
+        vendorData = await SupabaseService.client.from('public_profiles').select('id, name, last_active, unique_id').eq('id', store.vendorId).maybeSingle();
       } catch (_) {
-        vendorData = await SupabaseService.client.from('public_profiles').select('id, name, phone, last_active').eq('id', store.vendorId).maybeSingle();
+        vendorData = await SupabaseService.client.from('public_profiles').select('id, name, last_active').eq('id', store.vendorId).maybeSingle();
       }
       final vendor = vendorData != null ? AppUser.fromJson(vendorData) : null;
       if (mounted) {
@@ -512,6 +512,21 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
                           padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
                       ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton(
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: store.phone!));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Number copied')),
+                        );
+                      },
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: AppColors.primaryGreen),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+                      ),
+                      child: const Icon(Icons.copy, color: AppColors.primaryGreen, size: 18),
                     ),
                   ],
                 ),

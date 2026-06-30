@@ -1174,6 +1174,15 @@ class _BuyerAvatarState extends State<_BuyerAvatar> {
       builder: (_) => SafeArea(
         child: Wrap(
           children: [
+            if (hasPhoto)
+              ListTile(
+                leading: const Icon(Icons.visibility, color: AppColors.primaryGreen),
+                title: const Text('View photo'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _view();
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.photo_library, color: AppColors.primaryGreen),
               title: Text(hasPhoto ? 'Change photo' : 'Add photo'),
@@ -1191,6 +1200,27 @@ class _BuyerAvatarState extends State<_BuyerAvatar> {
                   _remove();
                 },
               ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _view() {
+    if (_url == null || _url!.isEmpty) return;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          alignment: Alignment.topRight,
+          children: [
+            InteractiveViewer(child: AppImage(source: _url, fit: BoxFit.contain)),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: () => Navigator.pop(context),
+            ),
           ],
         ),
       ),

@@ -7,6 +7,7 @@ import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/delivery_service.dart';
+import '../../widgets/app_image.dart';
 import '../chat/chat_screen.dart';
 import '../delivery/courier_track_tile.dart';
 import 'vendor_shipping_screen.dart';
@@ -37,6 +38,7 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
   String _buyerUniqueId = '';
   String _buyerPhone = '';
   String _buyerAddress = '';
+  String? _buyerAvatar;
   bool _requestingPickup = false;
 
   @override
@@ -107,27 +109,23 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
   }
 
   Future<void> _loadBuyerInfo() async {
-    Map<String, dynamic>? userData;
     try {
-      userData = await SupabaseService.client
-          .from('users')
-          .select('id, name, phone, unique_id, address')
-          .eq('id', widget.order.buyerId)
-          .maybeSingle();
-    } catch (_) {
-      userData = await SupabaseService.client
-          .from('users')
-          .select('id, name, phone')
-          .eq('id', widget.order.buyerId)
-          .maybeSingle();
-    }
-    if (userData != null && mounted) {
-      setState(() {
-        _buyerName = userData!['name'] as String? ?? 'Buyer';
-        _buyerUniqueId = userData['unique_id'] as String? ?? '';
-        _buyerPhone = userData['phone'] as String? ?? '';
-        _buyerAddress = userData['address'] as String? ?? '';
-      });
+      // Scoped RPC: a vendor may see the full contact (incl. photo) of a buyer
+      // who ordered from them. (Buyers' rows aren't readable cross-user.)
+      final rows = await SupabaseService.client
+          .rpc('order_buyer_contact', params: {'p_order_id': widget.order.id});
+      final data = (rows is List && rows.isNotEmpty) ? rows.first as Map<String, dynamic> : null;
+      if (data != null && mounted) {
+        setState(() {
+          _buyerName = data['name'] as String? ?? 'Buyer';
+          _buyerUniqueId = data['unique_id'] as String? ?? '';
+          _buyerPhone = data['phone'] as String? ?? '';
+          _buyerAddress = data['address'] as String? ?? '';
+          _buyerAvatar = data['avatar_url'] as String?;
+        });
+      }
+    } catch (e) {
+      print('[VendorOrderDetail] loadBuyerInfo error: $e');
     }
   }
 
@@ -225,6 +223,34 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
                     children: [
                       const Text('Buyer Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                       const SizedBox(height: 12),
+                      if (_buyerAvatar != null && _buyerAvatar!.isNotEmpty)
+                        Center(
+                          child: GestureDetector(
+                            onTap: () => showDialog(
+                              context: context,
+                              builder: (_) => Dialog(
+                                backgroundColor: Colors.black,
+                                insetPadding: const EdgeInsets.all(12),
+                                child: Stack(
+                                  alignment: Alignment.topRight,
+                                  children: [
+                                    InteractiveViewer(child: AppImage(source: _buyerAvatar, fit: BoxFit.contain)),
+                                    IconButton(
+                                      icon: const Icon(Icons.close, color: Colors.white),
+                                      onPressed: () => Navigator.pop(context),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            child: CircleAvatar(
+                              radius: 32,
+                              backgroundColor: AppColors.primaryGreen.withAlpha(20),
+                              child: ClipOval(child: AppImage(source: _buyerAvatar, width: 64, height: 64, fit: BoxFit.cover)),
+                            ),
+                          ),
+                        ),
+                      if (_buyerAvatar != null && _buyerAvatar!.isNotEmpty) const SizedBox(height: 12),
                       _buyerInfoRow(Icons.tag, 'ID', _buyerUniqueId.isNotEmpty ? _buyerUniqueId : 'N/A'),
                       const SizedBox(height: 8),
                       _buyerInfoRow(Icons.person, 'Name', _buyerName),

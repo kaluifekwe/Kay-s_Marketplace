@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -354,31 +353,99 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               ),
               const SizedBox(height: 12),
-              ...products.map((p) {
-                final images = jsonDecode(p.images ?? '[]') as List;
-                final hasImages = images.isNotEmpty;
-                return Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  child: ListTile(
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: SizedBox(
-                        width: 48, height: 48,
-                        child: hasImages
-                            ? AppImage(source: images.first.toString(), fit: BoxFit.cover)
-                            : const Icon(Icons.image, color: AppColors.mediumGray),
-                      ),
-                    ),
-                    title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Text('\u20A6${format.format(p.price)}'),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => ProductDetailScreen(product: p)),
-                    ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: EdgeInsets.zero,
+                  itemCount: products.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    childAspectRatio: 0.72,
                   ),
-                );
-              }),
+                  itemBuilder: (context, i) {
+                    final p = products[i];
+                    final imgs = p.imageList;
+                    final imageUrl = imgs.isNotEmpty ? imgs.first : null;
+                    final out = p.stock == 0;
+                    return GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => ProductDetailScreen(product: p)),
+                      ),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(14),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withAlpha(15), blurRadius: 8, offset: const Offset(0, 3)),
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+                                    child: imageUrl != null
+                                        ? AppImage(source: imageUrl, fit: BoxFit.cover)
+                                        : Container(
+                                            color: AppColors.lightGray,
+                                            child: const Center(
+                                              child: Icon(Icons.image, color: AppColors.mediumGray, size: 32),
+                                            ),
+                                          ),
+                                  ),
+                                  if (out)
+                                    Container(
+                                      decoration: const BoxDecoration(
+                                        color: Color(0x66000000),
+                                        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.errorRed,
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        child: const Text('OUT OF STOCK',
+                                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10)),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(p.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                                  const SizedBox(height: 4),
+                                  Text('\u20A6${format.format(p.price)}',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold, fontSize: 14, color: AppColors.primaryGreen)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
               const SizedBox(height: 24),
             ],
           );

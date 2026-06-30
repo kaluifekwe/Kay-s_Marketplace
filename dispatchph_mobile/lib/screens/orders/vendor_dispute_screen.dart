@@ -50,7 +50,7 @@ class _VendorDisputeScreenState extends State<VendorDisputeScreen> {
     if (orderData != null) _order = Order.fromJson(orderData);
 
     final buyerData = await SupabaseService.client
-        .from('users')
+        .from('public_profiles')
         .select('id, name, phone')
         .eq('id', _dispute!.raisedBy)
         .maybeSingle();

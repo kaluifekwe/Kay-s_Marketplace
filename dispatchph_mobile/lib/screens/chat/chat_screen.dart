@@ -177,7 +177,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     try {
       final userData = await SupabaseService.client
-          .from('users')
+          .from('public_profiles')
           .select('id, last_active')
           .eq('id', otherId)
           .maybeSingle();

@@ -63,9 +63,9 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
       final store = Store.fromJson(storeData);
       Map<String, dynamic>? vendorData;
       try {
-        vendorData = await SupabaseService.client.from('users').select('id, name, phone, last_active, unique_id').eq('id', store.vendorId).maybeSingle();
+        vendorData = await SupabaseService.client.from('public_profiles').select('id, name, phone, last_active, unique_id').eq('id', store.vendorId).maybeSingle();
       } catch (_) {
-        vendorData = await SupabaseService.client.from('users').select('id, name, phone, last_active').eq('id', store.vendorId).maybeSingle();
+        vendorData = await SupabaseService.client.from('public_profiles').select('id, name, phone, last_active').eq('id', store.vendorId).maybeSingle();
       }
       final vendor = vendorData != null ? AppUser.fromJson(vendorData) : null;
       if (mounted) {

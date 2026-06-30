@@ -66,27 +66,9 @@ class AuthService {
         await SupabaseService.client.from('users').insert(userData);
       }
 
-      // ₦200 welcome credit for new buyers (not vendors). Failure here
-      // should never block account creation, so it's isolated in its own
-      // try/catch.
-      if (role == 'buyer') {
-        try {
-          await SupabaseService.client.rpc('increment_kays_credit', params: {
-            'p_user_id': userId,
-            'p_amount': 200,
-          });
-          final expiresAt = DateTime.now().add(const Duration(days: 90));
-          await SupabaseService.client.from('credit_transactions').insert({
-            'buyer_id': userId,
-            'amount': 200,
-            'type': 'cashback',
-            'description': '₦200 welcome bonus',
-            'expires_at': expiresAt.toIso8601String(),
-          });
-        } catch (e) {
-          print('[AuthService] welcome credit error: $e');
-        }
-      }
+      // ₦200 welcome credit for new buyers is granted SERVER-SIDE by the
+      // grant_welcome_credit trigger on users (secure_credit.sql) — the client
+      // can no longer mint credit, so there's nothing to do here.
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('auth_user_id', userId);

@@ -76,7 +76,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
     if (uncachedBuyers.isNotEmpty) {
       final buyerData = await SupabaseService.client
-          .from('users')
+          .from('public_profiles')
           .select('id, name, last_active')
           .inFilter('id', uncachedBuyers.toList());
       for (final b in (buyerData as List)) {
@@ -100,7 +100,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
       }
 
       final vendorData = await SupabaseService.client
-          .from('users')
+          .from('public_profiles')
           .select('id, last_active')
           .inFilter('id', uncachedVendors.toList());
       for (final v in (vendorData as List)) {

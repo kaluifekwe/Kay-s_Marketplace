@@ -10,6 +10,7 @@ import '../../core/services/supabase_service.dart';
 import '../../core/services/credit_service.dart';
 import '../../core/services/delivery_service.dart';
 import '../delivery/buyer_addresses_screen.dart';
+import '../kyc/kyc_screen.dart';
 import 'payment_simulation_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
@@ -566,7 +567,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 child: ElevatedButton.icon(
                   onPressed: (_isPayingWithCredit || deliveryUnagreed)
                       ? null
-                      : () {
+                      : () async {
+                          // KYC gate — a buyer must verify their NIN before buying.
+                          if (!await requireKyc(context)) return;
+                          if (!context.mounted) return;
                           if (creditCoversFull) {
                             _completeWithCredit(totalWithDelivery);
                           } else {

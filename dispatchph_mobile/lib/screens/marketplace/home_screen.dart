@@ -26,6 +26,7 @@ import 'my_rewards_screen.dart';
 import 'buyer_bank_account_screen.dart';
 import '../delivery/buyer_addresses_screen.dart';
 import '../policy/policy_screen.dart';
+import '../kyc/kyc_screen.dart';
 
 class MarketplaceHome extends StatefulWidget {
   final int initialIndex;
@@ -65,7 +66,12 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       _notifPoll = Timer.periodic(const Duration(seconds: 15), (_) {
         _loadNotifications();
       });
-      if (widget.showWelcomeCredit) _showWelcomeCreditDialog();
+      if (widget.showWelcomeCredit) {
+        _showWelcomeCreditDialog();
+      } else {
+        // Nudge unverified buyers to complete KYC (browsing is free; buying needs it).
+        promptKycReminder(context);
+      }
     });
   }
 
@@ -1053,6 +1059,18 @@ class ProfileTab extends StatelessWidget {
                     ),
                     icon: const Icon(Icons.account_balance),
                     label: const Text('Bank Account'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const KycScreen()),
+                    ),
+                    icon: const Icon(Icons.verified_user_outlined),
+                    label: const Text('Verify Identity (KYC)'),
                   ),
                 ),
                 const SizedBox(height: 12),

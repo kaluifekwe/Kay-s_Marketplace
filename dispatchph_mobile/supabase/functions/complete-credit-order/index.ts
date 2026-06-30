@@ -67,6 +67,19 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // KYC gate: a buyer must be identity-verified (NIN) before they can buy.
+    const { data: buyerKyc } = await supabase
+      .from("users")
+      .select("kyc_status")
+      .eq("id", buyer_id)
+      .maybeSingle();
+    if (buyerKyc?.kyc_status !== "verified") {
+      return new Response(
+        JSON.stringify({ error: "kyc_required", message: "Verify your identity (NIN) before buying." }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // Recompute every vendor's subtotal from real product/variant prices —
     // never trust client-supplied prices/subtotals. Delivery fee is
     // resolved the same way create-payment does it for card checkout: read

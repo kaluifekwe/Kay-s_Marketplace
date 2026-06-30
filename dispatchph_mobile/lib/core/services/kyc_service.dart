@@ -1,0 +1,47 @@
+import 'supabase_service.dart';
+
+/// Buyer identity verification (NIN). A buyer must be `verified` before they can
+/// buy; the real enforcement is server-side (create-payment / complete-credit-
+/// order reject unverified buyers) — this is the client-side status + submit.
+class KycService {
+  /// 'none' | 'pending' | 'verified' | 'rejected'
+  static Future<String> status() async {
+    final uid = SupabaseService.auth.currentUser?.id;
+    if (uid == null) return 'none';
+    try {
+      final row = await SupabaseService.client
+          .from('users')
+          .select('kyc_status')
+          .eq('id', uid)
+          .maybeSingle();
+      return (row?['kyc_status'] as String?) ?? 'none';
+    } catch (e) {
+      print('[KycService] status error: $e');
+      return 'none';
+    }
+  }
+
+  static Future<bool> isVerified() async => (await status()) == 'verified';
+
+  /// Verify a NIN via the verify-nin Edge Function. Returns (ok, error?).
+  static Future<({bool ok, String? error})> submitNin({
+    required String nin,
+    String? firstName,
+    String? lastName,
+  }) async {
+    try {
+      final res = await SupabaseService.client.functions.invoke(
+        'verify-nin',
+        body: {'nin': nin, 'first_name': firstName, 'last_name': lastName},
+      );
+      if (res.status == 200) return (ok: true, error: null);
+      final data = res.data;
+      final msg = data is Map
+          ? (data['message'] ?? data['error'] ?? 'Verification failed')
+          : 'Verification failed';
+      return (ok: false, error: msg.toString());
+    } catch (e) {
+      return (ok: false, error: 'Could not reach verification service. Try again.');
+    }
+  }
+}

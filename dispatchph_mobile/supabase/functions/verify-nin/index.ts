@@ -91,26 +91,37 @@ serve(async (req) => {
       return json({ error: "This NIN is already linked to another account." }, 409);
     }
 
-    // Real verification only when a provider is configured (paid). Without it we
-    // run in free mode: 11-digit format + uniqueness only (see notes above).
-    if (providerConfigured) {
-      const result = await verifyNinWithProvider(String(nin));
-      if (!result.ok) {
-        await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
-        return json({ error: result.reason || "NIN verification failed", status: "rejected" }, 400);
-      }
-      // Lenient name match: provider first/last should resemble the account/claimed name.
-      const rec = result.record || {};
-      const provFirst = norm(rec.first_name || rec.firstname || "");
-      const provLast = norm(rec.last_name || rec.surname || rec.lastname || "");
-      const claimed = norm(`${first_name ?? ""} ${last_name ?? ""}` + " " + (me?.name ?? ""));
-      if ((provFirst || provLast) && claimed) {
-        const matches = (provFirst && claimed.includes(provFirst)) || (provLast && claimed.includes(provLast));
-        if (!matches) {
-          await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
-          return json({ error: "NIN name does not match your account name", status: "rejected" }, 400);
-        }
-      }
+    // Name matching requires the provider, so verification needs it configured.
+    // Until DOJAH_* secrets are set, KYC is unavailable (no free-pass) — nobody
+    // is verified without the name check.
+    if (!providerConfigured) {
+      return json({
+        error: "Identity verification is temporarily unavailable. Please try again later.",
+        status: "pending",
+      }, 503);
+    }
+
+    const result = await verifyNinWithProvider(String(nin));
+    if (!result.ok) {
+      await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
+      return json({ error: result.reason || "NIN verification failed", status: "rejected" }, 400);
+    }
+
+    // Name match: the NIN's registered names must match the account / entered
+    // names. Require BOTH first name and surname to match (normalized), so a
+    // borrowed NIN with the wrong name is rejected.
+    const rec = result.record || {};
+    const provFirst = norm(rec.first_name || rec.firstname || "");
+    const provLast = norm(rec.last_name || rec.surname || rec.lastname || "");
+    const claimed = norm(`${first_name ?? ""} ${last_name ?? ""} ${me?.name ?? ""}`);
+    const firstOk = provFirst.length > 0 && claimed.includes(provFirst);
+    const lastOk = provLast.length > 0 && claimed.includes(provLast);
+    if (!firstOk || !lastOk) {
+      await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
+      return json({
+        error: "The name on this NIN doesn't match your account name.",
+        status: "rejected",
+      }, 400);
     }
 
     const { error: upErr } = await supabase

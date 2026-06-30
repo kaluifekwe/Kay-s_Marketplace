@@ -47,6 +47,19 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done
   pickup-SLA). Add a heartbeat/alert if it stops — if it silently dies, nothing
   auto-releases and vendors go unpaid.
 
+## 2b. Buyer KYC (NIN)
+
+- ✅ KYC live in **free mode** — one account per NIN enforced (unique index);
+  no KYC = no buy (gated in `create-payment` / `complete-credit-order` + the
+  app). Buyers browse free, verify before purchase.
+- ⬜ **Enable NIN name matching (paid provider — Dojah).** Open a Dojah account
+  (dojah.io), fund the wallet, get the **API key** + **App ID**, then set
+  Supabase Edge Function secrets `DOJAH_API_KEY` and `DOJAH_APP_ID` (optional
+  `DOJAH_BASE_URL`). Name-matched NIMC verification then switches on
+  automatically — **no redeploy / rebuild**. Trial with Dojah **sandbox** keys
+  first. (Costs a small fee per NIN lookup.) Swappable to YouVerify/Prembly/
+  Smile ID if preferred — ask to change the adapter in `verify-nin`.
+
 ## 3. Delivery providers (Shipbubble + Terminal)
 
 - ⬜ **Fund the live Shipbubble wallet** (empty wallet → address validation

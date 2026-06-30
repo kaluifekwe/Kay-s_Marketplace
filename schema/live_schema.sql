@@ -159,7 +159,8 @@ BEGIN
      AND auth.uid() IS DISTINCT FROM OLD.buyer_id
   THEN RAISE EXCEPTION 'Not allowed to modify dispute state'; END IF;
   RETURN NEW;
-END; $$;
+END;
+$$;
 
 
 ALTER FUNCTION "public"."guard_order_columns"() OWNER TO "postgres";

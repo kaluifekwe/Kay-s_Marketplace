@@ -87,11 +87,28 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done
 
 ## 6. Storage & security
 
+Security review done 2026-06-30. Frontend clean (only the public anon key is
+bundled); RLS is on for every table; `security_fixes_critical.sql` is applied.
+Fixes from the review:
+- ✅ **Price tampering** — `create-payment` now derives item prices from the DB
+  (was trusting the client `subtotal` → pay ₦1 for anything). Deployed.
+- ⬜ **Apply `harden_rls.sql`** — BEFORE UPDATE triggers stop clients writing
+  privileged columns: `users.role/kays_credit/dispute_flags/payout_blocked` +
+  the intrastate **state lock**, and `orders` money/release fields + only the
+  buyer/service can change `has_dispute`. (Closes admin/credit escalation +
+  payout tampering.) Test dispute + state-change flows after applying.
+- ⬜ **PII exposure** — `users` "read others = true" exposes every column
+  (email, phone, NIN, kays_credit, role) to any logged-in user. Replace with a
+  `public_profiles` view (id, name, unique_id) and repoint name lookups. (App
+  change — pending.)
+- ⬜ **Notifications** — `notifications` insert is open to any authenticated
+  user (in-app phishing). Move bell-row creation server-side; make insert
+  service-role-only. (Pending.)
 - ⬜ **Verify Storage RLS** on the `products` bucket: a vendor can only write to
   their own `<vendorId>/` folder; public read is fine for product images.
-- ⬜ Review RLS on every table once more before launch (least privilege).
-- ⬜ Confirm all secrets are server-side only (no keys in the app bundle beyond
-  the public anon key).
+- ⬜ Add rate limiting on sensitive functions (payment/refund/bank/OTP).
+- ⬜ Dump the live schema + RLS into version control (core tables were created
+  outside migrations — schema drift).
 
 ## 7. Android build / Play Store
 

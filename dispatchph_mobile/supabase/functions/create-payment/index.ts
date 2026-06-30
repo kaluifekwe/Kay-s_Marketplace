@@ -117,7 +117,51 @@ serve(async (req) => {
     for (const vendorOrder of vendor_orders) {
       const vendorId = vendorOrder.vendor_id;
       const items = vendorOrder.items || [];
-      const itemSubtotal = Number(vendorOrder.subtotal) || 0;
+
+      // SECURITY: derive the item subtotal from the DB — NEVER trust the
+      // client's `subtotal`/`amount` (a tampered client could pay ₦1 for a
+      // ₦950k item). Each item's unit price is the product's price, or the
+      // matching variant's price when a variant was chosen.
+      let itemSubtotal = 0;
+      for (const it of items) {
+        const pid = it.product_id;
+        const qty = Number(it.quantity) || 0;
+        if (!pid || qty <= 0) {
+          return new Response(
+            JSON.stringify({ error: "Invalid cart item" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        const { data: prod } = await supabase
+          .from("products")
+          .select("price")
+          .eq("id", pid)
+          .maybeSingle();
+        if (!prod) {
+          return new Response(
+            JSON.stringify({ error: "Product not found" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        let unitPrice = Number(prod.price) || 0;
+        if (it.variant_label) {
+          const { data: variant } = await supabase
+            .from("product_variants")
+            .select("price")
+            .eq("product_id", pid)
+            .eq("label", it.variant_label)
+            .maybeSingle();
+          if (!variant) {
+            return new Response(
+              JSON.stringify({ error: "Product option not found" }),
+              { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+          unitPrice = Number(variant.price) || 0;
+        }
+        itemSubtotal += unitPrice * qty;
+      }
+
       const firstProductId = items[0]?.product_id;
 
       let deliveryType = "negotiate";

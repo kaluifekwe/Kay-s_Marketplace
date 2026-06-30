@@ -240,11 +240,13 @@ class DisputeCubit extends Cubit<DisputeState> {
         'has_dispute': true,
       }).eq('id', orderId);
 
-      await SupabaseService.client.from('users').update({
-        'active_dispute_id': disputeId,
-        'last_dispute_at': now.toIso8601String(),
-        'last_dispute_vendor_id': vendorId,
-      }).eq('id', buyerId);
+      // Set via a SECURITY DEFINER RPC — these anti-gaming fields are guarded
+      // against direct client writes (a buyer can't clear active_dispute_id to
+      // open multiple disputes or reset the per-vendor cooldown).
+      await SupabaseService.client.rpc('claim_active_dispute', params: {
+        'p_dispute_id': disputeId,
+        'p_vendor_id': vendorId,
+      });
 
       // If escrow already paid the vendor out for this order, hold their
       // NEXT payout for the order amount so a buyer-favor refund is funded

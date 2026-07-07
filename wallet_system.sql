@@ -103,7 +103,18 @@ CREATE TRIGGER trg_guard_wallet_columns
   BEFORE UPDATE ON wallets
   FOR EACH ROW EXECUTE FUNCTION guard_wallet_columns();
 
--- reuse update_updated_at() from phase4_payments.sql for updated_at bumps
+-- updated_at bumps. Defined here so this migration is self-contained — it also
+-- exists in phase4_payments.sql, and CREATE OR REPLACE is safe either way. (If
+-- it were missing, the trigger creation below would abort the whole script and
+-- leave no wallet tables.)
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 DROP TRIGGER IF EXISTS wallets_updated_at ON wallets;
 CREATE TRIGGER wallets_updated_at
   BEFORE UPDATE ON wallets FOR EACH ROW EXECUTE FUNCTION update_updated_at();
@@ -237,3 +248,6 @@ CREATE POLICY "Wallet tx owner read" ON wallet_transactions FOR SELECT USING (us
 
 DROP POLICY IF EXISTS "Withdrawal owner read" ON withdrawals;
 CREATE POLICY "Withdrawal owner read" ON withdrawals FOR SELECT USING (user_id = auth.uid());
+
+-- ── 8. Refresh PostgREST's schema cache so the API sees these tables now ─────
+NOTIFY pgrst, 'reload schema';

@@ -9,7 +9,9 @@
 // (https://developersandbox-api.flutterwave.com) while testing and flip to
 // production without a code change.
 
-const FLW_BASE = Deno.env.get("FLUTTERWAVE_BASE_URL") || "https://api.flutterwave.com";
+// v4 production base. Override with FLUTTERWAVE_BASE_URL=https://developersandbox-api.flutterwave.com
+// for sandbox testing. (NB: api.flutterwave.com is the v3 host — v4 lives here.)
+const FLW_BASE = Deno.env.get("FLUTTERWAVE_BASE_URL") || "https://f4bexperience.flutterwave.com";
 const CLIENT_ID = Deno.env.get("FLUTTERWAVE_CLIENT_ID") || "";
 const CLIENT_SECRET = Deno.env.get("FLUTTERWAVE_CLIENT_SECRET") || "";
 const TOKEN_URL =
@@ -33,6 +35,9 @@ export async function getFlwToken(): Promise<string> {
     }),
   });
   const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.log(`flw-auth failed: status=${res.status} body=${JSON.stringify(data)}`);
+  }
   if (!res.ok || !data.access_token) {
     throw new Error(
       `Flutterwave auth failed (${res.status}): ${data.error_description || data.error || "no token"}`

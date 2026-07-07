@@ -28,7 +28,7 @@ function json(body: unknown, status = 200) {
   });
 }
 
-async function hmacSha256Hex(secret: string, payload: string): Promise<string> {
+async function hmacSha256(secret: string, payload: string): Promise<{ hex: string; b64: string }> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -37,8 +37,11 @@ async function hmacSha256Hex(secret: string, payload: string): Promise<string> {
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
-  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const buf = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+  const bytes = new Uint8Array(buf);
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const b64 = btoa(String.fromCharCode(...bytes));
+  return { hex, b64 };
 }
 
 function safeEqual(a: string, b: string): boolean {
@@ -49,7 +52,12 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 async function creditFunding(supabase: any, data: any) {
-  if (!data || data.status !== "successful") return { ignored: true, reason: "not_successful" };
+  // v4's success wording varies — accept the known "completed" spellings.
+  const status = String(data?.status ?? "").toLowerCase();
+  const SUCCESS = ["successful", "succeeded", "success", "completed", "complete", "paid"];
+  if (!data || !SUCCESS.includes(status)) {
+    return { ignored: true, reason: "not_successful", got_status: data?.status, amount: data?.amount };
+  }
   if (data.currency && data.currency !== "NGN") return { ignored: true, reason: "non_ngn" };
 
   const amount = Number(data.amount) || 0;
@@ -102,16 +110,19 @@ serve(async (req) => {
 
   try {
     const rawBody = await req.text();
-    const signature = req.headers.get("flutterwave-signature") || "";
+    // Flutterwave has used different header names across versions; accept both.
+    const sig = req.headers.get("flutterwave-signature") || req.headers.get("verif-hash") || "";
 
     if (!flwSecretHash) {
       console.error("FLUTTERWAVE_SECRET_HASH not configured");
       return json({ error: "server_misconfigured" }, 500);
     }
-    const expected = await hmacSha256Hex(flwSecretHash, rawBody);
-    // HMAC-SHA256 signed value; also accept a plain secret-hash match for
-    // dashboards configured the legacy (v3-style verif-hash) way.
-    if (!signature || (!safeEqual(signature, expected) && !safeEqual(signature, flwSecretHash))) {
+
+    // Accept any of the schemes Flutterwave may use: HMAC-SHA256 as hex or
+    // base64, or the plain secret hash echoed back (v3-style verif-hash).
+    const { hex, b64 } = await hmacSha256(flwSecretHash, rawBody);
+    const valid = !!sig && (safeEqual(sig, hex) || safeEqual(sig, b64) || safeEqual(sig, flwSecretHash));
+    if (!valid) {
       console.error("Invalid Flutterwave webhook signature");
       return json({ error: "Invalid signature" }, 401);
     }

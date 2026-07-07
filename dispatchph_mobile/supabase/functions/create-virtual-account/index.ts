@@ -108,14 +108,18 @@ serve(async (req) => {
       const cust = await flwPost("/customers", custBody, `cust_${callerId}`);
       customerId = cust.data?.data?.id ?? cust.data?.id ?? null;
       if (!cust.ok || !customerId) {
-        console.error("Flutterwave create customer error:", JSON.stringify(cust.data));
+        console.error(`Flutterwave create customer error: status=${cust.status} body=${JSON.stringify(cust.data)}`);
         return json({ error: cust.data?.message || "Could not create customer profile" }, 400);
       }
       await supabase.from("wallets").upsert({ user_id: callerId, flw_customer_id: customerId }, { onConflict: "user_id" });
     }
 
     // 2) Create the static (permanent) virtual account under that customer.
-    const vaRef = `wallet_${callerId}_${Date.now()}`;
+    // Flutterwave requires `reference` to be alphanumeric and 6-42 chars (no
+    // hyphens/underscores). Use the UUID stripped of hyphens (32 hex chars) —
+    // deterministic per user, so a retry (e.g. after a failed DB save) is
+    // idempotent and reuses the same account instead of creating a duplicate.
+    const vaRef = callerId.replace(/-/g, "");
     const va = await flwPost(
       "/virtual-accounts",
       {
@@ -135,7 +139,7 @@ serve(async (req) => {
     const accountNumber = vaData?.account_number;
     const bankName = vaData?.account_bank_name ?? vaData?.bank_name ?? vaData?.account_bank;
     if (!va.ok || !accountNumber) {
-      console.error("Flutterwave create VA error:", JSON.stringify(va.data));
+      console.error(`Flutterwave create VA error: status=${va.status} body=${JSON.stringify(va.data)}`);
       return json({ error: va.data?.message || "Could not create funding account" }, 400);
     }
 

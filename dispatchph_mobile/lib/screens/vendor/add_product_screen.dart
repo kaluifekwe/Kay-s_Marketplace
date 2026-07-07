@@ -5,7 +5,6 @@ import 'package:image_picker/image_picker.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/app_image.dart';
-import '../../widgets/delivery_option_tile.dart';
 import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
 import '../../core/services/auth_service.dart';
@@ -277,38 +276,11 @@ class _AddProductScreenState extends State<AddProductScreen> {
             ),
             const SizedBox(height: 24),
 
-            // Delivery Policy Section
-            const Text(
-              'Delivery Policy',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
-            ),
-            const SizedBox(height: 4),
-            Text('How will delivery fee be handled?', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-            const SizedBox(height: 12),
-            DeliveryOptionTile(
-              icon: '🎁',
-              title: 'Free Delivery',
-              subtitle: 'I cover all delivery costs.\nNo fee charged to buyer.',
-              isSelected: _deliveryType == 'free',
-              onTap: () => setState(() => _deliveryType = 'free'),
-            ),
-            const SizedBox(height: 8),
-            DeliveryOptionTile(
-              icon: '💬',
-              title: 'Buyer Pays (Agree in Chat)',
-              subtitle: 'Buyer pays full delivery fee.\nAgree the amount in chat.',
-              isSelected: _deliveryType == 'negotiate',
-              onTap: () => setState(() => _deliveryType = 'negotiate'),
-            ),
-            const SizedBox(height: 8),
-            DeliveryOptionTile(
-              icon: '🤝',
-              title: 'Split Delivery Fee (Agree in Chat)',
-              subtitle: 'You and buyer share the cost.\nAgree the split in chat.',
-              isSelected: _deliveryType == 'split',
-              onTap: () => setState(() => _deliveryType = 'split'),
-            ),
-            const SizedBox(height: 24),
+            // Delivery is handled by our logistics partners by default (courier
+            // rates are fetched at checkout). Vendors no longer choose a policy;
+            // the chat delivery-fee flow is only used as a fallback when no
+            // courier covers the route. deliveryType stays 'negotiate' so that
+            // fallback path remains available.
 
             // Product Images Section
             Row(

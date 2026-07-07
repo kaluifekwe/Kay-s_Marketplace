@@ -407,9 +407,9 @@ class _ChatScreenState extends State<ChatScreen> {
           // we can't always auto-detect free/negotiate/split. If it can't
           // be detected, _showDeliveryFeeSheet asks the vendor directly
           // rather than hiding the button.
-          if (_currentRole == 'vendor' && _chatDeliveryType != 'free')
+          if ((_currentRole == 'vendor' || _currentUserId == widget.vendorId) && _chatDeliveryType != 'free')
             IconButton(
-              icon: const Icon(Icons.local_shipping, color: AppColors.primaryGreen),
+              icon: const Icon(Icons.local_shipping, color: Colors.white),
               tooltip: 'Send Delivery Fee Request',
               onPressed: _showDeliveryFeeSheet,
             ),

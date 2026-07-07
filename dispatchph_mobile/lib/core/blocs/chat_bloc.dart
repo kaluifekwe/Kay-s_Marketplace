@@ -347,20 +347,14 @@ class ChatCubit extends Cubit<ChatState> {
       if (recipientId != null) {
         final senderDisplay = senderRole == 'buyer' ? 'Buyer' : 'Vendor';
         final notifBody = type == 'text' ? content : 'Sent a $type';
-        // Notify the RECIPIENT via push only (their foreground handler renders
-        // the local notification). No local notification on the sender's device.
+        // Chat messages belong in the MESSAGE BOX (chat list unread badge), not
+        // the notification bell — so we only push (for background/foreground
+        // alerts) and deliberately do NOT create a `notifications` row here.
         PushService.sendPush(
           userId: recipientId,
           title: senderDisplay,
           body: notifBody,
           data: {'type': 'chat', 'chatId': chatId},
-        );
-        NotificationCubit.create(
-          userId: recipientId,
-          title: 'New Message',
-          body: '$senderDisplay: ${notifBody.length > 80 ? '${notifBody.substring(0, 80)}...' : notifBody}',
-          type: 'chat',
-          referenceId: chatId,
         );
       }
     } catch (e) {
@@ -618,9 +612,11 @@ class ChatCubit extends Cubit<ChatState> {
 
   Future<void> markChatRead(String chatId, String userId) async {
     try {
-      // Check if there are actually unread messages before firing update
-      final currentUnread = state.unreadCounts[chatId] ?? 0;
-      if (currentUnread == 0) return;
+      // NB: don't gate on the locally-known unread count. When a chat is opened
+      // directly (from an order screen / push, not the chat list) that count
+      // isn't loaded, so gating on it left the messages unread in the DB and the
+      // chat-list badge never cleared. The RPC is idempotent + indexed, so just
+      // always run it and clear the local count.
 
       // Try RPC first (bypasses per-row RLS), fallback to direct update
       try {
@@ -671,10 +667,16 @@ class ChatCubit extends Cubit<ChatState> {
             final updated = List<Message>.from(state.messages)..add(newMsg);
             emit(state.copyWith(messages: updated));
             // Incoming message while I have the chat open — I've received it and
-            // am looking at it, so mark read (implies delivered). One marker
-            // upsert, so the sender's ticks update without per-message writes.
+            // am looking at it, so mark read (implies delivered).
             if (_currentUserId != null && newMsg.senderId != _currentUserId) {
+              // 1) marker upsert → the sender's read ticks update (no per-message
+              //    write) via the published chat_members table.
               _touchMember(newMsg.chatId, 'read');
+              // 2) stamp read_at on the message row too. The chat-list unread
+              //    badge counts messages with read_at == null, so without this a
+              //    message received while the chat is open would keep showing as
+              //    unread after leaving.
+              markChatRead(newMsg.chatId, _currentUserId!);
             }
           },
         )

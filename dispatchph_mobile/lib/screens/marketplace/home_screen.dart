@@ -329,25 +329,18 @@ class _MarketplaceFeed extends StatelessWidget {
         backgroundColor: AppColors.primaryGreen,
         elevation: 0,
         leading: const SizedBox.shrink(),
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: const [
-            Icon(Icons.storefront_rounded, size: 22, color: Colors.white),
-            SizedBox(width: 8),
-            Text(
-              "Kay's Marketplace",
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
+        title: const Text(
+          "Kay's Marketplace",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(Icons.bookmarks_outlined, color: Colors.white),
+            icon: const Icon(Icons.storefront_outlined, color: Colors.white),
             tooltip: 'My Stores',
             onPressed: () => Navigator.push(
               context,

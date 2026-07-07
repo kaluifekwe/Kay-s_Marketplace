@@ -347,7 +347,7 @@ class _MarketplaceFeed extends StatelessWidget {
         centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(Icons.storefront_outlined, color: Colors.white),
+            icon: const Icon(Icons.bookmarks_outlined, color: Colors.white),
             tooltip: 'My Stores',
             onPressed: () => Navigator.push(
               context,
@@ -542,7 +542,14 @@ class _MarketplaceFeed extends StatelessWidget {
                 }
                 return RefreshIndicator(
                   color: AppColors.primaryGreen,
-                  onRefresh: () => context.read<MarketplaceCubit>().loadProducts(),
+                  onRefresh: () {
+                    final cubit = context.read<MarketplaceCubit>();
+                    // Preserve the active category filter on refresh instead of
+                    // snapping back to "All".
+                    return state.selectedCategory != null
+                        ? cubit.loadProductsByCategory(state.selectedCategory!)
+                        : cubit.loadProducts();
+                  },
                   child: NotificationListener<ScrollNotification>(
                     onNotification: (scrollInfo) {
                       if (scrollInfo.metrics.pixels > scrollInfo.metrics.maxScrollExtent - 200) {

@@ -79,6 +79,9 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
         stores: stores,
         hasMore: products.length >= _pageSize,
         currentPage: 0,
+        // "All" shows every product, so drop any active category filter — this
+        // also makes the "All" chip highlight correctly again.
+        clearSelectedCategory: true,
       ));
     } catch (e) {
       print('[MarketplaceCubit] loadProducts error: $e');
@@ -528,6 +531,9 @@ class MarketplaceState {
     String? buyerState,
     List<Product>? storeProducts,
     bool? isLoadingStoreProducts,
+    // Because copyWith uses `?? this`, passing selectedCategory: null can't
+    // clear it. Set this to reset back to "All" (no category filter).
+    bool clearSelectedCategory = false,
   }) {
     return MarketplaceState(
       isLoading: isLoading ?? this.isLoading,
@@ -535,7 +541,7 @@ class MarketplaceState {
       products: products ?? this.products,
       stores: stores ?? this.stores,
       searchQuery: searchQuery ?? this.searchQuery,
-      selectedCategory: selectedCategory ?? this.selectedCategory,
+      selectedCategory: clearSelectedCategory ? null : (selectedCategory ?? this.selectedCategory),
       hasMore: hasMore ?? this.hasMore,
       currentPage: currentPage ?? this.currentPage,
       variants: variants ?? this.variants,

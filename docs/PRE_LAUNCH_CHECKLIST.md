@@ -62,12 +62,23 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done
 
 ## 3. Delivery providers (Shipbubble + Terminal)
 
-- ⬜ **Fund the live Shipbubble wallet** (empty wallet → address validation
-  fails → no couriers → negotiate fallback).
+- ✅ **Live Shipbubble key set** + wallet funded (`SHIPBUBBLE_API_KEY` rotated to
+  live 2026-07-07; test-mode couriers gone, now returns real carriers).
+- ✅ **Shipbubble multi-courier confirmed** — Lagos Ikeja→Lekki returns **Kwik +
+  Gokada**; PH intra-city returns Chowdeck. Account is healthy; option count is
+  driven by real courier **coverage per city** (Lagos rich, Port Harcourt thin —
+  some PH routes return "no courier available"), not account config. (Verified
+  2026-07-07.)
 - ⬜ Register the Shipbubble webhook URL:
   `https://takuhbkpagvhmxsncdls.supabase.co/functions/v1/shipbubble-webhook`.
-- ⬜ **Fund the Terminal wallet**; set `TERMINAL_BASE_URL` to production + live
-  key.
+- ✅ **Terminal live** — `TERMINAL_BASE_URL` = production (`api.terminal.africa`),
+  live key set, wallet funded; returns live DHL rates.
+- ⬜ **Terminal: only DHL returns live rates** — every route tested (intra-PH,
+  Lagos Ikeja→Lekki), with/without coordinates, generic box, returns **only
+  `dhl-ng`** despite all carriers toggled ON under "Local Carriers". This is
+  account provisioning on Terminal's side, not our code. Chase Terminal support
+  to activate GIG/Kwik/Fez/Chowdeck/Redstar for **live rating** on account
+  `USER-W6APAFACVYJ4BK6C`. (Verified 2026-07-07.)
 - ⬜ Register the Terminal webhook URL:
   `https://takuhbkpagvhmxsncdls.supabase.co/functions/v1/terminal-webhook`
   (set `TERMINAL_WEBHOOK_SECRET`).

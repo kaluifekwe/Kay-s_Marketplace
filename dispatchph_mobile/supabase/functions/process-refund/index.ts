@@ -180,7 +180,9 @@ serve(async (req) => {
     const courierDelivered = order.delivery_type === "courier" && order.delivered_at != null;
     const itemSubtotal = Number(order.total) || (Number(tx.amount) - (Number(order.delivery_fee) || 0));
     const refundAmount = courierDelivered ? itemSubtotal : tx.amount;
-    const method = refund_method || "card";
+    // Refunds now default to the buyer's WALLET. card/bank/credit remain
+    // available when explicitly requested (e.g. legacy card-paid orders).
+    const method = refund_method || "wallet";
     let refundReference = "";
 
     if (method === "credit") {
@@ -210,6 +212,27 @@ serve(async (req) => {
       });
 
       refundReference = `credit_${order_id}`;
+
+    } else if (method === "wallet") {
+      // Credit the buyer's WALLET (provider-agnostic, instant). Idempotent on
+      // the order-based reference, so a retried refund never double-credits.
+      const { error: refundErr } = await supabase.rpc("wallet_credit", {
+        p_user_id: order.buyer_id,
+        p_amount: refundAmount,
+        p_type: "refund",
+        p_reference: `refund_${order_id}`,
+        p_order_id: order_id,
+        p_description: `Refund for order ${order_id.substring(0, 8)}`,
+      });
+      if (refundErr) {
+        console.error("wallet_credit (refund) error:", refundErr);
+        await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
+        return new Response(
+          JSON.stringify({ error: "Failed to credit wallet refund" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      refundReference = `refund_${order_id}`;
 
     } else if (method === "bank") {
       // Paystack transfer to buyer bank account

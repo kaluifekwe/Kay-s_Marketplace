@@ -8,10 +8,11 @@ import '../../core/models/models.dart';
 import '../../core/models/delivery_models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/credit_service.dart';
+import '../../core/services/wallet_service.dart';
 import '../../core/services/delivery_service.dart';
 import '../delivery/buyer_addresses_screen.dart';
 import '../kyc/kyc_screen.dart';
-import 'payment_simulation_screen.dart';
+import '../wallet/add_money_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
   const CheckoutScreen({super.key});
@@ -566,7 +567,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: (_isPayingWithCredit || deliveryUnagreed)
+                  onPressed: (_isPayingWithCredit || _isPayingWithWallet || deliveryUnagreed)
                       ? null
                       : () async {
                           // KYC gate — a buyer must verify their NIN before buying.
@@ -575,24 +576,16 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                           if (creditCoversFull) {
                             _completeWithCredit(totalWithDelivery);
                           } else {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => PaymentSimulationScreen(
-                                  storeDeliveryFees: _storeDeliveryFee,
-                                  storeCourierSelections: _buildCourierSelections(),
-                                ),
-                              ),
-                            );
+                            _completeWithWallet(totalWithDelivery);
                           }
                         },
-                  icon: _isPayingWithCredit
+                  icon: (_isPayingWithCredit || _isPayingWithWallet)
                       ? const SizedBox(
                           width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : Icon(creditCoversFull ? Icons.check_circle : Icons.lock),
+                      : Icon(creditCoversFull ? Icons.check_circle : Icons.account_balance_wallet),
                   label: Text(creditCoversFull
                       ? 'Complete with Credit'
-                      : 'Pay \u20A6${format.format(amountToPay)}'),
+                      : 'Pay \u20A6${format.format(amountToPay)} from Wallet'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primaryGreen,
                     foregroundColor: Colors.white,
@@ -604,7 +597,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               Text(
                 creditCoversFull
                     ? 'Full order covered by Kay\'s Credit'
-                    : 'Payment secured by Paystack escrow',
+                    : 'Paid from your wallet • held in escrow until delivery',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: AppColors.mediumGray, fontSize: 12),
               ),
@@ -751,6 +744,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 
   bool _isPayingWithCredit = false;
+  bool _isPayingWithWallet = false;
 
   Future<void> _completeWithCredit(double total) async {
     if (_buyerId.isEmpty || _isPayingWithCredit) return;
@@ -847,6 +841,135 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       }
     } finally {
       if (mounted) setState(() => _isPayingWithCredit = false);
+    }
+  }
+
+  /// Pay the whole order from the buyer's wallet. Builds one vendor order per
+  /// store (mirroring the credit + card paths) with any courier selection
+  /// attached, then calls wallet-checkout. If the balance is short, offers to
+  /// top up.
+  Future<void> _completeWithWallet(double total) async {
+    if (_buyerId.isEmpty || _isPayingWithWallet) return;
+    setState(() => _isPayingWithWallet = true);
+
+    try {
+      final cartState = context.read<CartCubit>().state;
+
+      final Map<String, List<Map<String, dynamic>>> vendorItemGroups = {};
+      final Map<String, String> vendorStoreMap = {};
+
+      for (final item in cartState.items) {
+        final product = cartState.productMap[item.productId];
+        if (product == null) continue;
+        final storeId = product.storeId;
+        if (storeId.isEmpty) continue;
+
+        String vendorId = '';
+        final cachedStore = context.read<MarketplaceCubit>().state.stores[storeId];
+        if (cachedStore != null) {
+          vendorId = cachedStore.vendorId;
+        } else {
+          try {
+            final storeData = await SupabaseService.client
+                .from('stores')
+                .select('id, vendor_id')
+                .eq('id', storeId)
+                .maybeSingle();
+            if (storeData != null) vendorId = storeData['vendor_id'] as String;
+          } catch (_) {}
+        }
+        if (vendorId.isEmpty) continue;
+
+        vendorStoreMap[vendorId] = storeId;
+        final unitPrice = item.variantPrice ?? product.price;
+        final itemData = <String, dynamic>{
+          'product_id': product.id,
+          'name': product.name,
+          'price': unitPrice,
+          'quantity': item.quantity,
+        };
+        if (item.variantLabel != null) itemData['variant_label'] = item.variantLabel;
+        vendorItemGroups.putIfAbsent(vendorId, () => []).add(itemData);
+      }
+
+      if (vendorItemGroups.isEmpty) {
+        if (mounted) {
+          setState(() => _isPayingWithWallet = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No valid items found for checkout'), backgroundColor: AppColors.errorRed),
+          );
+        }
+        return;
+      }
+
+      final courierSelections = _buildCourierSelections();
+      final vendorOrders = vendorItemGroups.entries.map((e) {
+        final storeId = vendorStoreMap[e.key] ?? '';
+        final courier = courierSelections[storeId];
+        return <String, dynamic>{
+          'vendor_id': e.key,
+          'store_id': storeId,
+          'items': e.value,
+          if (courier != null) 'delivery_quote_id': courier['quote_id'],
+          if (courier != null) 'selected_courier_name': courier['courier_name'],
+          if (courier != null && courier['option_ref'] != null) 'selected_option_ref': courier['option_ref'],
+        };
+      }).toList();
+
+      await WalletService.checkout(buyerId: _buyerId, vendorOrders: vendorOrders);
+
+      if (!mounted) return;
+      await context.read<CartCubit>().clearCart(_buyerId);
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AlertDialog(
+          icon: const Icon(Icons.check_circle, color: AppColors.successGreen, size: 64),
+          title: const Text('Order Complete'),
+          content: Text('Paid from your wallet.\nTotal: ₦${NumberFormat('#,##0').format(total)}'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.pop(context);
+              },
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } on WalletInsufficient catch (e) {
+      if (!mounted) return;
+      final fmt = NumberFormat('#,##0');
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Not enough wallet balance'),
+          content: Text(
+            'Your wallet has ₦${fmt.format(e.balance)} but this order is ₦${fmt.format(e.required)}.\n'
+            'Add ₦${fmt.format(e.shortfall)} to continue.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const AddMoneyScreen()));
+              },
+              child: const Text('Add money'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), backgroundColor: AppColors.errorRed),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isPayingWithWallet = false);
     }
   }
 }

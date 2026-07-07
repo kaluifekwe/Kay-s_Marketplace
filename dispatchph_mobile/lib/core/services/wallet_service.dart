@@ -13,6 +13,17 @@ class WalletBvnRequired implements Exception {
   String toString() => message;
 }
 
+/// Thrown by [WalletService.checkout] when the wallet balance is too low —
+/// carries the shortfall so the UI can prompt the buyer to Add money.
+class WalletInsufficient implements Exception {
+  final double balance;
+  final double required;
+  final double shortfall;
+  WalletInsufficient({required this.balance, required this.required, required this.shortfall});
+  @override
+  String toString() => 'Insufficient wallet balance';
+}
+
 class WalletService {
   static final _client = Supabase.instance.client;
 
@@ -75,6 +86,32 @@ class WalletService {
   static Future<double> getBalance(String userId) async {
     final wallet = await getWallet(userId);
     return (wallet?['balance'] as num?)?.toDouble() ?? 0;
+  }
+
+  /// Pay for the cart entirely from the wallet. Returns the created orders.
+  /// Throws [WalletInsufficient] (with the shortfall) when the balance is too low.
+  static Future<Map<String, dynamic>> checkout({
+    required String buyerId,
+    required List<Map<String, dynamic>> vendorOrders,
+  }) async {
+    final response = await _client.functions.invoke(
+      'wallet-checkout',
+      headers: _headers,
+      body: {'buyer_id': buyerId, 'vendor_orders': vendorOrders},
+    ).timeout(_timeout);
+
+    final data = response.data;
+    if (response.status != 200) {
+      if (data is Map && data['error'] == 'insufficient_balance') {
+        throw WalletInsufficient(
+          balance: (data['balance'] as num?)?.toDouble() ?? 0,
+          required: (data['required'] as num?)?.toDouble() ?? 0,
+          shortfall: (data['shortfall'] as num?)?.toDouble() ?? 0,
+        );
+      }
+      throw Exception(data is Map ? (data['message'] ?? data['error'] ?? 'Checkout failed') : 'Checkout failed');
+    }
+    return data as Map<String, dynamic>;
   }
 
   /// Ledger history, newest first.

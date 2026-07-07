@@ -202,41 +202,7 @@ serve(async (req) => {
       }
     };
 
-    const { data: bankAccount } = await supabase
-      .from("vendor_bank_accounts")
-      .select("*")
-      .eq("user_id", vendor_id)
-      .eq("is_verified", true)
-      .maybeSingle();
-
-    if (!bankAccount || !bankAccount.paystack_recipient_code) {
-      console.error(`No verified bank account for vendor ${vendor_id}`);
-      // Held for the vendor but can't be transferred yet — surfaced in the
-      // payout-attention queue (payout_status='pending_bank') so it's chased up,
-      // not silently stuck.
-      await supabase
-        .from("orders")
-        .update({ payment_released: true, status: "auto_released", payout_status: "pending_bank" })
-        .eq("id", order_id);
-
-      await supabase.from("transactions").insert({
-        order_id,
-        buyer_id: order.buyer_id,
-        vendor_id,
-        store_id: order.store_id,
-        amount: vendorPayout,
-        status: "pending",
-        type: "release",
-        metadata: JSON.stringify({ reason: "vendor_no_bank_account" }),
-      });
-
-      return new Response(
-        JSON.stringify({ success: true, message: "Released but vendor has no bank account" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Payout fully consumed by pending charges — nothing to transfer.
+    // Payout fully consumed by pending charges — nothing to credit.
     if (netPayout <= 0) {
       await settleCharges();
       await supabase.from("orders").update({ payment_released: true, status: "auto_released", payout_status: "paid" }).eq("id", order_id);
@@ -258,44 +224,35 @@ serve(async (req) => {
       );
     }
 
-    // A fresh reference per attempt — a failed transfer can be retried without
-    // Paystack rejecting it as a duplicate reference.
-    const attempt = (order.payout_attempts ?? 0) + 1;
-    const reference = `rel_${order_id}_${attempt}`;
-
-    const transferResponse = await fetch("https://api.paystack.co/transfer", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${paystackSecretKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        source: "balance",
-        amount: Math.round(netPayout * 100),
-        recipient: bankAccount.paystack_recipient_code,
-        reason: `Order ${order_id.substring(0, 8)} payment release`,
-        reference,
-      }),
+    // Credit the vendor's WALLET (provider-agnostic — no bank transfer here).
+    // Synchronous and idempotent on reference, so there's no async "processing"
+    // state or transfer webhook anymore. The vendor withdraws to bank later via
+    // wallet-withdraw. No bank account is required just to RECEIVE the payout.
+    const creditRef = `rel_${order_id}`;
+    const { error: creditErr } = await supabase.rpc("wallet_credit", {
+      p_user_id: vendor_id,
+      p_amount: netPayout,
+      p_type: "escrow_release",
+      p_reference: creditRef,
+      p_order_id: order_id,
+      p_description: "Sale proceeds",
     });
 
-    const transferData = await transferResponse.json();
-
-    if (!transferData.status) {
-      console.error("Paystack transfer error:", transferData);
-      // The transfer never left Paystack — fully revert so it can be retried.
+    if (creditErr) {
+      console.error("wallet_credit (escrow_release) error:", creditErr);
+      // Couldn't credit — revert the claim so it can be retried.
       await supabase
         .from("orders")
-        .update({ payment_released: false, payout_status: "failed", payout_attempts: attempt })
+        .update({ payment_released: false, payout_status: "failed" })
         .eq("id", order_id);
       return new Response(
-        JSON.stringify({ error: transferData.message || "Transfer failed" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Failed to credit vendor wallet" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Paystack transfers complete ASYNCHRONOUSLY. Do NOT mark paid yet — record
-    // it as 'processing' and let the transfer.success webhook confirm it (and
-    // settle the netted charges then). transfer.failed reverts for retry.
+    await settleCharges();
+
     await supabase.from("transactions").insert({
       order_id,
       buyer_id: order.buyer_id,
@@ -304,36 +261,28 @@ serve(async (req) => {
       amount: netPayout,
       platform_fee: tx.platform_fee,
       vendor_payout: netPayout,
-      status: "processing",
+      status: "success",
       type: "release",
-      paystack_reference: transferData.data.reference || reference,
-      metadata: JSON.stringify({
-        transfer_code: transferData.data.transfer_code,
-        charge_deduct: chargeDeduct,
-        gross_payout: vendorPayout,
-        charges_to_settle: chargesToSettle,
-      }),
+      metadata: JSON.stringify({ funding_target: "wallet", charge_deduct: chargeDeduct, gross_payout: vendorPayout }),
     });
 
     await supabase
       .from("orders")
-      .update({
-        payment_released: true,
-        status: "auto_released",
-        payout_status: "processing",
-        payout_attempts: attempt,
-      })
+      .update({ payment_released: true, status: "auto_released", payout_status: "paid" })
       .eq("id", order_id);
 
-    console.log(`Escrow payout initiated: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct}), ref=${reference}`);
+    await supabase.from("notifications").insert({
+      user_id: vendor_id,
+      title: "Payment received",
+      body: `₦${netPayout.toLocaleString()} from a completed order was added to your wallet.`,
+      type: "vendor_order",
+      reference_id: order_id,
+    });
+
+    console.log(`Escrow released to wallet: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct})`);
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        status: "processing",
-        amount_released: netPayout,
-        transfer_reference: transferData.data.reference || reference,
-      }),
+      JSON.stringify({ success: true, amount_released: netPayout, credited_to: "wallet" }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: any) {

@@ -71,7 +71,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
   }
 
   Future<void> _loadVariants() async {
-    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id);
+    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id, forceRefresh: true);
     if (mounted) {
       setState(() {
         _variants = variants.map((v) => _VariantRow(

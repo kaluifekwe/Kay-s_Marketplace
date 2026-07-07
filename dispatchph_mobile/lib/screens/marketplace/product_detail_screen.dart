@@ -68,7 +68,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   }
 
   Future<void> _loadVariants() async {
-    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id);
+    // Force a fresh fetch so newly added/edited variants always show, rather
+    // than a stale cached list from earlier in the session.
+    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id, forceRefresh: true);
     if (!mounted) return;
 
     if (variants.isNotEmpty && mounted) {

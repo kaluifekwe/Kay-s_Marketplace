@@ -406,10 +406,16 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
 
   // --- Variant methods ---
 
-  Future<List<ProductVariant>> loadVariants(String productId) async {
+  Future<List<ProductVariant>> loadVariants(String productId, {bool forceRefresh = false}) async {
     try {
-      final cached = state.variants[productId];
-      if (cached != null && cached.isNotEmpty) return cached;
+      // The in-memory cache is only a first-paint optimization. Without
+      // forceRefresh it would return whatever was loaded first for the app's
+      // lifetime, so a variant added later (here or on another device) never
+      // showed until restart. Screens that must reflect edits pass forceRefresh.
+      if (!forceRefresh) {
+        final cached = state.variants[productId];
+        if (cached != null && cached.isNotEmpty) return cached;
+      }
 
       final data = await SupabaseService.client
           .from('product_variants')

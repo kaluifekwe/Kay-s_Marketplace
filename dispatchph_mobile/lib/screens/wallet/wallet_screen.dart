@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
+import 'add_money_screen.dart';
 
 /// Shared wallet screen for both buyers and vendors. Buyers fund their wallet
 /// and pay from it; vendors receive sale proceeds and withdraw to bank. The
@@ -95,7 +96,13 @@ class _WalletScreenState extends State<WalletScreen> {
                     if (!isVendor)
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: () => _comingSoon('Add money'),
+                          onPressed: () async {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const AddMoneyScreen()),
+                            );
+                            _load();
+                          },
                           icon: const Icon(Icons.add),
                           label: const Text('Add money'),
                         ),

@@ -7,6 +7,35 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 class WalletService {
   static final _client = Supabase.instance.client;
 
+  // Money operations must fail fast on a stalled connection (see PaymentService).
+  static const _timeout = Duration(seconds: 20);
+
+  static Map<String, String> get _headers {
+    final headers = <String, String>{'Content-Type': 'application/json'};
+    final session = _client.auth.currentSession;
+    if (session != null && session.accessToken.isNotEmpty) {
+      headers['Authorization'] = 'Bearer ${session.accessToken}';
+    }
+    return headers;
+  }
+
+  /// Create (or fetch) the buyer's permanent Flutterwave virtual account. BVN is
+  /// required by Flutterwave for permanent NGN accounts; it is passed through to
+  /// Flutterwave server-side and never stored. Returns { account_number, bank_name }.
+  static Future<Map<String, dynamic>> createVirtualAccount({required String bvn}) async {
+    final response = await _client.functions.invoke(
+      'create-virtual-account',
+      headers: _headers,
+      body: {'bvn': bvn},
+    ).timeout(_timeout);
+
+    final data = response.data;
+    if (response.status != 200) {
+      throw Exception(data is Map ? (data['error'] ?? data['message'] ?? 'Could not create funding account') : 'Could not create funding account');
+    }
+    return data as Map<String, dynamic>;
+  }
+
   /// The wallet row, or null if it hasn't been created yet (created lazily on
   /// first credit / virtual-account setup).
   static Future<Map<String, dynamic>?> getWallet(String userId) async {

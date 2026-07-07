@@ -61,18 +61,31 @@ serve(async (req) => {
       return json({ account_number: wallet.flw_va_number, bank_name: wallet.flw_va_bank, existing: true });
     }
 
-    const { bvn } = await req.json().catch(() => ({}));
-    if (!bvn || !/^\d{11}$/.test(String(bvn))) {
-      return json({ error: "bvn_required", message: "A valid 11-digit BVN is required to create your funding account." }, 400);
-    }
+    const body = await req.json().catch(() => ({}));
+    const bvnInput = body?.bvn ? String(body.bvn) : null;
 
     const { data: user } = await supabase
       .from("users")
-      .select("name, email, phone")
+      .select("name, email, phone, nin, kyc_status")
       .eq("id", callerId)
       .maybeSingle();
     if (!user?.email) {
       return json({ error: "Buyer email missing. Update your profile before funding." }, 400);
+    }
+
+    // Flutterwave accepts NIN *or* BVN for a static NGN virtual account. Prefer
+    // the NIN already verified during KYC (no extra prompt); fall back to a BVN
+    // the buyer typed only if there's no verified NIN on file.
+    const nin = user.kyc_status === "verified" && user.nin ? String(user.nin) : null;
+    if (bvnInput && !/^\d{11}$/.test(bvnInput)) {
+      return json({ error: "bvn_invalid", message: "BVN must be 11 digits." }, 400);
+    }
+    if (!nin && !bvnInput) {
+      return json({
+        error: "identity_required",
+        need_bvn: true,
+        message: "Verify your identity (NIN) first, or enter your BVN to create a funding account.",
+      }, 400);
     }
 
     const nameParts = String(user.name || "Kays Buyer").trim().split(/\s+/);
@@ -111,7 +124,8 @@ serve(async (req) => {
         amount: 0, // 0 = open-ended static account
         currency: "NGN",
         account_type: "static",
-        bvn: String(bvn),
+        ...(nin ? { nin } : {}),
+        ...(bvnInput ? { bvn: bvnInput } : {}),
         narration: `${firstname} ${lastname}`.trim(),
       },
       vaRef

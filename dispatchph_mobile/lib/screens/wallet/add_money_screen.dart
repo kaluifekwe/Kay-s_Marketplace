@@ -24,6 +24,7 @@ class _AddMoneyScreenState extends State<AddMoneyScreen> {
   String? _bankName;
   bool _loading = true;
   bool _creating = false;
+  bool _needBvn = false; // true only when there's no verified NIN on file
   String? _error;
 
   @override
@@ -51,10 +52,15 @@ class _AddMoneyScreenState extends State<AddMoneyScreen> {
   }
 
   Future<void> _generate() async {
-    final bvn = _bvnController.text.trim();
-    if (!RegExp(r'^\d{11}$').hasMatch(bvn)) {
-      setState(() => _error = 'Enter a valid 11-digit BVN');
-      return;
+    // Only validate/collect a BVN when the server has told us there's no
+    // verified NIN on file (_needBvn). Otherwise generate straight from the NIN.
+    String? bvn;
+    if (_needBvn) {
+      bvn = _bvnController.text.trim();
+      if (!RegExp(r'^\d{11}$').hasMatch(bvn)) {
+        setState(() => _error = 'Enter a valid 11-digit BVN');
+        return;
+      }
     }
     setState(() {
       _creating = true;
@@ -66,6 +72,14 @@ class _AddMoneyScreenState extends State<AddMoneyScreen> {
       setState(() {
         _accountNumber = result['account_number'] as String?;
         _bankName = result['bank_name'] as String?;
+        _creating = false;
+      });
+    } on WalletBvnRequired catch (e) {
+      // No NIN on file — reveal the BVN field so the buyer can retry.
+      if (!mounted) return;
+      setState(() {
+        _needBvn = true;
+        _error = e.message;
         _creating = false;
       });
     } catch (e) {
@@ -96,40 +110,47 @@ class _AddMoneyScreenState extends State<AddMoneyScreen> {
           ? const Center(child: CircularProgressIndicator(color: AppColors.primaryGreen))
           : Padding(
               padding: const EdgeInsets.all(16),
-              child: _accountNumber == null ? _buildBvnForm() : _buildAccountDetails(),
+              child: _accountNumber == null ? _buildGenerateForm() : _buildAccountDetails(),
             ),
     );
   }
 
-  Widget _buildBvnForm() {
+  Widget _buildGenerateForm() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const Text('Create your funding account',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        const Text(
-          'We\'ll generate a dedicated bank account for topping up your wallet. '
-          'Your BVN is required by our payment partner to open it and is never stored.',
-          style: TextStyle(color: AppColors.mediumGray, fontSize: 13),
+        Text(
+          _needBvn
+              ? 'We couldn\'t find a verified NIN on your account. Enter your BVN to '
+                  'open your funding account — it\'s used only to create the account and never stored.'
+              : 'We\'ll generate a dedicated bank account for topping up your wallet. '
+                  'Transfers into it land in your wallet automatically.',
+          style: const TextStyle(color: AppColors.mediumGray, fontSize: 13),
         ),
         const SizedBox(height: 20),
-        TextField(
-          controller: _bvnController,
-          keyboardType: TextInputType.number,
-          maxLength: 11,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: const InputDecoration(
-            labelText: 'BVN',
-            hintText: '11-digit Bank Verification Number',
-            border: OutlineInputBorder(),
+        if (_needBvn) ...[
+          TextField(
+            controller: _bvnController,
+            keyboardType: TextInputType.number,
+            maxLength: 11,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: const InputDecoration(
+              labelText: 'BVN',
+              hintText: '11-digit Bank Verification Number',
+              border: OutlineInputBorder(),
+            ),
           ),
-        ),
-        if (_error != null) ...[
-          const SizedBox(height: 8),
-          Text(_error!, style: const TextStyle(color: AppColors.errorRed, fontSize: 13)),
+          const SizedBox(height: 4),
         ],
-        const SizedBox(height: 16),
+        if (_error != null) ...[
+          const SizedBox(height: 4),
+          Text(_error!, style: const TextStyle(color: AppColors.errorRed, fontSize: 13)),
+          const SizedBox(height: 8),
+        ],
+        const SizedBox(height: 12),
         FilledButton(
           onPressed: _creating ? null : _generate,
           child: _creating

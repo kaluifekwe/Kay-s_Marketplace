@@ -15,6 +15,7 @@ import '../notifications/notification_bell_icon.dart';
 import '../notifications/notification_screen.dart';
 import '../chat/chat_list_screen.dart';
 import '../chat/chat_badge_icon.dart';
+import '../wallet/wallet_screen.dart';
 import 'add_product_screen.dart';
 import 'edit_product_screen.dart';
 import '../marketplace/vendor_store_screen.dart';
@@ -353,6 +354,18 @@ class _VendorDashboardState extends State<VendorDashboard> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const VendorLocationsScreen()),
+                );
+              },
+            ),
+            _buildMenuItem(
+              context,
+              Icons.account_balance_wallet_outlined,
+              'Wallet',
+              () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const WalletScreen()),
                 );
               },
             ),

@@ -61,6 +61,7 @@ class DispatchPHApp extends StatelessWidget {
         BlocProvider(create: (_) => DisputeCubit()),
         BlocProvider(create: (_) => ReviewCubit()),
         BlocProvider(create: (_) => NotificationCubit()),
+        BlocProvider(create: (_) => WalletCubit()),
       ],
       child: MaterialApp(
         title: "Kay's Marketplace",

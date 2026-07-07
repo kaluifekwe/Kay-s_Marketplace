@@ -6,3 +6,4 @@ export 'core/blocs/chat_bloc.dart';
 export 'core/blocs/dispute_bloc.dart';
 export 'core/blocs/review_bloc.dart';
 export 'core/blocs/notification_bloc.dart';
+export 'core/blocs/wallet_bloc.dart';

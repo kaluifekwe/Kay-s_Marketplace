@@ -28,6 +28,7 @@ import '../notifications/notification_screen.dart';
 import '../auth/welcome_screen.dart';
 import 'my_rewards_screen.dart';
 import 'buyer_bank_account_screen.dart';
+import '../wallet/wallet_screen.dart';
 import '../delivery/buyer_addresses_screen.dart';
 import '../policy/policy_screen.dart';
 import '../kyc/kyc_screen.dart';
@@ -1077,6 +1078,9 @@ class ProfileTab extends StatelessWidget {
                 ),
                 const SizedBox(height: 22),
                 card([
+                  tile(Icons.account_balance_wallet_outlined, 'Wallet',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()))),
+                  divider,
                   tile(Icons.card_giftcard, 'My Rewards & Credit',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MyRewardsScreen()))),
                   divider,

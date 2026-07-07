@@ -69,6 +69,8 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       });
       _notifPoll = Timer.periodic(const Duration(seconds: 15), (_) {
         _loadNotifications();
+        // Keep the message-icon unread badge live as new messages arrive.
+        _loadChats();
       });
       if (widget.showWelcomeCredit) {
         _showWelcomeCreditDialog();

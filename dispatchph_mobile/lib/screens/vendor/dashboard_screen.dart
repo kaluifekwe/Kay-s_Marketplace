@@ -14,6 +14,7 @@ import '../../widgets/loading_skeleton.dart';
 import '../notifications/notification_bell_icon.dart';
 import '../notifications/notification_screen.dart';
 import '../chat/chat_list_screen.dart';
+import '../chat/chat_badge_icon.dart';
 import 'add_product_screen.dart';
 import 'edit_product_screen.dart';
 import '../marketplace/vendor_store_screen.dart';
@@ -52,9 +53,13 @@ class _VendorDashboardState extends State<VendorDashboard> {
     final userId = await AuthService.getUserId();
     context.read<OrderCubit>().loadVendorOrders(userId);
     context.read<NotificationCubit>().loadNotifications(userId);
+    // Populate the chat inbox so the message-icon unread badge shows on load.
+    context.read<ChatCubit>().loadChatsForVendor(userId);
     _notifPoll = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted) {
         context.read<NotificationCubit>().loadNotifications(userId);
+        // Keep the message-icon badge live as new messages arrive.
+        context.read<ChatCubit>().loadChatsForVendor(userId);
       }
     });
   }
@@ -190,8 +195,7 @@ class _VendorDashboardState extends State<VendorDashboard> {
                   MaterialPageRoute(builder: (_) => const NotificationScreen()),
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.chat_bubble_outline, color: Colors.white),
+              ChatBadgeIcon(
                 onPressed: () => Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const ChatListScreen()),

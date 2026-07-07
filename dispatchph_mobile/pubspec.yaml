@@ -49,3 +49,4 @@ flutter:
     - assets/images/
     - assets/bank_logos/
     - .env
+    - shorebird.yaml

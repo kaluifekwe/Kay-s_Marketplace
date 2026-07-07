@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS wallets (
   balance          numeric(14,2) NOT NULL DEFAULT 0,
   currency         text NOT NULL DEFAULT 'NGN',
   status           text NOT NULL DEFAULT 'active', -- active | frozen
+  flw_customer_id  text,   -- Flutterwave v4 customer id (VA is created under it)
   flw_va_number    text,
   flw_va_bank      text,
   flw_va_reference text,
@@ -85,6 +86,7 @@ BEGIN
 
   IF NEW.balance          IS DISTINCT FROM OLD.balance
      OR NEW.status           IS DISTINCT FROM OLD.status
+     OR NEW.flw_customer_id  IS DISTINCT FROM OLD.flw_customer_id
      OR NEW.flw_va_number    IS DISTINCT FROM OLD.flw_va_number
      OR NEW.flw_va_bank      IS DISTINCT FROM OLD.flw_va_bank
      OR NEW.flw_va_reference IS DISTINCT FROM OLD.flw_va_reference

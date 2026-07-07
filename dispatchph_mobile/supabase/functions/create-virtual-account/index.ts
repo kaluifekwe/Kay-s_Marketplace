@@ -1,16 +1,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { flwPost } from "../_shared/flutterwave.ts";
 
-// Creates (or returns) a buyer's PERMANENT Flutterwave virtual account. The
-// buyer transfers money to this fixed account number; the flutterwave-webhook
-// credits their wallet on receipt. Flutterwave requires a BVN to open a
-// permanent NGN account — we pass it through to Flutterwave and deliberately
-// DO NOT store it (only the resulting account number/bank are persisted).
+// Creates (or returns) a buyer's PERMANENT (static) Flutterwave v4 virtual
+// account. In v4 you first create a customer, then create a static virtual
+// account under that customer. Flutterwave requires a BVN for permanent NGN
+// accounts — we pass it through and DELIBERATELY never store it (only the
+// resulting account number/bank + customer id are persisted). The buyer
+// transfers into this fixed account; flutterwave-webhook credits their wallet.
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-const flwSecretKey = Deno.env.get("FLUTTERWAVE_SECRET_KEY")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -49,19 +50,15 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Already have one? Return it (idempotent — never create a second account).
+    // Already have an account? Return it (idempotent — never open a second one).
     const { data: wallet } = await supabase
       .from("wallets")
-      .select("flw_va_number, flw_va_bank")
+      .select("flw_customer_id, flw_va_number, flw_va_bank")
       .eq("user_id", callerId)
       .maybeSingle();
 
     if (wallet?.flw_va_number) {
-      return json({
-        account_number: wallet.flw_va_number,
-        bank_name: wallet.flw_va_bank,
-        existing: true,
-      });
+      return json({ account_number: wallet.flw_va_number, bank_name: wallet.flw_va_bank, existing: true });
     }
 
     const { bvn } = await req.json().catch(() => ({}));
@@ -69,7 +66,6 @@ serve(async (req) => {
       return json({ error: "bvn_required", message: "A valid 11-digit BVN is required to create your funding account." }, 400);
     }
 
-    // Buyer identity for the account (name/email/phone).
     const { data: user } = await supabase
       .from("users")
       .select("name, email, phone")
@@ -82,45 +78,61 @@ serve(async (req) => {
     const nameParts = String(user.name || "Kays Buyer").trim().split(/\s+/);
     const firstname = nameParts[0] || "Kays";
     const lastname = nameParts.slice(1).join(" ") || "Buyer";
-    const txRef = `wallet_${callerId}`;
 
-    // Flutterwave v3: create a permanent virtual account.
-    const flwRes = await fetch("https://api.flutterwave.com/v3/virtual-account-numbers", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${flwSecretKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    // 1) Ensure a Flutterwave customer exists for this buyer.
+    let customerId: string | null = wallet?.flw_customer_id ?? null;
+    if (!customerId) {
+      const custBody: Record<string, unknown> = {
+        name: { first: firstname, last: lastname },
         email: user.email,
-        is_permanent: true,
-        bvn: String(bvn),
-        tx_ref: txRef,
-        phonenumber: user.phone || undefined,
-        firstname,
-        lastname,
-        narration: `${firstname} ${lastname}`.trim(),
-      }),
-    });
-
-    const flwData = await flwRes.json();
-    if (flwData.status !== "success" || !flwData.data?.account_number) {
-      console.error("Flutterwave VA create error:", flwData);
-      return json({ error: flwData.message || "Could not create funding account" }, 400);
+      };
+      if (user.phone) {
+        // Best-effort E.164-ish split; Flutterwave wants country_code + number.
+        const digits = String(user.phone).replace(/\D/g, "");
+        const national = digits.startsWith("234") ? digits.slice(3) : digits.replace(/^0/, "");
+        custBody.phone = { country_code: "234", number: national };
+      }
+      const cust = await flwPost("/customers", custBody, `cust_${callerId}`);
+      customerId = cust.data?.data?.id ?? cust.data?.id ?? null;
+      if (!cust.ok || !customerId) {
+        console.error("Flutterwave create customer error:", JSON.stringify(cust.data));
+        return json({ error: cust.data?.message || "Could not create customer profile" }, 400);
+      }
+      await supabase.from("wallets").upsert({ user_id: callerId, flw_customer_id: customerId }, { onConflict: "user_id" });
     }
 
-    const accountNumber = flwData.data.account_number as string;
-    const bankName = flwData.data.bank_name as string;
-    const flwRef = (flwData.data.flw_ref || flwData.data.order_ref || txRef) as string;
+    // 2) Create the static (permanent) virtual account under that customer.
+    const vaRef = `wallet_${callerId}_${Date.now()}`;
+    const va = await flwPost(
+      "/virtual-accounts",
+      {
+        reference: vaRef,
+        customer_id: customerId,
+        amount: 0, // 0 = open-ended static account
+        currency: "NGN",
+        account_type: "static",
+        bvn: String(bvn),
+        narration: `${firstname} ${lastname}`.trim(),
+      },
+      vaRef
+    );
 
-    // Persist ONLY the account details — never the BVN. Auto-creates the wallet
-    // row via upsert (balance defaults to 0).
+    const vaData = va.data?.data ?? va.data;
+    const accountNumber = vaData?.account_number;
+    const bankName = vaData?.account_bank_name ?? vaData?.bank_name ?? vaData?.account_bank;
+    if (!va.ok || !accountNumber) {
+      console.error("Flutterwave create VA error:", JSON.stringify(va.data));
+      return json({ error: va.data?.message || "Could not create funding account" }, 400);
+    }
+
+    // Persist ONLY account details + customer id — never the BVN.
     const { error: upErr } = await supabase.from("wallets").upsert(
       {
         user_id: callerId,
+        flw_customer_id: customerId,
         flw_va_number: accountNumber,
         flw_va_bank: bankName,
-        flw_va_reference: flwRef,
+        flw_va_reference: vaRef,
       },
       { onConflict: "user_id" }
     );

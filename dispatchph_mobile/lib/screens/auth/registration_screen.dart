@@ -75,8 +75,9 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Step 1: Register auth user first
-      final regSuccess = await AuthService.register(
+      // Step 1: Register auth user first. Returns null on success, else a clear
+      // user-facing reason (wrong email, weak password, already registered, …).
+      final regError = await AuthService.register(
         email: _emailController.text.trim(),
         password: _passwordController.text,
         name: _nameController.text.trim(),
@@ -89,9 +90,9 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
       if (!mounted) return;
 
-      if (!regSuccess) {
+      if (regError != null) {
         setState(() => _isLoading = false);
-        _showError('Email already registered. Please log in instead.');
+        _showError(regError);
         return;
       }
 

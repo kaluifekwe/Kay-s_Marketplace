@@ -42,6 +42,35 @@ String friendlyError(Object error, {String? fallback}) {
   return s;
 }
 
+/// Translate a Supabase Auth / sign-in error into clear copy for login & signup.
+/// Covers the common cases; anything unrecognised gets a safe generic (never a
+/// raw exception or status code).
+String friendlyAuthError(Object error, {String? fallback}) {
+  final s = error.toString().toLowerCase();
+  if (s.contains('invalid login credentials') || s.contains('invalid_grant')) {
+    return 'Incorrect email or password.';
+  }
+  if (s.contains('email not confirmed') || s.contains('email_not_confirmed')) {
+    return 'Please confirm your email first — check your inbox for the link.';
+  }
+  if (s.contains('already registered') || s.contains('already been registered') || s.contains('user_already_exists')) {
+    return 'That email is already registered. Please log in instead.';
+  }
+  if (s.contains('password should be at least') || s.contains('weak_password')) {
+    return 'Your password is too weak. Use at least 6 characters.';
+  }
+  if (s.contains('unable to validate email') || s.contains('invalid email') || s.contains('validation_failed')) {
+    return 'Please enter a valid email address.';
+  }
+  if (s.contains('rate limit') || s.contains('over_email_send_rate') || s.contains('too many requests') || s.contains('429')) {
+    return 'Too many attempts. Please wait a moment and try again.';
+  }
+  if (s.contains('socketexception') || s.contains('failed host lookup') || s.contains('clientexception') || s.contains('timeout')) {
+    return 'No internet connection. Check your network and try again.';
+  }
+  return fallback ?? 'Something went wrong. Please try again.';
+}
+
 /// A bare machine code like `insufficient_balance` — never show these to users.
 bool _looksLikeCode(String s) =>
     !s.contains(' ') && RegExp(r'^[a-z0-9]+(_[a-z0-9]+)+$').hasMatch(s);

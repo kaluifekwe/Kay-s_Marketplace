@@ -1,6 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/models.dart';
 import 'supabase_service.dart';
+import 'error_text.dart';
 
 class AuthService {
   static Future<String> _generateUniqueId() async {
@@ -17,7 +18,9 @@ class AuthService {
     return id;
   }
 
-  static Future<bool> register({
+  /// Register a new account. Returns null on success, or a clear, user-facing
+  /// error message (never a raw code) on failure.
+  static Future<String?> register({
     String? id,
     required String email,
     required String password,
@@ -35,7 +38,9 @@ class AuthService {
         data: {'name': name, 'role': role},
       );
 
-      if (response.user == null) return false;
+      if (response.user == null) {
+        return 'That email may already be registered. Try logging in instead.';
+      }
 
       final userId = response.user!.id;
       final uniqueId = await _generateUniqueId();
@@ -78,10 +83,10 @@ class AuthService {
       await prefs.setString('auth_store_id', '');
       await prefs.setString('auth_unique_id', uniqueId);
 
-      return true;
+      return null;
     } catch (e) {
       print('[AuthService] Register error: $e');
-      return false;
+      return friendlyAuthError(e, fallback: "We couldn't create your account. Please try again.");
     }
   }
 
@@ -191,17 +196,7 @@ class AuthService {
       return null;
     } catch (e) {
       print('[AuthService] Login error: $e');
-      final msg = e.toString();
-      if (msg.contains('Email not confirmed') || msg.contains('email_not_confirmed')) {
-        return 'Email not confirmed. Please check your inbox and confirm your email first.';
-      }
-      if (msg.contains('Invalid login credentials') || msg.contains('invalid_grant')) {
-        return 'Invalid email or password.';
-      }
-      if (msg.contains('SocketException') || msg.contains('Failed host lookup')) {
-        return 'No internet connection. Please check your network.';
-      }
-      return 'Login failed: ${e.toString()}';
+      return friendlyAuthError(e, fallback: "We couldn't sign you in. Please try again.");
     }
   }
 

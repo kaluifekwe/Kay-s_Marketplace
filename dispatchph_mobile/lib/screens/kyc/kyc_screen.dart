@@ -32,8 +32,16 @@ class _KycScreenState extends State<KycScreen> {
 
   Future<void> _submit() async {
     final nin = _nin.text.trim();
+    final first = _first.text.trim();
+    final last = _last.text.trim();
     if (!RegExp(r'^\d{11}$').hasMatch(nin)) {
       setState(() => _error = 'Enter your 11-digit $_label');
+      return;
+    }
+    // Both names are required — we match them against the name registered to
+    // the NIN/BVN, so a blank field (or just an account nickname) can't verify.
+    if (first.isEmpty || last.isEmpty) {
+      setState(() => _error = 'Enter your first name and surname exactly as on your $_label');
       return;
     }
     setState(() {
@@ -43,8 +51,8 @@ class _KycScreenState extends State<KycScreen> {
     final res = await KycService.submitNin(
       nin: nin,
       idType: _idType,
-      firstName: _first.text.trim().isEmpty ? null : _first.text.trim(),
-      lastName: _last.text.trim().isEmpty ? null : _last.text.trim(),
+      firstName: first,
+      lastName: last,
     );
     if (!mounted) return;
     setState(() => _loading = false);

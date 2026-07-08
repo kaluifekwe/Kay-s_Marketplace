@@ -128,16 +128,25 @@ serve(async (req) => {
         await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
         return json({ error: result.reason || `${label} verification failed`, status: "rejected" }, 400);
       }
-      // Require BOTH first name and surname to match the registered names.
+      // Require BOTH the provider's first name and surname to appear in the
+      // name the buyer typed (primary) plus their account name. We match the
+      // typed legal name so a display nickname alone can't block verification.
+      // Field names vary by provider/ID type — cover snake_case + camelCase.
       const rec = result.record || {};
-      const provFirst = norm(rec.first_name || rec.firstname || "");
-      const provLast = norm(rec.last_name || rec.surname || rec.lastname || "");
+      const provFirst = norm(rec.first_name || rec.firstname || rec.firstName || "");
+      const provLast = norm(rec.last_name || rec.surname || rec.lastname || rec.lastName || rec.surName || "");
       const claimed = norm(`${first_name ?? ""} ${last_name ?? ""} ${me?.name ?? ""}`);
       const firstOk = provFirst.length > 0 && claimed.includes(provFirst);
       const lastOk = provLast.length > 0 && claimed.includes(provLast);
+      console.log(
+        `name-match: provFirst=${provFirst} provLast=${provLast} claimed=${claimed} firstOk=${firstOk} lastOk=${lastOk}`,
+      );
       if (!firstOk || !lastOk) {
         await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
-        return json({ error: `The name on this ${label} doesn't match your account name.`, status: "rejected" }, 400);
+        return json({
+          error: `The name on this ${label} doesn't match the name you entered. Enter your first name and surname exactly as they appear on your ${label}.`,
+          status: "rejected",
+        }, 400);
       }
     }
 

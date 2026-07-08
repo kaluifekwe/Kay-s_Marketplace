@@ -63,13 +63,13 @@ class PaymentService {
     return response.data as Map<String, dynamic>;
   }
 
-  /// Verify account name via Paystack Edge Function
+  /// Verify account name via Flutterwave (same provider as payouts).
   static Future<Map<String, dynamic>> verifyBankAccount({
     required String accountNumber,
     required String bankCode,
   }) async {
     final response = await _client.functions.invoke(
-      'paystack-proxy',
+      'flutterwave-proxy',
       headers: _headers,
       body: {
         'action': 'resolve-account',
@@ -85,34 +85,21 @@ class PaymentService {
     return data as Map<String, dynamic>;
   }
 
-  /// Create transfer recipient for vendor via Edge Function
+  /// Flutterwave payouts transfer straight to an account number + bank code, so
+  /// there's no "recipient" to pre-create (that was a Paystack concept). Kept as
+  /// a no-op stub so the existing bank-account save flow doesn't need changing.
   static Future<Map<String, dynamic>> createTransferRecipient({
     required String name,
     required String accountNumber,
     required String bankCode,
   }) async {
-    final response = await _client.functions.invoke(
-      'paystack-proxy',
-      headers: _headers,
-      body: {
-        'action': 'create-transfer-recipient',
-        'name': name,
-        'account_number': accountNumber,
-        'bank_code': bankCode,
-      },
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200 || (data is Map && data['error'] != null)) {
-      throw Exception(data is Map ? (data['error'] ?? 'Failed to create transfer recipient') : 'Failed to create transfer recipient');
-    }
-    return data as Map<String, dynamic>;
+    return {'recipient_code': ''};
   }
 
-  /// List all Nigerian banks via Edge Function
+  /// List all Nigerian banks via Flutterwave.
   static Future<List<Map<String, dynamic>>> listBanks() async {
     final response = await _client.functions.invoke(
-      'paystack-proxy',
+      'flutterwave-proxy',
       headers: _headers,
       body: {'action': 'list-banks'},
     ).timeout(_timeout);

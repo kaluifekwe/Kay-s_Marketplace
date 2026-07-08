@@ -52,6 +52,34 @@ export function flwUrl(path: string): string {
   return `${FLW_BASE}${path.startsWith("/") ? path : "/" + path}`;
 }
 
+// Optional static-IP relay for endpoints Flutterwave gates behind IP
+// whitelisting (transfers). If configured, transfer calls are routed through it.
+const RELAY_URL = Deno.env.get("FLUTTERWAVE_RELAY_URL") || "";
+const RELAY_SECRET = Deno.env.get("FLUTTERWAVE_RELAY_SECRET") || "";
+
+/// Initiate a payout (POST /direct-transfers). Routes through the static-IP
+/// relay when FLUTTERWAVE_RELAY_URL is set (so Flutterwave sees a whitelisted
+/// IP); otherwise calls Flutterwave directly (works only from a whitelisted IP
+/// or in sandbox). Returns { ok, status, data }.
+export async function flwTransfer(
+  body: unknown,
+  idempotencyKey: string
+): Promise<{ ok: boolean; status: number; data: any }> {
+  const token = await getFlwToken();
+  const key = idempotencyKey.length >= 12 ? idempotencyKey : `${idempotencyKey}-${crypto.randomUUID()}`;
+
+  if (RELAY_URL) {
+    const res = await fetch(RELAY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-relay-secret": RELAY_SECRET },
+      body: JSON.stringify({ path: "/direct-transfers", token, body, idempotency_key: key, trace_id: key }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  }
+  return flwPost("/direct-transfers", body, key);
+}
+
 /// Authenticated POST with v4's required idempotency + trace headers (both must
 /// be 12-255 chars). Returns { ok, status, data }.
 export async function flwPost(

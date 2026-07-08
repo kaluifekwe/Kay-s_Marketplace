@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { flwPost } from "../_shared/flutterwave.ts";
+import { flwTransfer } from "../_shared/flutterwave.ts";
 
 // Withdraw wallet balance to the user's bank via a Flutterwave v4 direct
 // transfer. Vendors can withdraw their whole balance; buyers can only withdraw
@@ -129,9 +129,9 @@ serve(async (req) => {
       return json({ error: "insufficient_balance", message: "Your wallet balance is too low." }, 402);
     }
 
-    // 3) Initiate the Flutterwave v4 bank transfer.
-    const transfer = await flwPost(
-      "/direct-transfers",
+    // 3) Initiate the Flutterwave v4 bank transfer (routed through the static-IP
+    // relay so Flutterwave sees a whitelisted IP).
+    const transfer = await flwTransfer(
       {
         action: "instant",
         type: "bank",

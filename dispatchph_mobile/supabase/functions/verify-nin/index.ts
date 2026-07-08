@@ -66,13 +66,14 @@ async function verifyIdWithProvider(
     body: JSON.stringify({ number }),
   });
   const body = await res.json().catch(() => ({}));
-  console.log(`prembly ${idType} resp: status=${res.status} body=${JSON.stringify(body).slice(0, 800)}`);
-
   const rec = body?.[`${idType}_data`] ?? body?.data ?? body;
   const verified =
     body?.status === true ||
     String(body?.status ?? "").toLowerCase() === "success" ||
     String(body?.verification?.status ?? "").toUpperCase().includes("VERIFIED");
+  // Log status only — NEVER the response body (it contains the person's name,
+  // date of birth and other PII).
+  console.log(`prembly ${idType} verify: http=${res.status} verified=${verified}`);
   if (!res.ok || !verified || !rec) {
     return { ok: false, reason: body?.detail || body?.message || `${label} verification failed (${res.status})` };
   }
@@ -87,10 +88,11 @@ serve(async (req) => {
     const uid = callerId(req.headers.get("Authorization"));
     if (!uid) return json({ error: "Authentication required" }, 401);
 
-    const { nin, first_name, last_name, id_type } = await req.json();
-    // Buyer may verify with either their NIN or their BVN (both 11 digits).
-    const idType: "nin" | "bvn" = String(id_type ?? "nin").toLowerCase() === "bvn" ? "bvn" : "nin";
-    const label = idType.toUpperCase();
+    const { nin, first_name, last_name } = await req.json();
+    // KYC uses NIN only — one NIN per person, so accounts are capped per real
+    // identity (a person can't add more by also using a BVN).
+    const idType = "nin" as const;
+    const label = "NIN";
     if (!nin || !/^\d{11}$/.test(String(nin))) {
       return json({ error: `Enter a valid 11-digit ${label}` }, 400);
     }
@@ -141,9 +143,8 @@ serve(async (req) => {
       const claimed = norm(`${first_name ?? ""} ${last_name ?? ""} ${me?.name ?? ""}`);
       const firstOk = provFirst.length > 0 && claimed.includes(provFirst);
       const lastOk = provLast.length > 0 && claimed.includes(provLast);
-      console.log(
-        `name-match: provFirst=${provFirst} provLast=${provLast} claimed=${claimed} firstOk=${firstOk} lastOk=${lastOk}`,
-      );
+      // Booleans only — never log the actual names.
+      console.log(`name-match: firstOk=${firstOk} lastOk=${lastOk}`);
       if (!firstOk || !lastOk) {
         await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
         return json({

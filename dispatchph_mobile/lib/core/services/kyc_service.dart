@@ -24,9 +24,11 @@ class KycService {
 
   static Future<bool> isVerified() async => (await status()) == 'verified';
 
-  /// Verify a NIN via the verify-nin Edge Function. Returns (ok, error?).
+  /// Verify a NIN or BVN via the verify-nin Edge Function. Returns (ok, error?).
+  /// [idType] is 'nin' or 'bvn' — both are 11-digit numbers.
   static Future<({bool ok, String? error})> submitNin({
     required String nin,
+    String idType = 'nin',
     String? firstName,
     String? lastName,
   }) async {
@@ -41,7 +43,12 @@ class KycService {
       final res = await SupabaseService.client.functions.invoke(
         'verify-nin',
         headers: headers,
-        body: {'nin': nin, 'first_name': firstName, 'last_name': lastName},
+        body: {
+          'nin': nin,
+          'id_type': idType,
+          'first_name': firstName,
+          'last_name': lastName,
+        },
       );
       if (res.status == 200) return (ok: true, error: null);
       final data = res.data;

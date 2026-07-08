@@ -18,6 +18,9 @@ class _KycScreenState extends State<KycScreen> {
   final _last = TextEditingController();
   bool _loading = false;
   String? _error;
+  String _idType = 'nin'; // 'nin' or 'bvn'
+
+  String get _label => _idType == 'bvn' ? 'BVN' : 'NIN';
 
   @override
   void dispose() {
@@ -30,7 +33,7 @@ class _KycScreenState extends State<KycScreen> {
   Future<void> _submit() async {
     final nin = _nin.text.trim();
     if (!RegExp(r'^\d{11}$').hasMatch(nin)) {
-      setState(() => _error = 'Enter your 11-digit NIN');
+      setState(() => _error = 'Enter your 11-digit $_label');
       return;
     }
     setState(() {
@@ -39,6 +42,7 @@ class _KycScreenState extends State<KycScreen> {
     });
     final res = await KycService.submitNin(
       nin: nin,
+      idType: _idType,
       firstName: _first.text.trim().isEmpty ? null : _first.text.trim(),
       lastName: _last.text.trim().isEmpty ? null : _last.text.trim(),
     );
@@ -69,19 +73,34 @@ class _KycScreenState extends State<KycScreen> {
             Text('One-time verification', style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
             const Text(
-              'To keep the marketplace safe, we verify every buyer with their '
-              'National Identification Number (NIN) before their first purchase. '
+              'To keep the marketplace safe, we verify every buyer before their '
+              'first purchase. Use your NIN or your BVN — whichever you have. '
               'You can browse freely — verification is only needed to buy.',
               style: TextStyle(color: AppColors.mediumGray, height: 1.5),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+            // Pick which government ID to verify with (both are 11 digits).
+            Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: AppColors.lightGray,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  _idTypeTab('nin', 'NIN'),
+                  _idTypeTab('bvn', 'BVN'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
             TextField(
               controller: _nin,
               keyboardType: TextInputType.number,
               maxLength: 11,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'NIN (11 digits)',
+              decoration: InputDecoration(
+                labelText: '$_label (11 digits)',
                 hintText: 'e.g., 12345678901',
                 counterText: '',
               ),
@@ -92,14 +111,14 @@ class _KycScreenState extends State<KycScreen> {
                 Expanded(
                   child: TextField(
                     controller: _first,
-                    decoration: const InputDecoration(labelText: 'First name (as on NIN)'),
+                    decoration: InputDecoration(labelText: 'First name (as on $_label)'),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
                     controller: _last,
-                    decoration: const InputDecoration(labelText: 'Surname (as on NIN)'),
+                    decoration: InputDecoration(labelText: 'Surname (as on $_label)'),
                   ),
                 ),
               ],
@@ -116,12 +135,46 @@ class _KycScreenState extends State<KycScreen> {
               backgroundColor: AppColors.primaryGreen,
             ),
             const SizedBox(height: 12),
-            const Text(
-              '🔒 Your NIN is sent securely to our verification provider and is '
+            Text(
+              '🔒 Your $_label is sent securely to our verification provider and is '
               'not shared with vendors.',
-              style: TextStyle(fontSize: 12, color: AppColors.mediumGray),
+              style: const TextStyle(fontSize: 12, color: AppColors.mediumGray),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// One segment of the NIN/BVN toggle. Text-only (no icons) so the change
+  /// ships as a Shorebird patch.
+  Widget _idTypeTab(String value, String text) {
+    final selected = _idType == value;
+    return Expanded(
+      child: GestureDetector(
+        onTap: _loading
+            ? null
+            : () => setState(() {
+                  _idType = value;
+                  _error = null;
+                }),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: selected
+                ? [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 4, offset: const Offset(0, 1))]
+                : null,
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            text,
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: selected ? AppColors.primaryGreen : AppColors.mediumGray,
+            ),
+          ),
         ),
       ),
     );

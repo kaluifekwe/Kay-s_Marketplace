@@ -42,15 +42,20 @@ function norm(s: string): string {
   return (s ?? "").toLowerCase().replace(/[^a-z]/g, "");
 }
 
-// Prembly's NIN endpoint authenticates with x-api-key; app-id is sent only when
+// Prembly's endpoints authenticate with x-api-key; app-id is sent only when
 // provided (some accounts require it, some don't) — so the key alone enables it.
 const providerConfigured = !!premblyApiKey;
 
-// Prembly (IdentityPass) NIN verification. Returns { ok, record?, reason? }.
-// Swap this function to change provider. Logs the raw response once so the exact
-// field paths can be confirmed on the first real call.
-async function verifyNinWithProvider(nin: string): Promise<{ ok: boolean; record?: any; reason?: string }> {
-  const res = await fetch(`${premblyBase}/identitypass/verification/nin`, {
+// Prembly (IdentityPass) identity verification for NIN or BVN. Both use the same
+// request/response shape — only the path segment differs
+// (/identitypass/verification/{nin|bvn}). Returns { ok, record?, reason? }.
+// Logs the raw response once so exact field paths can be confirmed on first call.
+async function verifyIdWithProvider(
+  number: string,
+  idType: "nin" | "bvn",
+): Promise<{ ok: boolean; record?: any; reason?: string }> {
+  const label = idType.toUpperCase();
+  const res = await fetch(`${premblyBase}/identitypass/verification/${idType}`, {
     method: "POST",
     headers: {
       "x-api-key": premblyApiKey,
@@ -58,18 +63,18 @@ async function verifyNinWithProvider(nin: string): Promise<{ ok: boolean; record
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ number: nin }),
+    body: JSON.stringify({ number }),
   });
   const body = await res.json().catch(() => ({}));
-  console.log(`prembly nin resp: status=${res.status} body=${JSON.stringify(body).slice(0, 800)}`);
+  console.log(`prembly ${idType} resp: status=${res.status} body=${JSON.stringify(body).slice(0, 800)}`);
 
-  const rec = body?.nin_data ?? body?.data ?? body;
+  const rec = body?.[`${idType}_data`] ?? body?.data ?? body;
   const verified =
     body?.status === true ||
     String(body?.status ?? "").toLowerCase() === "success" ||
     String(body?.verification?.status ?? "").toUpperCase().includes("VERIFIED");
   if (!res.ok || !verified || !rec) {
-    return { ok: false, reason: body?.detail || body?.message || `NIN verification failed (${res.status})` };
+    return { ok: false, reason: body?.detail || body?.message || `${label} verification failed (${res.status})` };
   }
   return { ok: true, record: rec };
 }
@@ -82,9 +87,12 @@ serve(async (req) => {
     const uid = callerId(req.headers.get("Authorization"));
     if (!uid) return json({ error: "Authentication required" }, 401);
 
-    const { nin, first_name, last_name } = await req.json();
+    const { nin, first_name, last_name, id_type } = await req.json();
+    // Buyer may verify with either their NIN or their BVN (both 11 digits).
+    const idType: "nin" | "bvn" = String(id_type ?? "nin").toLowerCase() === "bvn" ? "bvn" : "nin";
+    const label = idType.toUpperCase();
     if (!nin || !/^\d{11}$/.test(String(nin))) {
-      return json({ error: "Enter a valid 11-digit NIN" }, 400);
+      return json({ error: `Enter a valid 11-digit ${label}` }, 400);
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -97,7 +105,8 @@ serve(async (req) => {
       .maybeSingle();
     if (me?.kyc_status === "verified") return json({ success: true, status: "verified" });
 
-    // One account per NIN — reject if another account already verified with it.
+    // One account per identity number — reject if another account already
+    // verified with it. NIN and BVN both land in the `nin` column.
     const { data: clash } = await supabase
       .from("users")
       .select("id")
@@ -106,20 +115,20 @@ serve(async (req) => {
       .neq("id", uid)
       .maybeSingle();
     if (clash) {
-      return json({ error: "This NIN is already linked to another account." }, 409);
+      return json({ error: `This ${label} is already linked to another account.` }, 409);
     }
 
     // Real name-matched verification runs ONLY when the provider is configured
-    // (paid). For now (no key) we're in FREE mode: 11-digit format +
-    // one-account-per-NIN uniqueness. Add DOJAH_API_KEY/DOJAH_APP_ID later and
-    // name matching switches on automatically — no code change.
+    // (paid). Without a key we're in FREE mode: 11-digit format +
+    // one-account-per-number uniqueness. Set PREMBLY_X_API_KEY and name matching
+    // switches on automatically — no code change.
     if (providerConfigured) {
-      const result = await verifyNinWithProvider(String(nin));
+      const result = await verifyIdWithProvider(String(nin), idType);
       if (!result.ok) {
         await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
-        return json({ error: result.reason || "NIN verification failed", status: "rejected" }, 400);
+        return json({ error: result.reason || `${label} verification failed`, status: "rejected" }, 400);
       }
-      // Require BOTH first name and surname to match the NIN's registered names.
+      // Require BOTH first name and surname to match the registered names.
       const rec = result.record || {};
       const provFirst = norm(rec.first_name || rec.firstname || "");
       const provLast = norm(rec.last_name || rec.surname || rec.lastname || "");
@@ -128,7 +137,7 @@ serve(async (req) => {
       const lastOk = provLast.length > 0 && claimed.includes(provLast);
       if (!firstOk || !lastOk) {
         await supabase.from("users").update({ kyc_status: "rejected" }).eq("id", uid);
-        return json({ error: "The name on this NIN doesn't match your account name.", status: "rejected" }, 400);
+        return json({ error: `The name on this ${label} doesn't match your account name.`, status: "rejected" }, 400);
       }
     }
 

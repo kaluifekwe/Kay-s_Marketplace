@@ -1,3 +1,4 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'supabase_service.dart';
 
 /// Buyer identity verification (NIN). A buyer must be `verified` before they can
@@ -47,6 +48,14 @@ class KycService {
       final msg = data is Map
           ? (data['message'] ?? data['error'] ?? 'Verification failed')
           : 'Verification failed';
+      return (ok: false, error: msg.toString());
+    } on FunctionException catch (e) {
+      // invoke() throws on non-2xx — surface the function's actual message
+      // (e.g. NIN mismatch, provider error) instead of a generic string.
+      final data = e.details;
+      final msg = data is Map
+          ? (data['message'] ?? data['error'] ?? 'Verification failed')
+          : 'Verification failed (${e.status})';
       return (ok: false, error: msg.toString());
     } catch (e) {
       return (ok: false, error: 'Could not reach verification service. Try again.');

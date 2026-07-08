@@ -30,8 +30,16 @@ class KycService {
     String? lastName,
   }) async {
     try {
+      // Explicitly attach the caller's JWT — verify-nin acts on auth.uid(), so
+      // without it the function 401s and verification silently "fails".
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      final session = SupabaseService.auth.currentSession;
+      if (session != null && session.accessToken.isNotEmpty) {
+        headers['Authorization'] = 'Bearer ${session.accessToken}';
+      }
       final res = await SupabaseService.client.functions.invoke(
         'verify-nin',
+        headers: headers,
         body: {'nin': nin, 'first_name': firstName, 'last_name': lastName},
       );
       if (res.status == 200) return (ok: true, error: null);

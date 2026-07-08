@@ -37,7 +37,9 @@ class ChatCubit extends Cubit<ChatState> {
 
       final chats = (data as List).map((c) => Chat.fromJson(c)).toList();
       if (chats.isEmpty) {
-        emit(state.copyWith(chats: []));
+        // Reset unread + last messages too — otherwise an empty list leaves a
+        // stale unread badge (the "phantom N messages" bug).
+        emit(state.copyWith(chats: [], unreadCounts: {}, lastMessages: {}));
         return;
       }
 
@@ -77,7 +79,8 @@ class ChatCubit extends Cubit<ChatState> {
       emit(state.copyWith(chats: sorted, unreadCounts: unreadCounts, lastMessages: lastMessages));
     } catch (e) {
       print('[ChatCubit] loadChatsForBuyer error: $e');
-      emit(state.copyWith(chats: []));
+      // Keep the last good state on a transient error — don't wipe the list
+      // (which would also strand a stale unread badge).
     }
   }
 
@@ -91,7 +94,9 @@ class ChatCubit extends Cubit<ChatState> {
 
       final chats = (data as List).map((c) => Chat.fromJson(c)).toList();
       if (chats.isEmpty) {
-        emit(state.copyWith(chats: []));
+        // Reset unread + last messages too — otherwise an empty list leaves a
+        // stale unread badge (the "phantom N messages" bug).
+        emit(state.copyWith(chats: [], unreadCounts: {}, lastMessages: {}));
         return;
       }
 
@@ -131,7 +136,8 @@ class ChatCubit extends Cubit<ChatState> {
       emit(state.copyWith(chats: sorted, unreadCounts: unreadCounts, lastMessages: lastMessages));
     } catch (e) {
       print('[ChatCubit] loadChatsForVendor error: $e');
-      emit(state.copyWith(chats: []));
+      // Keep the last good state on a transient error — don't wipe the list
+      // (which would also strand a stale unread badge).
     }
   }
 

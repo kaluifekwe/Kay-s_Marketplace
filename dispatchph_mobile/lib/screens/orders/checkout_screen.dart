@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/services/error_text.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -931,7 +932,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e'), backgroundColor: AppColors.errorRed),
+          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
         );
       }
     } finally {
@@ -1060,7 +1061,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e'), backgroundColor: AppColors.errorRed),
+          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
         );
       }
     } finally {

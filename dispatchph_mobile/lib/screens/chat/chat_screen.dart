@@ -374,10 +374,10 @@ class _ChatScreenState extends State<ChatScreen> {
         content: Text('Saved to your gallery'),
         backgroundColor: AppColors.primaryGreen,
       ));
-    } on GalException catch (e) {
+    } on GalException {
       if (!mounted) return;
       snack.showSnackBar(SnackBar(
-        content: Text('Could not save: ${e.type.message}'),
+        content: const Text('Could not save to your gallery. Check the app\'s photo permission and try again.'),
         backgroundColor: Colors.red,
       ));
     } catch (e) {

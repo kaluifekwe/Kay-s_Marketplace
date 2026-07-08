@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../theme/app_theme.dart';
+import '../../core/services/error_text.dart';
 import '../auth/welcome_screen.dart';
 import '../../bloc_exports.dart';
 import '../../core/services/auth_service.dart';
@@ -877,7 +878,7 @@ class _PopupMenu extends StatelessWidget {
               } catch (e) {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error: $e')),
+                    SnackBar(content: Text(friendlyError(e))),
                   );
                 }
               }

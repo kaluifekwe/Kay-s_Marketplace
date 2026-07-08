@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
+import '../../core/services/error_text.dart';
 import '../../core/models/models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/delivery_service.dart';
@@ -100,7 +101,7 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e'.replaceAll('Exception: ', '')), backgroundColor: AppColors.errorRed),
+          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
         );
       }
     } finally {

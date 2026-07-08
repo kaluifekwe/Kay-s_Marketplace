@@ -6,6 +6,28 @@ import '../../bloc_exports.dart';
 import 'product_detail_screen.dart';
 import 'vendor_store_screen.dart';
 import '../../widgets/delivery_badge.dart';
+import '../../widgets/app_image.dart';
+import '../../core/models/models.dart';
+
+/// A product thumbnail for search rows — the real image if the product has one,
+/// otherwise a neutral placeholder (never a broken image).
+Widget _productThumb(Product p, double size) {
+  const fallback = ColoredBox(
+    color: AppColors.lightGray,
+    child: Center(child: Icon(Icons.image, color: AppColors.mediumGray)),
+  );
+  final imgs = p.imageList;
+  return ClipRRect(
+    borderRadius: BorderRadius.circular(8),
+    child: SizedBox(
+      width: size,
+      height: size,
+      child: imgs.isEmpty
+          ? fallback
+          : AppImage(source: imgs.first, width: size, height: size, fit: BoxFit.cover, errorWidget: fallback),
+    ),
+  );
+}
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
@@ -160,12 +182,7 @@ class _SearchScreenState extends State<SearchScreen> {
                     final inState = buyerState == null || p.vendorState == null || p.vendorState == buyerState;
                     return Card(
                       child: ListTile(
-                        leading: Container(
-                          width: 48,
-                          height: 48,
-                          color: AppColors.lightGray,
-                          child: const Icon(Icons.image, color: AppColors.mediumGray),
-                        ),
+                        leading: _productThumb(p, 48),
                         title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.w600)),
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -254,12 +271,7 @@ class _SearchScreenState extends State<SearchScreen> {
                     final storeName = state.stores[p.storeId]?.name ?? 'Store';
                     final inState = buyerState == null || p.vendorState == null || p.vendorState == buyerState;
                     return ListTile(
-                      leading: Container(
-                        width: 56,
-                        height: 56,
-                        color: AppColors.lightGray,
-                        child: const Icon(Icons.image, color: AppColors.mediumGray),
-                      ),
+                      leading: _productThumb(p, 56),
                       title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.w600)),
                       subtitle: Text(
                         '$storeName \u2022 \u20A6${format.format(p.price)}'

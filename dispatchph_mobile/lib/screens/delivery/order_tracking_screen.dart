@@ -4,6 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../theme/app_theme.dart';
+import '../../core/services/error_text.dart';
 import '../../core/models/delivery_models.dart';
 import '../../core/services/delivery_service.dart';
 
@@ -71,7 +72,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = '$e';
+        _error = friendlyError(e, fallback: "We couldn't load tracking for this order.");
       });
     }
   }

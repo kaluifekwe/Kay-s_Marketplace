@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../theme/app_theme.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/error_text.dart';
 import '../../core/services/auth_service.dart';
 import '../auth/welcome_screen.dart';
 import 'admin_disputes_screen.dart';
@@ -76,7 +77,7 @@ class _AdminStateRequestsScreenState extends State<AdminStateRequestsScreen> {
       _load();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyError(e))));
       }
     }
   }
@@ -96,7 +97,7 @@ class _AdminStateRequestsScreenState extends State<AdminStateRequestsScreen> {
       _load();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyError(e))));
       }
     }
   }

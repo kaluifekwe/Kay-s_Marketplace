@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -7,7 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core/services/supabase_service.dart';
 import 'core/services/escrow_service.dart';
 import 'core/services/notification_service.dart';
-import 'core/services/fcm_service.dart';
+import 'core/services/error_reporter.dart';
 import 'bloc_exports.dart';
 import 'theme/app_theme.dart';
 import 'screens/splash/splash_screen.dart';
@@ -19,26 +20,35 @@ Future<void> _firebaseBackgroundHandler(message) async {
   await Firebase.initializeApp();
 }
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() {
+  // Run inside a guarded zone so ANY uncaught async error is caught and logged
+  // (best-effort, remotely) instead of crashing or vanishing silently.
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  await Firebase.initializeApp();
+    await Firebase.initializeApp();
 
-  await dotenv.load(fileName: '.env');
+    await dotenv.load(fileName: '.env');
 
-  await Supabase.initialize(
-    url: dotenv.env['SUPABASE_URL']!,
-    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
-  );
+    await Supabase.initialize(
+      url: dotenv.env['SUPABASE_URL']!,
+      anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
+    );
 
-  await SupabaseService.init();
-  await NotificationService.init();
+    await SupabaseService.init();
+    await NotificationService.init();
 
-  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+    // Friendly UI for render errors + remote logging of uncaught errors.
+    ErrorReporter.install(appVersion: '1.0.4+5');
 
-  final escrow = EscrowService();
+    FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
 
-  runApp(DispatchPHApp(escrow: escrow));
+    final escrow = EscrowService();
+
+    runApp(DispatchPHApp(escrow: escrow));
+  }, (error, stack) {
+    ErrorReporter.report(error, stack, context: 'zone');
+  });
 }
 
 class DispatchPHApp extends StatelessWidget {

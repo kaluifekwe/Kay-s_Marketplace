@@ -150,12 +150,21 @@ serve(async (req) => {
       }
     }
 
+    // Adopt the verified legal name onto the account so it always matches the
+    // ID — buyers often sign up with a nickname. Uses the first/surname they
+    // entered (which we just matched against the ID). `name` here is the
+    // personal name only; a vendor's store display (shop_name) is separate.
+    const titleCase = (s: string) =>
+      s.trim().replace(/\s+/g, " ").replace(/\S+/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase());
+    const verifiedName = titleCase(`${first_name ?? ""} ${last_name ?? ""}`);
+
     const { error: upErr } = await supabase
       .from("users")
       .update({
         nin: String(nin),
         kyc_status: "verified",
         kyc_verified_at: new Date().toISOString(),
+        ...(verifiedName ? { name: verifiedName } : {}),
       })
       .eq("id", uid);
     if (upErr) {

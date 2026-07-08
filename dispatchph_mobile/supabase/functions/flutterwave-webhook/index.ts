@@ -104,6 +104,57 @@ async function creditFunding(supabase: any, data: any) {
   return { success: true, credited: amount, userId };
 }
 
+// Finalize a vendor/buyer withdrawal from a `transfer.disburse` event. The
+// wallet was already debited when the withdrawal was requested, so SUCCESSFUL
+// just confirms it; FAILED reverses the hold back into the wallet.
+async function finalizeWithdrawal(supabase: any, data: any) {
+  const reference = data?.reference;
+  if (!reference) return { ignored: true, reason: "no_reference" };
+
+  const { data: wd } = await supabase
+    .from("withdrawals")
+    .select("id, user_id, amount, status")
+    .eq("flw_reference", reference)
+    .maybeSingle();
+  if (!wd) return { ignored: true, reason: "withdrawal_not_found" };
+
+  const status = String(data?.status ?? "").toUpperCase();
+  const amount = Number(wd.amount) || 0;
+
+  if (status === "SUCCESSFUL") {
+    if (wd.status === "success") return { alreadyProcessed: true };
+    await supabase.from("withdrawals").update({ status: "success" }).eq("id", wd.id);
+    try {
+      await supabase.from("notifications").insert({
+        user_id: wd.user_id, title: "Withdrawal sent",
+        body: `₦${amount.toLocaleString()} was sent to your bank.`, type: "general",
+      });
+    } catch (_) { /* non-fatal */ }
+    return { success: true, state: "success" };
+  }
+
+  if (status === "FAILED") {
+    if (wd.status === "success" || wd.status === "failed") return { alreadyProcessed: true };
+    // Reverse the hold and mark the debit ledger row failed so it stops
+    // counting against the buyer's refunds-only withdrawable cap.
+    await supabase.rpc("wallet_credit", {
+      p_user_id: wd.user_id, p_amount: amount, p_type: "reversal",
+      p_reference: `rev_${reference}`, p_description: "Withdrawal reversal (transfer failed)",
+    });
+    await supabase.from("wallet_transactions").update({ status: "failed" }).eq("reference", reference);
+    await supabase.from("withdrawals").update({ status: "failed", failure_reason: "transfer_failed" }).eq("id", wd.id);
+    try {
+      await supabase.from("notifications").insert({
+        user_id: wd.user_id, title: "Withdrawal failed",
+        body: `Your ₦${amount.toLocaleString()} withdrawal failed and was returned to your wallet.`, type: "general",
+      });
+    } catch (_) { /* non-fatal */ }
+    return { success: true, state: "failed" };
+  }
+
+  return { ignored: true, reason: "unhandled_status" };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -136,9 +187,11 @@ serve(async (req) => {
     if (eventName === "charge.completed" || event["event.type"] === "BANK_TRANSFER_TRANSACTION") {
       const result = await creditFunding(supabase, data);
       console.log("funding result:", JSON.stringify(result));
+    } else if (eventName === "transfer.disburse" || eventName === "transfer.completed") {
+      const result = await finalizeWithdrawal(supabase, data);
+      console.log("withdrawal result:", JSON.stringify(result));
     } else {
-      // transfer.* (withdrawals) handled in Phase 4; ack the rest so Flutterwave
-      // stops retrying.
+      // Ack anything else so Flutterwave stops retrying.
       console.log(`Unhandled Flutterwave event: ${eventName}`);
     }
 

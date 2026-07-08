@@ -24,6 +24,13 @@ class WalletInsufficient implements Exception {
   String toString() => 'Insufficient wallet balance';
 }
 
+/// Thrown by [WalletService.requestWithdrawal] when there's no bank account on
+/// file to pay out to.
+class WalletNoBankAccount implements Exception {
+  @override
+  String toString() => 'No bank account on file';
+}
+
 class WalletService {
   static final _client = Supabase.instance.client;
 
@@ -110,6 +117,36 @@ class WalletService {
         );
       }
       throw Exception(data is Map ? (data['message'] ?? data['error'] ?? 'Checkout failed') : 'Checkout failed');
+    }
+    return data as Map<String, dynamic>;
+  }
+
+  /// How much the user may withdraw right now (vendor = full balance; buyer =
+  /// refunded money only).
+  static Future<double> getWithdrawable(String userId) async {
+    try {
+      final data = await _client.rpc('wallet_withdrawable', params: {'p_user_id': userId});
+      return (data as num?)?.toDouble() ?? 0;
+    } catch (e) {
+      print('[WalletService] getWithdrawable error: $e');
+      return 0;
+    }
+  }
+
+  /// Request a withdrawal to the user's saved bank account. Returns immediately
+  /// with a 'processing' status; the transfer webhook confirms or reverses.
+  /// Throws [WalletNoBankAccount] when no bank account is on file.
+  static Future<Map<String, dynamic>> requestWithdrawal({required double amount}) async {
+    final response = await _client.functions.invoke(
+      'wallet-withdraw',
+      headers: _headers,
+      body: {'amount': amount},
+    ).timeout(_timeout);
+
+    final data = response.data;
+    if (response.status != 200) {
+      if (data is Map && data['error'] == 'no_bank_account') throw WalletNoBankAccount();
+      throw Exception(data is Map ? (data['message'] ?? data['error'] ?? 'Withdrawal failed') : 'Withdrawal failed');
     }
     return data as Map<String, dynamic>;
   }

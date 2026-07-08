@@ -229,6 +229,39 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 REVOKE EXECUTE ON FUNCTION wallet_debit(uuid, numeric, text, text, uuid, text, text, text, jsonb) FROM PUBLIC, anon, authenticated;
 GRANT  EXECUTE ON FUNCTION wallet_debit(uuid, numeric, text, text, uuid, text, text, text, jsonb) TO service_role;
 
+-- ── 6b. wallet_withdrawable: how much a user may withdraw right now ─────────
+-- Vendors can withdraw their whole balance (sale proceeds). Buyers can only
+-- withdraw REFUNDED money — never funded money — capped at the current balance.
+-- (withdrawal ledger rows carry a negative amount; a failed withdrawal is
+-- marked status='failed' so it stops counting against the cap.)
+CREATE OR REPLACE FUNCTION wallet_withdrawable(p_user_id uuid)
+RETURNS numeric AS $$
+DECLARE
+  v_role      text;
+  v_balance   numeric;
+  v_refunds   numeric;
+  v_withdrawn numeric;
+BEGIN
+  SELECT role INTO v_role FROM users WHERE id = p_user_id;
+  SELECT COALESCE(balance, 0) INTO v_balance FROM wallets WHERE user_id = p_user_id;
+
+  IF v_role = 'vendor' THEN
+    RETURN v_balance;
+  END IF;
+
+  SELECT COALESCE(SUM(amount), 0) INTO v_refunds
+    FROM wallet_transactions
+    WHERE user_id = p_user_id AND type = 'refund' AND status = 'success';
+  SELECT COALESCE(SUM(-amount), 0) INTO v_withdrawn
+    FROM wallet_transactions
+    WHERE user_id = p_user_id AND type = 'withdrawal' AND status IN ('success', 'pending');
+
+  RETURN GREATEST(LEAST(v_balance, v_refunds - v_withdrawn), 0);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
+
+GRANT EXECUTE ON FUNCTION wallet_withdrawable(uuid) TO authenticated, service_role;
+
 -- ── 7. RLS: owners read ONLY their own rows ─────────────────────────────────
 -- No INSERT/UPDATE/DELETE policies for authenticated users: every write goes
 -- through the DEFINER RPCs / Edge Functions, which run as the service role and

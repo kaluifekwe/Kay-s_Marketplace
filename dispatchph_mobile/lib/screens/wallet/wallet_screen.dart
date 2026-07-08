@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
 import 'add_money_screen.dart';
+import 'withdraw_screen.dart';
 
 /// Shared wallet screen for both buyers and vendors. Buyers fund their wallet
 /// and pay from it; vendors receive sale proceeds and withdraw to bank. The
@@ -35,10 +36,12 @@ class _WalletScreenState extends State<WalletScreen> {
     }
   }
 
-  void _comingSoon(String what) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$what is coming soon')),
+  Future<void> _openWithdraw() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const WithdrawScreen()),
     );
+    _load();
   }
 
   @override
@@ -93,7 +96,7 @@ class _WalletScreenState extends State<WalletScreen> {
                 // Role-aware primary action
                 Row(
                   children: [
-                    if (!isVendor)
+                    if (!isVendor) ...[
                       Expanded(
                         child: FilledButton.icon(
                           onPressed: () async {
@@ -107,10 +110,19 @@ class _WalletScreenState extends State<WalletScreen> {
                           label: const Text('Add money'),
                         ),
                       ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _openWithdraw(),
+                          icon: const Icon(Icons.account_balance),
+                          label: const Text('Withdraw'),
+                        ),
+                      ),
+                    ],
                     if (isVendor)
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: () => _comingSoon('Withdraw'),
+                          onPressed: () => _openWithdraw(),
                           icon: const Icon(Icons.account_balance),
                           label: const Text('Withdraw'),
                         ),

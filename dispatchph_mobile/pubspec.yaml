@@ -1,7 +1,7 @@
 name: dispatchph_mobile
 description: "DispatchPH - On-demand dispatch rider app for Port Harcourt"
 publish_to: 'none'
-version: 1.0.2+3
+version: 1.0.3+4
 
 environment:
   sdk: ^3.12.1

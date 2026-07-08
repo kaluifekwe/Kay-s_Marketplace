@@ -26,7 +26,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
   final _stockController = TextEditingController();
   final _picker = ImagePicker();
   String _category = 'Other';
-  String _deliveryType = 'negotiate';
+  final String _deliveryType = 'courier'; // courier-only; fee calculated at checkout
   bool _isLoading = false;
   double _uploadProgress = 0;
   List<XFile> _images = [];
@@ -290,11 +290,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
             ),
             const SizedBox(height: 24),
 
-            // Delivery is handled by our logistics partners by default (courier
-            // rates are fetched at checkout). Vendors no longer choose a policy;
-            // the chat delivery-fee flow is only used as a fallback when no
-            // courier covers the route. deliveryType stays 'negotiate' so that
-            // fallback path remains available.
+            // Delivery is courier-only: the exact rate is fetched at checkout.
+            // Vendors don't choose a policy. The chat delivery-fee flow is only a
+            // fallback when no courier covers the route (deliveryType = 'courier').
 
             // Product Images Section
             Row(

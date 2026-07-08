@@ -151,7 +151,7 @@ class Product {
     required this.stock,
     required this.createdAt,
     this.vendorState,
-    this.deliveryType = 'negotiate',
+    this.deliveryType = 'courier',
   });
 
   List<String> get imageList {
@@ -176,7 +176,7 @@ class Product {
         stock: json['stock'] as int? ?? 0,
         createdAt: DateTime.parse(json['created_at'] as String),
         vendorState: json['vendor_state'] as String?,
-        deliveryType: json['delivery_type'] as String? ?? 'negotiate',
+        deliveryType: json['delivery_type'] as String? ?? 'courier',
       );
 
   Map<String, dynamic> toJson() => {

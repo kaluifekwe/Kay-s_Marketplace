@@ -91,7 +91,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         final firstItem = cartState.items.firstWhere(
           (i) => cartState.productMap[i.productId]?.storeId == storeId,
         );
-        final deliveryType = cartState.productMap[firstItem.productId]?.deliveryType ?? 'negotiate';
+        final deliveryType = cartState.productMap[firstItem.productId]?.deliveryType ?? 'courier';
         deliveryTypes[storeId] = deliveryType;
 
         if (deliveryType == 'free') {

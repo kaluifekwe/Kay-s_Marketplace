@@ -42,7 +42,9 @@ function norm(s: string): string {
   return (s ?? "").toLowerCase().replace(/[^a-z]/g, "");
 }
 
-const providerConfigured = !!(premblyApiKey && premblyAppId);
+// Prembly's NIN endpoint authenticates with x-api-key; app-id is sent only when
+// provided (some accounts require it, some don't) — so the key alone enables it.
+const providerConfigured = !!premblyApiKey;
 
 // Prembly (IdentityPass) NIN verification. Returns { ok, record?, reason? }.
 // Swap this function to change provider. Logs the raw response once so the exact
@@ -52,7 +54,7 @@ async function verifyNinWithProvider(nin: string): Promise<{ ok: boolean; record
     method: "POST",
     headers: {
       "x-api-key": premblyApiKey,
-      "app-id": premblyAppId,
+      ...(premblyAppId ? { "app-id": premblyAppId } : {}),
       "Content-Type": "application/json",
       Accept: "application/json",
     },

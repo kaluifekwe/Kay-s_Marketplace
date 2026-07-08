@@ -6,17 +6,17 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // — we act on auth.uid(), never a client-supplied id). The provider call +
 // the kyc_status write both happen server-side with the service role.
 //
-// Provider adapter: DOJAH by default (common NIN provider in Nigeria). To swap
-// to YouVerify/Prembly/Smile ID, replace verifyNinWithProvider() — the rest is
-// provider-agnostic. Secrets: DOJAH_API_KEY, DOJAH_APP_ID.
+// Provider adapter: PREMBLY (IdentityPass). To swap providers, replace
+// verifyNinWithProvider() — the rest is provider-agnostic. Secrets:
+// PREMBLY_X_API_KEY, PREMBLY_APP_ID (optional PREMBLY_BASE_URL).
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-const dojahApiKey = Deno.env.get("DOJAH_API_KEY") ?? "";
-const dojahAppId = Deno.env.get("DOJAH_APP_ID") ?? "";
-const dojahBase = Deno.env.get("DOJAH_BASE_URL") ?? "https://api.dojah.io";
+const premblyApiKey = Deno.env.get("PREMBLY_X_API_KEY") ?? "";
+const premblyAppId = Deno.env.get("PREMBLY_APP_ID") ?? "";
+const premblyBase = Deno.env.get("PREMBLY_BASE_URL") ?? "https://api.prembly.com";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -42,18 +42,34 @@ function norm(s: string): string {
   return (s ?? "").toLowerCase().replace(/[^a-z]/g, "");
 }
 
-const providerConfigured = !!(dojahApiKey && dojahAppId);
+const providerConfigured = !!(premblyApiKey && premblyAppId);
 
-// Returns { ok, record?, reason? }. Swap this function to change provider.
+// Prembly (IdentityPass) NIN verification. Returns { ok, record?, reason? }.
+// Swap this function to change provider. Logs the raw response once so the exact
+// field paths can be confirmed on the first real call.
 async function verifyNinWithProvider(nin: string): Promise<{ ok: boolean; record?: any; reason?: string }> {
-  const res = await fetch(`${dojahBase}/api/v1/kyc/nin?nin=${encodeURIComponent(nin)}`, {
-    headers: { Authorization: dojahApiKey, AppId: dojahAppId },
+  const res = await fetch(`${premblyBase}/identitypass/verification/nin`, {
+    method: "POST",
+    headers: {
+      "x-api-key": premblyApiKey,
+      "app-id": premblyAppId,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ number: nin }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok || !body?.entity) {
-    return { ok: false, reason: body?.error || `Provider rejected NIN (${res.status})` };
+  console.log(`prembly nin resp: status=${res.status} body=${JSON.stringify(body).slice(0, 800)}`);
+
+  const rec = body?.nin_data ?? body?.data ?? body;
+  const verified =
+    body?.status === true ||
+    String(body?.status ?? "").toLowerCase() === "success" ||
+    String(body?.verification?.status ?? "").toUpperCase().includes("VERIFIED");
+  if (!res.ok || !verified || !rec) {
+    return { ok: false, reason: body?.detail || body?.message || `NIN verification failed (${res.status})` };
   }
-  return { ok: true, record: body.entity };
+  return { ok: true, record: rec };
 }
 
 serve(async (req) => {

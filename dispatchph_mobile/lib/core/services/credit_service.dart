@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'error_text.dart';
 
 class CreditService {
   static final _client = Supabase.instance.client;
@@ -115,20 +116,19 @@ class CreditService {
     required String buyerId,
     required List<Map<String, dynamic>> vendorOrders,
   }) async {
-    final response = await _client.functions.invoke(
-      'complete-credit-order',
-      headers: _headers,
-      body: {
-        'buyer_id': buyerId,
-        'vendor_orders': vendorOrders,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Order failed') : 'Order failed');
+    try {
+      final response = await _client.functions.invoke(
+        'complete-credit-order',
+        headers: _headers,
+        body: {
+          'buyer_id': buyerId,
+          'vendor_orders': vendorOrders,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't place your order. Please try again."));
     }
-    return response.data as Map<String, dynamic>;
   }
 
   /// Process refund via Edge Function with refund_method
@@ -138,22 +138,21 @@ class CreditService {
     String? reason,
     String refundMethod = 'card',
   }) async {
-    final response = await _client.functions.invoke(
-      'process-refund',
-      headers: _headers,
-      body: {
-        'order_id': orderId,
-        'dispute_id': disputeId,
-        'reason': reason,
-        'refund_method': refundMethod,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Refund failed') : 'Refund failed');
+    try {
+      final response = await _client.functions.invoke(
+        'process-refund',
+        headers: _headers,
+        body: {
+          'order_id': orderId,
+          'dispute_id': disputeId,
+          'reason': reason,
+          'refund_method': refundMethod,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't process this refund. Please try again."));
     }
-    return response.data as Map<String, dynamic>;
   }
 
   /// Verify buyer bank account via Edge Function
@@ -162,22 +161,21 @@ class CreditService {
     required String accountNumber,
     required String bankCode,
   }) async {
-    final response = await _client.functions.invoke(
-      'buyer-bank-account',
-      headers: _headers,
-      body: {
-        'action': 'verify',
-        'buyer_id': buyerId,
-        'account_number': accountNumber,
-        'bank_code': bankCode,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Verification failed') : 'Verification failed');
+    try {
+      final response = await _client.functions.invoke(
+        'buyer-bank-account',
+        headers: _headers,
+        body: {
+          'action': 'verify',
+          'buyer_id': buyerId,
+          'account_number': accountNumber,
+          'bank_code': bankCode,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't confirm that account. Check the number and bank."));
     }
-    return response.data as Map<String, dynamic>;
   }
 
   /// Save buyer bank account via Edge Function
@@ -188,40 +186,40 @@ class CreditService {
     required String accountNumber,
     required String accountName,
   }) async {
-    final response = await _client.functions.invoke(
-      'buyer-bank-account',
-      headers: _headers,
-      body: {
-        'action': 'save',
-        'buyer_id': buyerId,
-        'bank_name': bankName,
-        'bank_code': bankCode,
-        'account_number': accountNumber,
-        'account_name': accountName,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Save failed') : 'Save failed');
+    try {
+      await _client.functions.invoke(
+        'buyer-bank-account',
+        headers: _headers,
+        body: {
+          'action': 'save',
+          'buyer_id': buyerId,
+          'bank_name': bankName,
+          'bank_code': bankCode,
+          'account_number': accountNumber,
+          'account_name': accountName,
+        },
+      ).timeout(_timeout);
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't save your bank account. Please try again."));
     }
   }
 
   /// Get buyer bank account via Edge Function
   static Future<Map<String, dynamic>?> getBankAccount(String buyerId) async {
-    final response = await _client.functions.invoke(
-      'buyer-bank-account',
-      headers: _headers,
-      body: {
-        'action': 'get',
-        'buyer_id': buyerId,
-      },
-    ).timeout(_timeout);
-
-    if (response.status == 200) {
-      final data = response.data as Map<String, dynamic>;
-      return data['bank'] as Map<String, dynamic>?;
+    try {
+      final response = await _client.functions.invoke(
+        'buyer-bank-account',
+        headers: _headers,
+        body: {
+          'action': 'get',
+          'buyer_id': buyerId,
+        },
+      ).timeout(_timeout);
+      final data = response.data;
+      return data is Map ? data['bank'] as Map<String, dynamic>? : null;
+    } catch (e) {
+      print('[CreditService] getBankAccount error: $e');
+      return null;
     }
-    return null;
   }
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'error_text.dart';
 
 class PaymentService {
   static final _client = Supabase.instance.client;
@@ -43,24 +44,22 @@ class PaymentService {
     required double amount,
     required String email,
   }) async {
-    final response = await _client.functions.invoke(
-      'create-payment',
-      headers: _headers,
-      body: {
-        'order_id': orderId,
-        'buyer_id': buyerId,
-        'vendor_orders': vendorOrders,
-        'amount': amount,
-        'email': email,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Payment initialization failed') : 'Payment initialization failed');
+    try {
+      final response = await _client.functions.invoke(
+        'create-payment',
+        headers: _headers,
+        body: {
+          'order_id': orderId,
+          'buyer_id': buyerId,
+          'vendor_orders': vendorOrders,
+          'amount': amount,
+          'email': email,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't start your payment. Please try again."));
     }
-
-    return response.data as Map<String, dynamic>;
   }
 
   /// Verify account name via Flutterwave (same provider as payouts).
@@ -68,21 +67,27 @@ class PaymentService {
     required String accountNumber,
     required String bankCode,
   }) async {
-    final response = await _client.functions.invoke(
-      'flutterwave-proxy',
-      headers: _headers,
-      body: {
-        'action': 'resolve-account',
-        'account_number': accountNumber,
-        'bank_code': bankCode,
-      },
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200 || (data is Map && data['error'] != null)) {
-      throw Exception(data is Map ? (data['error'] ?? 'Account verification failed') : 'Account verification failed');
+    try {
+      final response = await _client.functions.invoke(
+        'flutterwave-proxy',
+        headers: _headers,
+        body: {
+          'action': 'resolve-account',
+          'account_number': accountNumber,
+          'bank_code': bankCode,
+        },
+      ).timeout(_timeout);
+      final data = response.data;
+      if (data is Map && data['error'] != null) {
+        final m = data['message'];
+        throw Exception(m is String && m.trim().isNotEmpty
+            ? m.trim()
+            : "We couldn't confirm that account. Check the number and bank.");
+      }
+      return (data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't confirm that account. Check the number and bank."));
     }
-    return data as Map<String, dynamic>;
   }
 
   /// Flutterwave payouts transfer straight to an account number + bank code, so
@@ -98,17 +103,16 @@ class PaymentService {
 
   /// List all Nigerian banks via Flutterwave.
   static Future<List<Map<String, dynamic>>> listBanks() async {
-    final response = await _client.functions.invoke(
-      'flutterwave-proxy',
-      headers: _headers,
-      body: {'action': 'list-banks'},
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200 || (data is Map && data['error'] != null)) {
-      throw Exception(data is Map ? (data['error'] ?? 'Failed to load banks') : 'Failed to load banks');
+    try {
+      final response = await _client.functions.invoke(
+        'flutterwave-proxy',
+        headers: _headers,
+        body: {'action': 'list-banks'},
+      ).timeout(_timeout);
+      return List<Map<String, dynamic>>.from((response.data as Map)['banks']);
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't load the bank list. Please try again."));
     }
-    return List<Map<String, dynamic>>.from((data as Map)['banks']);
   }
 
   /// Save vendor bank account
@@ -160,19 +164,16 @@ class PaymentService {
   static Future<Map<String, dynamic>> releaseEscrow({
     required String orderId,
   }) async {
-    final response = await _client.functions.invoke(
-      'release-escrow',
-      headers: _headers,
-      body: {
-        'order_id': orderId,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Release failed') : 'Release failed');
+    try {
+      final response = await _client.functions.invoke(
+        'release-escrow',
+        headers: _headers,
+        body: {'order_id': orderId},
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't release this payment. Please try again."));
     }
-    return response.data as Map<String, dynamic>;
   }
 
   /// Process refund — call Edge Function
@@ -182,22 +183,21 @@ class PaymentService {
     String? reason,
     String? refundMethod,
   }) async {
-    final response = await _client.functions.invoke(
-      'process-refund',
-      headers: _headers,
-      body: {
-        'order_id': orderId,
-        'dispute_id': disputeId,
-        'reason': reason,
-        'refund_method': refundMethod,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Refund failed') : 'Refund failed');
+    try {
+      final response = await _client.functions.invoke(
+        'process-refund',
+        headers: _headers,
+        body: {
+          'order_id': orderId,
+          'dispute_id': disputeId,
+          'reason': reason,
+          'refund_method': refundMethod,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't process this refund. Please try again."));
     }
-    return response.data as Map<String, dynamic>;
   }
 
   /// Get transactions for an order

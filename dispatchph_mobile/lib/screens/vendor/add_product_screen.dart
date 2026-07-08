@@ -10,6 +10,7 @@ import '../../core/models/models.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/storage_service.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/error_text.dart';
 import '../kyc/kyc_screen.dart';
 
 class AddProductScreen extends StatefulWidget {
@@ -222,13 +223,13 @@ class _AddProductScreenState extends State<AddProductScreen> {
         deliveryType: _deliveryType,
       );
     } catch (e) {
-      error = e.toString();
+      error = friendlyError(e, fallback: "We couldn't save your product. Please try again.");
     }
 
     if (!mounted) return;
     setState(() => _isLoading = false);
     if (error != null) {
-      _showError('Failed to save: $error');
+      _showError(error);
       return;
     }
     Navigator.pop(context);

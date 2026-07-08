@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'error_text.dart';
 
 /// Read/write access to the user's wallet. Balance mutations happen ONLY
 /// server-side (Edge Functions + the wallet_credit/wallet_debit RPCs); this
@@ -58,11 +59,8 @@ class WalletService {
         body: {},
       ).timeout(_timeout);
       return (response.data as Map).cast<String, dynamic>();
-    } on FunctionException catch (e) {
-      final data = e.details;
-      throw Exception(
-        data is Map ? (data['message'] ?? data['error'] ?? 'Could not create funding account') : 'Could not create funding account',
-      );
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't create your funding account. Please try again."));
     }
   }
 
@@ -93,14 +91,16 @@ class WalletService {
     required String buyerId,
     required List<Map<String, dynamic>> vendorOrders,
   }) async {
-    final response = await _client.functions.invoke(
-      'wallet-checkout',
-      headers: _headers,
-      body: {'buyer_id': buyerId, 'vendor_orders': vendorOrders},
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200) {
+    try {
+      final response = await _client.functions.invoke(
+        'wallet-checkout',
+        headers: _headers,
+        body: {'buyer_id': buyerId, 'vendor_orders': vendorOrders},
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } on FunctionException catch (e) {
+      // invoke() throws on non-2xx — the shortfall lives in the error body.
+      final data = e.details;
       if (data is Map && data['error'] == 'insufficient_balance') {
         throw WalletInsufficient(
           balance: (data['balance'] as num?)?.toDouble() ?? 0,
@@ -108,9 +108,10 @@ class WalletService {
           shortfall: (data['shortfall'] as num?)?.toDouble() ?? 0,
         );
       }
-      throw Exception(data is Map ? (data['message'] ?? data['error'] ?? 'Checkout failed') : 'Checkout failed');
+      throw Exception(friendlyError(e, fallback: "We couldn't complete your checkout. Please try again."));
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't complete your checkout. Please try again."));
     }
-    return data as Map<String, dynamic>;
   }
 
   /// How much the user may withdraw right now (vendor = full balance; buyer =
@@ -145,9 +146,8 @@ class WalletService {
         headers: _headers,
         body: {'action': 'set', 'pin': pin},
       ).timeout(_timeout);
-    } on FunctionException catch (e) {
-      final d = e.details;
-      throw Exception(d is Map ? (d['message'] ?? d['error'] ?? 'Could not set PIN') : 'Could not set PIN');
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't set your PIN. Please try again."));
     }
   }
 
@@ -170,12 +170,13 @@ class WalletService {
       // invoke() throws on non-2xx — inspect the function's error payload.
       final data = e.details;
       final err = data is Map ? data['error'] : null;
-      final msg = data is Map ? (data['message'] ?? err) : null;
       if (err == 'no_bank_account') throw WalletNoBankAccount();
       if (err == 'pin_wrong' || err == 'pin_locked' || err == 'pin_not_set' || err == 'pin_invalid') {
-        throw WalletPinError(msg?.toString() ?? 'PIN error');
+        throw WalletPinError(friendlyError(e, fallback: 'There was a problem with your PIN.'));
       }
-      throw Exception(msg?.toString() ?? 'Withdrawal failed');
+      throw Exception(friendlyError(e, fallback: "We couldn't process your withdrawal. Please try again."));
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't process your withdrawal. Please try again."));
     }
   }
 

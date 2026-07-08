@@ -117,6 +117,31 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
     if (_activeStoreId != null) await loadStoreProducts(_activeStoreId!);
   }
 
+  /// Replace a single product in BOTH the buyer feed (state.products) and the
+  /// vendor catalogue (storeProducts) with its current DB row. The vendor's
+  /// store screen renders from state.products, which _refreshActiveStore never
+  /// touched — so without this, edits (images, price, etc.) didn't reflect
+  /// there or in the product detail opened from it.
+  Future<void> _refreshProductInState(String productId) async {
+    try {
+      final data = await SupabaseService.client
+          .from('products')
+          .select(_productFields)
+          .eq('id', productId)
+          .maybeSingle();
+      if (data == null) return;
+      final fresh = Product.fromJson(data);
+      List<Product> replace(List<Product> list) =>
+          list.map((p) => p.id == productId ? fresh : p).toList();
+      emit(state.copyWith(
+        products: replace(state.products),
+        storeProducts: replace(state.storeProducts),
+      ));
+    } catch (e) {
+      print('[MarketplaceCubit] _refreshProductInState error: $e');
+    }
+  }
+
   Future<void> loadMoreProducts() async {
     if (state.isLoadingMore || !state.hasMore) return;
     emit(state.copyWith(isLoadingMore: true));
@@ -379,6 +404,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
         if (deliveryType != null) 'delivery_type': deliveryType,
       }).eq('id', productId);
       await _refreshActiveStore();
+      await _refreshProductInState(productId);
     } catch (e) {
       print('[MarketplaceCubit] updateProduct error: $e');
     }
@@ -390,6 +416,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
         'images': jsonEncode(images),
       }).eq('id', productId);
       await _refreshActiveStore();
+      await _refreshProductInState(productId);
     } catch (e) {
       print('[MarketplaceCubit] updateProductImages error: $e');
     }

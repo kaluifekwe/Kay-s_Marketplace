@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
+import '../kyc/kyc_screen.dart';
 import 'add_money_screen.dart';
 import 'withdraw_screen.dart';
 
@@ -37,6 +38,9 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 
   Future<void> _openWithdraw() async {
+    // Identity must be verified before any payout leaves the platform.
+    if (!await requireKyc(context, action: KycAction.withdraw)) return;
+    if (!mounted) return;
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const WithdrawScreen()),

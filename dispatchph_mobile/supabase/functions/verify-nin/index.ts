@@ -100,22 +100,25 @@ serve(async (req) => {
     // Already verified? idempotent success.
     const { data: me } = await supabase
       .from("users")
-      .select("kyc_status, name")
+      .select("kyc_status, name, role")
       .eq("id", uid)
       .maybeSingle();
     if (me?.kyc_status === "verified") return json({ success: true, status: "verified" });
 
-    // One account per identity number — reject if another account already
-    // verified with it. NIN and BVN both land in the `nin` column.
+    // A person may verify one buyer AND one vendor account with the same NIN/BVN
+    // (dual-use is legitimate), but not two accounts of the SAME role. So the
+    // uniqueness is scoped by role. NIN and BVN both land in the `nin` column.
+    const myRole = me?.role ?? "buyer";
     const { data: clash } = await supabase
       .from("users")
       .select("id")
       .eq("nin", String(nin))
       .eq("kyc_status", "verified")
+      .eq("role", myRole)
       .neq("id", uid)
       .maybeSingle();
     if (clash) {
-      return json({ error: `This ${label} is already linked to another account.` }, 409);
+      return json({ error: `This ${label} is already linked to another ${myRole} account.` }, 409);
     }
 
     // Real name-matched verification runs ONLY when the provider is configured

@@ -189,21 +189,36 @@ class _KycScreenState extends State<KycScreen> {
   }
 }
 
-/// Gate used before a purchase. Returns true if the buyer is verified. If not,
-/// shows a prompt; if they choose to verify and succeed, returns true.
-Future<bool> requireKyc(BuildContext context) async {
+/// What a KYC gate is protecting — tunes the prompt copy. The verification
+/// itself is identical (NIN/BVN); only the reason shown to the user differs.
+enum KycAction { buy, sell, withdraw }
+
+String _kycPrompt(KycAction action) {
+  switch (action) {
+    case KycAction.sell:
+      return 'You need to verify your identity with your NIN or BVN before you '
+          'can list products for sale. It only takes a moment.';
+    case KycAction.withdraw:
+      return 'You need to verify your identity with your NIN or BVN before you '
+          'can withdraw to your bank. It only takes a moment.';
+    case KycAction.buy:
+      return 'You need to verify your identity with your NIN or BVN before you '
+          'can buy. It only takes a moment.';
+  }
+}
+
+/// Gate used before a protected action. Returns true if the user is verified.
+/// If not, shows a prompt; if they choose to verify and succeed, returns true.
+Future<bool> requireKyc(BuildContext context, {KycAction action = KycAction.buy}) async {
   if (await KycService.isVerified()) return true;
   if (!context.mounted) return false;
+  final title = action == KycAction.buy ? 'Verify to buy' : 'Verify your identity';
   final proceed = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
       icon: const Icon(Icons.verified_user, color: AppColors.primaryGreen, size: 48),
-      title: const Text('Verify to buy'),
-      content: const Text(
-        'You need to verify your identity with your NIN before you can buy. '
-        'It only takes a moment.',
-        textAlign: TextAlign.center,
-      ),
+      title: Text(title),
+      content: Text(_kycPrompt(action), textAlign: TextAlign.center),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not now')),
         ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Verify now')),

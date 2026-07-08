@@ -10,6 +10,7 @@ import '../../core/models/models.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/storage_service.dart';
 import '../../core/services/supabase_service.dart';
+import '../kyc/kyc_screen.dart';
 
 class AddProductScreen extends StatefulWidget {
   const AddProductScreen({super.key});
@@ -32,6 +33,19 @@ class _AddProductScreenState extends State<AddProductScreen> {
   List<_VariantRow> _variants = [];
 
   final _categories = ['Food', 'Fashion', 'Electronics', 'Health', 'Home', 'Other'];
+
+  @override
+  void initState() {
+    super.initState();
+    // A vendor must be identity-verified before they can list products.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _ensureVerified());
+  }
+
+  Future<void> _ensureVerified() async {
+    final ok = await requireKyc(context, action: KycAction.sell);
+    if (!mounted) return;
+    if (!ok) Navigator.pop(context); // declined / not verified — can't list
+  }
 
   @override
   void dispose() {

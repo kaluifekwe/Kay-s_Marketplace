@@ -57,8 +57,21 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: user } = await supabase.from("users").select("role").eq("id", callerId).maybeSingle();
+    const { data: user } = await supabase
+      .from("users")
+      .select("role, kyc_status")
+      .eq("id", callerId)
+      .maybeSingle();
     const role = user?.role ?? "buyer";
+
+    // Identity must be verified before any payout leaves the platform. The app
+    // also gates this, but enforce it server-side (client gates are bypassable).
+    if (user?.kyc_status !== "verified") {
+      return json({
+        error: "kyc_required",
+        message: "Verify your identity before you can withdraw to your bank.",
+      }, 403);
+    }
 
     // How much this user may withdraw (vendor=full, buyer=refunds only).
     const { data: withdrawable, error: wErr } = await supabase.rpc("wallet_withdrawable", { p_user_id: callerId });

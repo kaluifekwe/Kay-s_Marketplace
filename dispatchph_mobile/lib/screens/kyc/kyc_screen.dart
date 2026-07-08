@@ -20,6 +20,23 @@ class _KycScreenState extends State<KycScreen> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    // If already verified, bail straight out as success — never show the form or
+    // call the provider again (each provider check costs money).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bailIfVerified());
+  }
+
+  Future<void> _bailIfVerified() async {
+    if (!await KycService.isVerified()) return;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('You are already verified ✓'), backgroundColor: AppColors.primaryGreen),
+    );
+    Navigator.pop(context, true);
+  }
+
+  @override
   void dispose() {
     _nin.dispose();
     _first.dispose();

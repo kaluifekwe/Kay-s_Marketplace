@@ -1,6 +1,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { flwTransfer } from "../_shared/flutterwave.ts";
+import { hashPin } from "../_shared/pin.ts";
+
+const PIN_MAX_ATTEMPTS = 5;
+const PIN_LOCK_MINUTES = 15;
 
 // Withdraw wallet balance to the user's bank via a Flutterwave v4 direct
 // transfer. Vendors can withdraw their whole balance; buyers can only withdraw
@@ -49,7 +53,7 @@ serve(async (req) => {
     const callerId = getUserIdFromToken(req.headers.get("Authorization"));
     if (!callerId) return json({ error: "Unauthorized" }, 401);
 
-    const { amount } = await req.json();
+    const { amount, pin } = await req.json();
     const amt = Number(amount);
     if (!amt || amt < MIN_WITHDRAWAL) {
       return json({ error: `Minimum withdrawal is ₦${MIN_WITHDRAWAL}.` }, 400);
@@ -71,6 +75,47 @@ serve(async (req) => {
         error: "kyc_required",
         message: "Verify your identity before you can withdraw to your bank.",
       }, 403);
+    }
+
+    // 4-digit withdrawal PIN — every payout must be authorised with it.
+    const { data: pinRow } = await supabase
+      .from("withdrawal_pins")
+      .select("pin_hash, failed_attempts, locked_until")
+      .eq("user_id", callerId)
+      .maybeSingle();
+    if (!pinRow) {
+      return json({ error: "pin_not_set", message: "Set up a withdrawal PIN first." }, 403);
+    }
+    if (pinRow.locked_until && new Date(pinRow.locked_until) > new Date()) {
+      return json({
+        error: "pin_locked",
+        message: "Too many wrong PIN attempts. Try again later.",
+      }, 403);
+    }
+    if (!/^\d{4}$/.test(String(pin ?? ""))) {
+      return json({ error: "pin_invalid", message: "Enter your 4-digit withdrawal PIN." }, 400);
+    }
+    const providedHash = await hashPin(callerId, String(pin));
+    if (providedHash !== pinRow.pin_hash) {
+      const attempts = (pinRow.failed_attempts ?? 0) + 1;
+      const lock = attempts >= PIN_MAX_ATTEMPTS;
+      await supabase.from("withdrawal_pins").update({
+        failed_attempts: lock ? 0 : attempts,
+        locked_until: lock ? new Date(Date.now() + PIN_LOCK_MINUTES * 60_000).toISOString() : null,
+        updated_at: new Date().toISOString(),
+      }).eq("user_id", callerId);
+      return json({
+        error: "pin_wrong",
+        message: lock
+          ? `Too many wrong attempts. Withdrawals locked for ${PIN_LOCK_MINUTES} minutes.`
+          : "Incorrect PIN.",
+      }, 403);
+    }
+    // Correct PIN — clear any failed-attempt counter.
+    if (pinRow.failed_attempts) {
+      await supabase.from("withdrawal_pins")
+        .update({ failed_attempts: 0, locked_until: null, updated_at: new Date().toISOString() })
+        .eq("user_id", callerId);
     }
 
     // How much this user may withdraw (vendor=full, buyer=refunds only).

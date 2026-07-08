@@ -31,6 +31,15 @@ class WalletNoBankAccount implements Exception {
   String toString() => 'No bank account on file';
 }
 
+/// Thrown by [WalletService.requestWithdrawal] when the withdrawal PIN is wrong,
+/// locked, missing, or malformed — carries a user-facing message.
+class WalletPinError implements Exception {
+  final String message;
+  WalletPinError(this.message);
+  @override
+  String toString() => message;
+}
+
 class WalletService {
   static final _client = Supabase.instance.client;
 
@@ -133,22 +142,58 @@ class WalletService {
     }
   }
 
+  /// Whether the user has a withdrawal PIN set, and whether it's locked after
+  /// too many wrong attempts.
+  static Future<({bool hasPin, bool locked})> getWithdrawalPinStatus() async {
+    final response = await _client.functions.invoke(
+      'withdrawal-pin',
+      headers: _headers,
+      body: {'action': 'status'},
+    ).timeout(_timeout);
+    final data = response.data;
+    return (hasPin: data is Map && data['has_pin'] == true, locked: data is Map && data['locked'] == true);
+  }
+
+  /// Create the user's 4-digit withdrawal PIN (first time only).
+  static Future<void> setWithdrawalPin(String pin) async {
+    try {
+      await _client.functions.invoke(
+        'withdrawal-pin',
+        headers: _headers,
+        body: {'action': 'set', 'pin': pin},
+      ).timeout(_timeout);
+    } on FunctionException catch (e) {
+      final d = e.details;
+      throw Exception(d is Map ? (d['message'] ?? d['error'] ?? 'Could not set PIN') : 'Could not set PIN');
+    }
+  }
+
   /// Request a withdrawal to the user's saved bank account. Returns immediately
   /// with a 'processing' status; the transfer webhook confirms or reverses.
-  /// Throws [WalletNoBankAccount] when no bank account is on file.
-  static Future<Map<String, dynamic>> requestWithdrawal({required double amount}) async {
-    final response = await _client.functions.invoke(
-      'wallet-withdraw',
-      headers: _headers,
-      body: {'amount': amount},
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200) {
-      if (data is Map && data['error'] == 'no_bank_account') throw WalletNoBankAccount();
-      throw Exception(data is Map ? (data['message'] ?? data['error'] ?? 'Withdrawal failed') : 'Withdrawal failed');
+  /// Requires the 4-digit withdrawal [pin]. Throws [WalletNoBankAccount] when no
+  /// bank account is on file, or [WalletPinError] on a PIN problem.
+  static Future<Map<String, dynamic>> requestWithdrawal({
+    required double amount,
+    required String pin,
+  }) async {
+    try {
+      final response = await _client.functions.invoke(
+        'wallet-withdraw',
+        headers: _headers,
+        body: {'amount': amount, 'pin': pin},
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } on FunctionException catch (e) {
+      // invoke() throws on non-2xx — inspect the function's error payload.
+      final data = e.details;
+      final err = data is Map ? data['error'] : null;
+      final msg = data is Map ? (data['message'] ?? err) : null;
+      if (err == 'no_bank_account') throw WalletNoBankAccount();
+      if (err == 'pin_wrong' || err == 'pin_locked' || err == 'pin_not_set' || err == 'pin_invalid') {
+        throw WalletPinError(msg?.toString() ?? 'PIN error');
+      }
+      throw Exception(msg?.toString() ?? 'Withdrawal failed');
     }
-    return data as Map<String, dynamic>;
   }
 
   /// Ledger history, newest first.

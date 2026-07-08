@@ -80,12 +80,16 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
       setState(() => _error = 'You can withdraw at most ₦${NumberFormat('#,##0.00').format(_withdrawable)}');
       return;
     }
+    // Authorise with the 4-digit withdrawal PIN (created on first withdrawal).
+    final pin = await _resolvePin();
+    if (pin == null || !mounted) return;
+
     setState(() {
       _submitting = true;
       _error = null;
     });
     try {
-      await WalletService.requestWithdrawal(amount: amount);
+      await WalletService.requestWithdrawal(amount: amount, pin: pin);
       if (!mounted) return;
       await context.read<WalletCubit>().load(_userId);
       if (!mounted) return;
@@ -114,6 +118,12 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
       if (!mounted) return;
       setState(() => _submitting = false);
       _addBankAccount();
+    } on WalletPinError catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.message;
+        _submitting = false;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -121,6 +131,94 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
         _submitting = false;
       });
     }
+  }
+
+  /// Returns the PIN to authorise the withdrawal, creating it on first use.
+  /// Returns null if the user cancels or something goes wrong (message set).
+  Future<String?> _resolvePin() async {
+    ({bool hasPin, bool locked}) status;
+    try {
+      status = await WalletService.getWithdrawalPinStatus();
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Could not check your withdrawal PIN. Try again.');
+      return null;
+    }
+    if (!mounted) return null;
+    if (status.locked) {
+      setState(() => _error = 'Withdrawals are locked after too many wrong PIN attempts. Try again later.');
+      return null;
+    }
+    return status.hasPin ? _enterPinFlow() : _createPinFlow();
+  }
+
+  /// First-time setup: enter a PIN, confirm it, then save it.
+  Future<String?> _createPinFlow() async {
+    final pin1 = await _promptPin(
+      title: 'Create withdrawal PIN',
+      subtitle: "Set a 4-digit PIN. You'll enter it every time you withdraw.",
+    );
+    if (pin1 == null || !mounted) return null;
+    final pin2 = await _promptPin(title: 'Confirm PIN', subtitle: 'Enter your PIN again to confirm.');
+    if (pin2 == null || !mounted) return null;
+    if (pin1 != pin2) {
+      setState(() => _error = "PINs didn't match. Please try again.");
+      return null;
+    }
+    try {
+      await WalletService.setWithdrawalPin(pin1);
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      return null;
+    }
+    return pin1;
+  }
+
+  Future<String?> _enterPinFlow() => _promptPin(
+        title: 'Enter withdrawal PIN',
+        subtitle: 'Enter your 4-digit PIN to authorise this withdrawal.',
+      );
+
+  /// A 4-digit PIN entry dialog. Returns the digits, or null if cancelled.
+  Future<String?> _promptPin({required String title, required String subtitle}) {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(subtitle, style: const TextStyle(color: AppColors.mediumGray, fontSize: 13)),
+            ),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              maxLength: 4,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 24, letterSpacing: 12),
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(counterText: '', hintText: '••••'),
+              onSubmitted: (v) {
+                if (v.trim().length == 4) Navigator.pop(ctx, v.trim());
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              if (controller.text.trim().length == 4) Navigator.pop(ctx, controller.text.trim());
+            },
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override

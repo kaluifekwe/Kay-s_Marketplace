@@ -67,7 +67,7 @@ class ShareService {
     String? imageUrl,
   }) async {
     final url = productUrl(productId);
-    final caption = "$name\n${_naira(price)}\n\nSee it on Kay's Marketplace:\n$url";
+    final caption = "$name\n${_naira(price)}\n\nSee it on Kays Market:\n$url";
     try {
       if (imageUrl != null && imageUrl.startsWith('http')) {
         final file = await DefaultCacheManager().getSingleFile(imageUrl);
@@ -92,7 +92,7 @@ class ShareService {
   }) async {
     final url = storeUrl(handle: handle, storeId: storeId);
     final caption =
-        "🛍️ $storeName on Kay's Marketplace\n\nBrowse all my products here:\n$url";
+        "🛍️ $storeName on Kays Market\n\nBrowse all my products here:\n$url";
     try {
       if (imageUrl != null && imageUrl.startsWith('http')) {
         final file = await DefaultCacheManager().getSingleFile(imageUrl);

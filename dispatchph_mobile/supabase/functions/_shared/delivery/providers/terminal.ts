@@ -1,8 +1,14 @@
 // Terminal Africa (TShip) provider adapter.
 // Flow: GET /packaging (cached) -> POST /addresses x2 -> POST /parcels
-//       -> POST /rates/multi/shipment  (quote)
+//       -> GET /rates/shipment  (quote)
 //       -> POST /shipments/pickup with rate_id  (book)
 // Docs: https://docs.terminal.africa/tship
+//
+// NOTE: We use the SINGLE-parcel rates endpoint (GET /rates/shipment), not the
+// multi-parcel one (POST /rates/multi/shipment). Per Terminal support, local
+// carriers (GIG/Kwik/Fez/Chowdeck/Redstar/Dellyman) are only rated on the
+// single-parcel endpoint; multi-parcel returns DHL only. We always bundle an
+// order into one parcel, so single-parcel is the correct call.
 import type {
   Address,
   BookInput,
@@ -168,15 +174,14 @@ export const terminal: DeliveryProvider = {
     // Rates-by-address: Terminal auto-creates a shipment behind each rate and
     // returns its id on the rate (rate.shipment). We keep that id per option so
     // book() can arrange the pickup against (shipment_id, rate_id).
-    const ratesRes = await api("/rates/multi/shipment", {
-      method: "POST",
-      body: JSON.stringify({
-        currency: "NGN",
-        pickup_address: from.id,
-        delivery_address: to.id,
-        parcels: [parcelId],
-      }),
+    // Single-parcel endpoint is a GET with query params (parcel_id, addresses).
+    const ratesQuery = new URLSearchParams({
+      currency: "NGN",
+      pickup_address: from.id,
+      delivery_address: to.id,
+      parcel_id: parcelId,
     });
+    const ratesRes = await api(`/rates/shipment?${ratesQuery.toString()}`);
     const rates = ratesRes.data?.data;
     if (!ratesRes.ok || !Array.isArray(rates) || rates.length === 0) {
       return { provider: "terminal", couriers: [], providerData: {}, reason: `no_rates (${ratesRes.data?.message ?? "empty"})` };

@@ -110,7 +110,7 @@ class _SenderHomeScreenState extends State<SenderHomeScreen> {
           children: [
             const Icon(Icons.motorcycle, size: 24, color: AppColors.riderYellow),
             const SizedBox(width: 8),
-            Text("Kay's Marketplace", style: TextStyle(color: AppColors.white)),
+            Text("Kays Market", style: TextStyle(color: AppColors.white)),
           ],
         ),
         actions: [

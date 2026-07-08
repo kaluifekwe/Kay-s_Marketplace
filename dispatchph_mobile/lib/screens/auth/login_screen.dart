@@ -88,7 +88,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                "Log in to your Kay's Marketplace account",
+                "Log in to your Kays Market account",
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: AppColors.mediumGray),
               ),
               const SizedBox(height: 32),

@@ -88,7 +88,7 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         icon: const Icon(Icons.celebration, color: AppColors.primaryGreen, size: 64),
-        title: const Text("Welcome to Kay's Marketplace!"),
+        title: const Text("Welcome to Kays Market!"),
         content: const Text(
           "Congratulations! 🎉\nYou've received ₦200 welcome credit to use on your first purchase.",
           textAlign: TextAlign.center,
@@ -333,7 +333,7 @@ class _MarketplaceFeed extends StatelessWidget {
         elevation: 0,
         leading: const SizedBox.shrink(),
         title: const Text(
-          "Kay's Marketplace",
+          "Kays Market",
           style: TextStyle(
             color: Colors.white,
             fontSize: 18,

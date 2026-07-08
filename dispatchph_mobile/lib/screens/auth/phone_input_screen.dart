@@ -86,7 +86,7 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
               ),
               const SizedBox(height: 24),
               Text(
-                "Welcome to\nKay's Marketplace",
+                "Welcome to\nKays Market",
                 style: Theme.of(context).textTheme.headlineLarge,
               ),
               const SizedBox(height: 8),

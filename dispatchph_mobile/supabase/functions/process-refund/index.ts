@@ -260,7 +260,7 @@ serve(async (req) => {
           source: "balance",
           amount: Math.round(refundAmount * 100),
           recipient: buyerBank.paystack_recipient_code,
-          reason: `Refund for order ${order_id.substring(0, 8)} - Kay's Marketplace`,
+          reason: `Refund for order ${order_id.substring(0, 8)} - Kays Market`,
           reference: `refund_${order_id}`,
         }),
       });

@@ -675,12 +675,12 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
     final storeName = store?.name ?? 'Store';
     if (_isOwner(store) && _vendorUniqueId != null) {
       Share.share(
-        'Shop at $storeName on Kay\'s Marketplace!\n\n'
+        'Shop at $storeName on Kays Market!\n\n'
         'Store ID: $_vendorUniqueId\n'
-        'Open Kay\'s Marketplace and search "$_vendorUniqueId" to find this store.',
+        'Open Kays Market and search "$_vendorUniqueId" to find this store.',
       );
     } else {
-      Share.share('Check out $storeName on Kay\'s Marketplace!');
+      Share.share('Check out $storeName on Kays Market!');
     }
   }
 

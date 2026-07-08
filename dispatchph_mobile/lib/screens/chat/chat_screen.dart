@@ -364,9 +364,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final tmp = await cached.copy(tmpPath);
 
       if (isVideo) {
-        await Gal.putVideo(tmp.path, album: "Kay's Marketplace");
+        await Gal.putVideo(tmp.path, album: "Kays Market");
       } else {
-        await Gal.putImage(tmp.path, album: "Kay's Marketplace");
+        await Gal.putImage(tmp.path, album: "Kays Market");
       }
 
       if (!mounted) return;

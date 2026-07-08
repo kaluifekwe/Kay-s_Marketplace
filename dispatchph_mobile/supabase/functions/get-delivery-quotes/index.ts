@@ -4,7 +4,8 @@ import { quoteAll } from "../_shared/delivery/orchestrate.ts";
 import type { Address, PackageItem } from "../_shared/delivery/types.ts";
 
 // Fetch live courier rates at CHECKOUT across every enabled provider
-// (Shipbubble, Terminal Africa, …) and return a merged, cheapest-first list.
+// (Shipbubble, Terminal Africa, …) and return a merged, fastest-first list
+// (price as tiebreaker). Options from ALL providers are pooled, never deduped.
 // Orders don't exist yet here (created post-payment), so quotes are keyed by
 // buyer + vendor + cart. An empty couriers array => client falls back to the
 // in-chat delivery-fee negotiation.
@@ -126,7 +127,7 @@ serve(async (req) => {
     }));
     const totalWeight = packageItems.reduce((s, i) => s + i.weight * i.quantity, 0);
 
-    // Fan out to every enabled provider, merge, sort cheapest-first.
+    // Fan out to every enabled provider, merge, sort fastest-first (price tiebreak).
     const { couriers, providerData, reason } = await quoteAll({ sender, receiver, items: packageItems });
 
     if (couriers.length === 0) {

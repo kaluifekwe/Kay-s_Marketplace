@@ -192,7 +192,7 @@ class _SplashScreenState extends State<SplashScreen>
                       const SizedBox(height: 40),
                       // Brand name
                       Text(
-                        "Kay's",
+                        "Kays",
                         style: Theme.of(context).textTheme.headlineLarge?.copyWith(
                               color: AppColors.white,
                               fontWeight: FontWeight.bold,
@@ -212,7 +212,7 @@ class _SplashScreenState extends State<SplashScreen>
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'Marketplace',
+                        'Market',
                         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                               color: AppColors.riderYellow,
                               fontSize: 20,

@@ -8,7 +8,7 @@
     <!-- Gallery-save permissions (WRITE_EXTERNAL_STORAGE maxSdkVersion 29, etc.)
          are contributed by the gal plugin's own manifest. -->
     <application
-        android:label="Kay's Marketplace"
+        android:label="Kays Market"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

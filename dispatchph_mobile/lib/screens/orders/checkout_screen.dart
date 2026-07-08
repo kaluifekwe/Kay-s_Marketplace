@@ -34,6 +34,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   final Map<String, DeliveryQuote> _storeQuotes = {};
   final Map<String, CourierOption?> _storeCourier = {};
   final Map<String, bool> _storeQuoteLoading = {};
+  // Whether each store's courier-quote search has definitively finished — found
+  // couriers, genuine zero-coverage, or errored after all retries. Lets us tell
+  // "still searching / not yet tried" apart from "searched, none available", so
+  // the no-courier warning only shows once the search has truly completed.
+  final Map<String, bool> _storeQuoteResolved = {};
   BuyerAddress? _selectedAddress;
   bool _loaded = false;
   bool _useCredit = false;
@@ -166,6 +171,26 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
+  // Courier quote retry policy: total attempts before giving up and showing the
+  // "no courier available" fallback. Only transient failures consume retries.
+  static const int _quoteMaxAttempts = 3;
+
+  /// True when an empty quote looks like a transient provider/network failure
+  /// (worth retrying) rather than a genuine "no courier covers this route". A
+  /// provider that errors/times out inside the edge function comes back as an
+  /// empty list with an error reason (allSettled), which is indistinguishable
+  /// from real no-coverage without inspecting the reason string.
+  bool _isTransientQuoteFailure(String? reason) {
+    if (reason == null || reason.isEmpty) return true;
+    final r = reason.toLowerCase();
+    return r.contains('error') ||
+        r.contains('timeout') ||
+        r.contains('timed out') ||
+        r.contains('network') ||
+        r.contains('econn') ||
+        RegExp(r'\b5\d\d\b').hasMatch(r);
+  }
+
   /// Fetch Shipbubble courier rates for every store using the selected delivery
   /// address. When a store has couriers, courier becomes its delivery method
   /// (cheapest pre-selected); otherwise the free/negotiate fallback stands.
@@ -198,37 +223,58 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         };
       }).toList();
 
-      if (mounted) setState(() => _storeQuoteLoading[storeId] = true);
-      try {
-        final quote = await DeliveryService.getDeliveryQuotes(
-          vendorId: vendorId,
-          buyerId: _buyerId,
-          deliveryAddress: addr.address,
-          deliveryLandmark: addr.landmark,
-          deliveryCity: addr.city,
-          deliveryState: addr.state,
-          deliveryLatitude: addr.latitude,
-          deliveryLongitude: addr.longitude,
-          items: items,
-        );
-        if (!mounted) return;
+      if (mounted) {
         setState(() {
-          _storeQuoteLoading[storeId] = false;
-          if (quote.hasCouriers) {
-            final cheapest = quote.couriers.first;
-            _storeQuotes[storeId] = quote;
-            _storeCourier[storeId] = cheapest;
-            _storeDeliveryType[storeId] = 'courier';
-            _storeDeliveryFee[storeId] = cheapest.fee;
-            _storeDeliveryContribution[storeId] = 0;
-            _storeDeliveryAgreed[storeId] = true;
-          }
+          _storeQuoteLoading[storeId] = true;
+          _storeQuoteResolved[storeId] = false;
         });
-      } catch (e) {
-        if (!mounted) return;
-        setState(() => _storeQuoteLoading[storeId] = false);
-        debugPrint('[Checkout] quote error for $storeId: $e');
       }
+
+      // Auto-retry transient failures (network/API error, provider timeout). A
+      // valid "no courier covers this route" result is NOT retried — retrying
+      // won't change coverage — so it falls straight through to the warning.
+      DeliveryQuote? quote;
+      for (var attempt = 1; attempt <= _quoteMaxAttempts; attempt++) {
+        try {
+          final q = await DeliveryService.getDeliveryQuotes(
+            vendorId: vendorId,
+            buyerId: _buyerId,
+            deliveryAddress: addr.address,
+            deliveryLandmark: addr.landmark,
+            deliveryCity: addr.city,
+            deliveryState: addr.state,
+            deliveryLatitude: addr.latitude,
+            deliveryLongitude: addr.longitude,
+            items: items,
+          );
+          quote = q;
+          // Stop once we have couriers or a genuine (non-transient) empty
+          // result; only transient provider failures consume another attempt.
+          if (q.hasCouriers || !_isTransientQuoteFailure(q.reason)) break;
+        } catch (e) {
+          debugPrint('[Checkout] quote attempt $attempt error for $storeId: $e');
+        }
+        if (attempt < _quoteMaxAttempts) {
+          await Future.delayed(Duration(milliseconds: 500 * attempt));
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _storeQuoteLoading[storeId] = false;
+        _storeQuoteResolved[storeId] = true;
+        if (quote != null && quote.hasCouriers) {
+          // Server returns options fastest-first (price as tiebreak), so the
+          // first option is the fastest — pre-select it as the default.
+          final preferred = quote.couriers.first;
+          _storeQuotes[storeId] = quote;
+          _storeCourier[storeId] = preferred;
+          _storeDeliveryType[storeId] = 'courier';
+          _storeDeliveryFee[storeId] = preferred.fee;
+          _storeDeliveryContribution[storeId] = 0;
+          _storeDeliveryAgreed[storeId] = true;
+        }
+      });
     }
   }
 
@@ -243,6 +289,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       _selectedAddress = picked;
       _storeQuotes.clear();
       _storeCourier.clear();
+      _storeQuoteResolved.clear();
       for (final storeId in _storeVendorIds.keys) {
         if (_storeDeliveryType[storeId] == 'courier') {
           _storeDeliveryType[storeId] = 'negotiate';
@@ -300,9 +347,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           final totalVendorContribution =
               storeGroups.keys.fold<double>(0, (sum, id) => sum + (_storeDeliveryContribution[id] ?? 0));
           final totalWithDelivery = state.total + totalDeliveryFee;
+          // Gates the pay button: any store without an agreed delivery — including
+          // while its quote is still loading — blocks checkout.
           final deliveryUnagreed = storeGroups.keys.any((id) => _storeDeliveryAgreed[id] != true);
-          final unagreedStoreNames = storeGroups.keys
-              .where((id) => _storeDeliveryAgreed[id] != true)
+          // Drives the "no courier available, contact vendor" warning. Unlike the
+          // button gate, this only fires for stores whose quote search has fully
+          // resolved with no courier — never while still loading/retrying — so the
+          // warning can't flash before the search actually returns zero.
+          final unavailableStoreNames = storeGroups.keys
+              .where((id) =>
+                  _storeDeliveryAgreed[id] != true &&
+                  _storeQuoteResolved[id] == true &&
+                  _storeQuoteLoading[id] != true)
               .map((id) => _storeNames[id] ?? 'this vendor')
               .toList();
 
@@ -448,7 +504,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       style: TextStyle(fontSize: 11, color: Colors.grey[600])),
                 ],
               ),
-              if (deliveryUnagreed) ...[
+              if (unavailableStoreNames.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -463,7 +519,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Courier delivery isn\'t available for ${unagreedStoreNames.join(', ')} right now. '
+                          'Courier delivery isn\'t available for ${unavailableStoreNames.join(', ')} right now. '
                           'Chat with the vendor to arrange a delivery fee, or remove those items to check out.',
                           style: TextStyle(color: Colors.orange[800], fontSize: 13),
                         ),
@@ -703,7 +759,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         const Text('🚚 Choose Delivery', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
         const SizedBox(height: 8),
         ...quote.couriers.map((courier) {
-          final isSelected = selected?.name == courier.name;
+          // Match on optionRef (unique per rate) so two options from the same
+          // courier (e.g. Chowdeck standard vs same-day) don't both highlight.
+          // Fallback to name+fee for options without a ref (free/negotiate).
+          final isSelected = selected != null &&
+              (courier.optionRef != null
+                  ? selected.optionRef == courier.optionRef
+                  : selected.name == courier.name && selected.fee == courier.fee);
           return GestureDetector(
             onTap: () => _selectCourier(storeId, courier),
             child: Container(
@@ -726,7 +788,40 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(courier.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(courier.name,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            ),
+                            // TEMP DEBUG: shows which delivery company (provider)
+                            // returned this rider, to confirm BOTH companies are
+                            // populating. Remove before the production release.
+                            if (courier.provider != null) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: courier.provider == 'terminal'
+                                      ? const Color(0xFFFFF0E0)
+                                      : const Color(0xFFE0F0FF),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  courier.provider!,
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w600,
+                                    color: courier.provider == 'terminal'
+                                        ? const Color(0xFFB35A00)
+                                        : const Color(0xFF0066B3),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
                         if (courier.eta != null && courier.eta!.isNotEmpty)
                           Text(courier.eta!, style: const TextStyle(fontSize: 11, color: AppColors.mediumGray)),
                       ],

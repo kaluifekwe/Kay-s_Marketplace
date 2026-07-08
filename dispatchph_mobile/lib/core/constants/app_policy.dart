@@ -7,7 +7,7 @@
 /// docs/policy.md (the human-readable source) and the policy_acceptances table.
 const String kPolicyVersion = '1.0';
 
-const String kPolicyTitle = "Kay's Marketplace — Buyer & Vendor Agreement";
+const String kPolicyTitle = "Kays Market — Buyer & Vendor Agreement";
 
 const String kPolicyEffective = 'Version 1.0';
 
@@ -33,7 +33,7 @@ const List<PolicyBlock> kPolicyBlocks = [
   PolicyBlock(
     heading: 'The basics',
     body:
-        "Kay's Marketplace connects buyers and vendors. Vendors sell the items; "
+        "Kays Market connects buyers and vendors. Vendors sell the items; "
         "we hold the buyer's payment in escrow and only release it to the vendor "
         "after delivery is confirmed.",
   ),

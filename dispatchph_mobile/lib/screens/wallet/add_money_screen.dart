@@ -5,11 +5,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
 import '../../core/services/wallet_service.dart';
+import '../kyc/kyc_screen.dart';
 
-/// Buyer funding screen. If the buyer has no virtual account yet, collect their
-/// BVN (required by Flutterwave for a permanent NGN account) and generate one.
-/// Once it exists, show the fixed account number to transfer into — funds land
-/// in the wallet automatically via the flutterwave-webhook.
+/// Buyer funding screen. The buyer must be NIN-verified; their funding account
+/// is generated from that verified NIN (no BVN needed). Once it exists, show the
+/// fixed account number to transfer into — funds land in the wallet
+/// automatically via the flutterwave-webhook.
 class AddMoneyScreen extends StatefulWidget {
   const AddMoneyScreen({super.key});
 
@@ -18,25 +19,17 @@ class AddMoneyScreen extends StatefulWidget {
 }
 
 class _AddMoneyScreenState extends State<AddMoneyScreen> {
-  final _bvnController = TextEditingController();
   String _userId = '';
   String? _accountNumber;
   String? _bankName;
   bool _loading = true;
   bool _creating = false;
-  bool _needBvn = false; // true only when there's no verified NIN on file
   String? _error;
 
   @override
   void initState() {
     super.initState();
     _load();
-  }
-
-  @override
-  void dispose() {
-    _bvnController.dispose();
-    super.dispose();
   }
 
   Future<void> _load() async {
@@ -52,34 +45,19 @@ class _AddMoneyScreenState extends State<AddMoneyScreen> {
   }
 
   Future<void> _generate() async {
-    // Only validate/collect a BVN when the server has told us there's no
-    // verified NIN on file (_needBvn). Otherwise generate straight from the NIN.
-    String? bvn;
-    if (_needBvn) {
-      bvn = _bvnController.text.trim();
-      if (!RegExp(r'^\d{11}$').hasMatch(bvn)) {
-        setState(() => _error = 'Enter a valid 11-digit BVN');
-        return;
-      }
-    }
+    // Funding needs a verified NIN — verify first if the buyer hasn't.
+    if (!await requireKyc(context, action: KycAction.fund)) return;
+    if (!mounted) return;
     setState(() {
       _creating = true;
       _error = null;
     });
     try {
-      final result = await WalletService.createVirtualAccount(bvn: bvn);
+      final result = await WalletService.createVirtualAccount();
       if (!mounted) return;
       setState(() {
         _accountNumber = result['account_number'] as String?;
         _bankName = result['bank_name'] as String?;
-        _creating = false;
-      });
-    } on WalletBvnRequired catch (e) {
-      // No NIN on file — reveal the BVN field so the buyer can retry.
-      if (!mounted) return;
-      setState(() {
-        _needBvn = true;
-        _error = e.message;
         _creating = false;
       });
     } catch (e) {
@@ -122,31 +100,13 @@ class _AddMoneyScreenState extends State<AddMoneyScreen> {
         const Text('Create your funding account',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        Text(
-          _needBvn
-              ? 'We couldn\'t find a verified NIN on your account. Enter your BVN to '
-                  'open your funding account — it\'s used only to create the account and never stored.'
-              : 'We\'ll generate a dedicated bank account for topping up your wallet. '
-                  'Transfers into it land in your wallet automatically.',
-          style: const TextStyle(color: AppColors.mediumGray, fontSize: 13),
+        const Text(
+          "We'll generate a dedicated bank account for topping up your wallet. "
+          'Transfers into it land in your wallet automatically.',
+          style: TextStyle(color: AppColors.mediumGray, fontSize: 13),
         ),
         const SizedBox(height: 20),
-        if (_needBvn) ...[
-          TextField(
-            controller: _bvnController,
-            keyboardType: TextInputType.number,
-            maxLength: 11,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: const InputDecoration(
-              labelText: 'BVN',
-              hintText: '11-digit Bank Verification Number',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 4),
-        ],
         if (_error != null) ...[
-          const SizedBox(height: 4),
           Text(_error!, style: const TextStyle(color: AppColors.errorRed, fontSize: 13)),
           const SizedBox(height: 8),
         ],
@@ -221,7 +181,7 @@ class _AddMoneyScreenState extends State<AddMoneyScreen> {
         OutlinedButton.icon(
           onPressed: _refreshBalance,
           icon: const Icon(Icons.refresh),
-          label: const Text('I\'ve sent it — refresh balance'),
+          label: const Text("I've sent it — refresh balance"),
         ),
       ],
     );

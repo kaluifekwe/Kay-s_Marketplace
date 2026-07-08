@@ -155,18 +155,21 @@ class _KycScreenState extends State<KycScreen> {
 
 /// What a KYC gate is protecting — tunes the prompt copy. The verification
 /// itself is identical (NIN/BVN); only the reason shown to the user differs.
-enum KycAction { buy, sell, withdraw }
+enum KycAction { buy, sell, withdraw, fund }
 
 String _kycPrompt(KycAction action) {
   switch (action) {
     case KycAction.sell:
-      return 'You need to verify your identity with your NIN or BVN before you '
+      return 'You need to verify your identity with your NIN before you '
           'can list products for sale. It only takes a moment.';
     case KycAction.withdraw:
-      return 'You need to verify your identity with your NIN or BVN before you '
+      return 'You need to verify your identity with your NIN before you '
           'can withdraw to your bank. It only takes a moment.';
+    case KycAction.fund:
+      return 'You need to verify your identity with your NIN before you '
+          'can create your funding account. It only takes a moment.';
     case KycAction.buy:
-      return 'You need to verify your identity with your NIN or BVN before you '
+      return 'You need to verify your identity with your NIN before you '
           'can buy. It only takes a moment.';
   }
 }

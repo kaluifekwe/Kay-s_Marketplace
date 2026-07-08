@@ -4,15 +4,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 /// server-side (Edge Functions + the wallet_credit/wallet_debit RPCs); this
 /// service just reads balances/history and invokes the money-moving Edge
 /// Functions. Mirrors CreditService/PaymentService.
-/// Thrown by [WalletService.createVirtualAccount] when there's no verified NIN
-/// on file, so the buyer must supply a BVN instead.
-class WalletBvnRequired implements Exception {
-  final String message;
-  WalletBvnRequired(this.message);
-  @override
-  String toString() => message;
-}
-
 /// Thrown by [WalletService.checkout] when the wallet balance is too low —
 /// carries the shortfall so the UI can prompt the buyer to Add money.
 class WalletInsufficient implements Exception {
@@ -56,31 +47,23 @@ class WalletService {
   }
 
   /// Create (or fetch) the buyer's permanent Flutterwave virtual account.
-  /// Flutterwave needs the customer's NIN or BVN for a static NGN account; the
-  /// server prefers the NIN already verified during KYC, so [bvn] is only needed
-  /// as a fallback when no verified NIN exists. Identity data is passed through
-  /// server-side and never stored. Returns { account_number, bank_name }.
-  ///
-  /// Throws [WalletBvnRequired] when the server has no NIN on file and a BVN
-  /// must be supplied.
-  static Future<Map<String, dynamic>> createVirtualAccount({String? bvn}) async {
-    final response = await _client.functions.invoke(
-      'create-virtual-account',
-      headers: _headers,
-      body: bvn != null ? {'bvn': bvn} : {},
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200) {
-      final err = data is Map ? data['error'] : null;
-      if (err == 'identity_required' || (data is Map && data['need_bvn'] == true)) {
-        throw WalletBvnRequired(
-          data is Map ? (data['message'] as String? ?? 'Enter your BVN to continue.') : 'Enter your BVN to continue.',
-        );
-      }
-      throw Exception(data is Map ? (data['message'] ?? err ?? 'Could not create funding account') : 'Could not create funding account');
+  /// Funding is NIN-only: the server uses the NIN already verified during KYC,
+  /// so the buyer must be verified first (the Add-money screen gates on it).
+  /// Returns { account_number, bank_name }.
+  static Future<Map<String, dynamic>> createVirtualAccount() async {
+    try {
+      final response = await _client.functions.invoke(
+        'create-virtual-account',
+        headers: _headers,
+        body: {},
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } on FunctionException catch (e) {
+      final data = e.details;
+      throw Exception(
+        data is Map ? (data['message'] ?? data['error'] ?? 'Could not create funding account') : 'Could not create funding account',
+      );
     }
-    return data as Map<String, dynamic>;
   }
 
   /// The wallet row, or null if it hasn't been created yet (created lazily on

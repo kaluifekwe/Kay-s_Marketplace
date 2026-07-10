@@ -134,7 +134,7 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
       }).eq('id', widget.store.id);
 
       if (!mounted) return;
-      await context.read<MarketplaceCubit>().loadProducts();
+      await context.read<MarketplaceCubit>().loadProducts(forceRefresh: true);
       if (!mounted) return;
       Navigator.pop(context);
     } catch (e) {

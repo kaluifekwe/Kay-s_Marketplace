@@ -2,7 +2,17 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../services/supabase_service.dart';
+import '../services/cache_service.dart';
 import '../models/models.dart';
+
+/// Cached first page of the buyer product feed (in-memory, short-lived), so
+/// navigating back to the marketplace doesn't re-hit the database every time.
+class _ProductPage {
+  final List<Product> products;
+  final Map<String, Store> stores;
+  final bool hasMore;
+  _ProductPage(this.products, this.stores, this.hasMore);
+}
 
 class MarketplaceCubit extends Cubit<MarketplaceState> {
   MarketplaceCubit() : super(MarketplaceState());
@@ -62,7 +72,26 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
     return updated;
   }
 
-  Future<void> loadProducts() async {
+  static const _feedCacheKey = 'products:page0';
+  static const _feedCacheTtl = Duration(minutes: 3);
+
+  Future<void> loadProducts({bool forceRefresh = false}) async {
+    // Serve the cached first page when fresh — avoids a DB round-trip every time
+    // the buyer returns to the marketplace. Pull-to-refresh/retry pass force.
+    if (!forceRefresh) {
+      final cached = CacheService.get<_ProductPage>(_feedCacheKey);
+      if (cached != null) {
+        emit(state.copyWith(
+          isLoading: false,
+          products: cached.products,
+          stores: cached.stores,
+          hasMore: cached.hasMore,
+          currentPage: 0,
+          clearSelectedCategory: true,
+        ));
+        return;
+      }
+    }
     emit(state.copyWith(isLoading: true));
     try {
       final data = await SupabaseService.client
@@ -73,11 +102,13 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
 
       final products = (data as List).map((p) => Product.fromJson(p)).toList();
       final stores = await _loadStoresFromProducts(data, {});
+      final hasMore = products.length >= _pageSize;
+      CacheService.set(_feedCacheKey, _ProductPage(products, stores, hasMore), ttl: _feedCacheTtl);
       emit(state.copyWith(
         isLoading: false,
         products: products,
         stores: stores,
-        hasMore: products.length >= _pageSize,
+        hasMore: hasMore,
         currentPage: 0,
         // "All" shows every product, so drop any active category filter — this
         // also makes the "All" chip highlight correctly again.
@@ -88,6 +119,10 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
       emit(state.copyWith(isLoading: false));
     }
   }
+
+  /// Drop the cached feed so the next load fetches fresh (after a product is
+  /// added/edited/deleted).
+  void _invalidateFeedCache() => CacheService.clearPrefix('products:');
 
   /// Loads ALL of one store's products for the vendor dashboard, newest first.
   /// Unlike [loadProducts] this is filtered by store and not paginated, so the
@@ -114,6 +149,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
   /// Re-fetch the active store's products after a mutation, so the dashboard
   /// updates without a manual refresh.
   Future<void> _refreshActiveStore() async {
+    _invalidateFeedCache();
     if (_activeStoreId != null) await loadStoreProducts(_activeStoreId!);
   }
 
@@ -377,6 +413,7 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
           }
         }
       }
+      _invalidateFeedCache();
       await loadStoreProducts(storeId);
       return null;
     } catch (e) {

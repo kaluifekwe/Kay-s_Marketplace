@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'error_text.dart';
+import 'cache_service.dart';
 
 class PaymentService {
   static final _client = Supabase.instance.client;
@@ -103,13 +104,22 @@ class PaymentService {
 
   /// List all Nigerian banks via Flutterwave.
   static Future<List<Map<String, dynamic>>> listBanks() async {
+    // Banks barely change — serve a persisted copy (survives restarts) and only
+    // hit the network once a week.
+    const cacheKey = 'flw_banks';
+    final cached = await CacheService.getPersisted(cacheKey);
+    if (cached is List && cached.isNotEmpty) {
+      return cached.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    }
     try {
       final response = await _client.functions.invoke(
         'flutterwave-proxy',
         headers: _headers,
         body: {'action': 'list-banks'},
       ).timeout(_timeout);
-      return List<Map<String, dynamic>>.from((response.data as Map)['banks']);
+      final banks = List<Map<String, dynamic>>.from((response.data as Map)['banks']);
+      await CacheService.setPersisted(cacheKey, banks, const Duration(days: 7));
+      return banks;
     } catch (e) {
       throw Exception(friendlyError(e, fallback: "We couldn't load the bank list. Please try again."));
     }

@@ -520,7 +520,7 @@ class _MarketplaceFeed extends StatelessWidget {
                         ),
                         const SizedBox(height: 20),
                         ElevatedButton.icon(
-                          onPressed: () => context.read<MarketplaceCubit>().loadProducts(),
+                          onPressed: () => context.read<MarketplaceCubit>().loadProducts(forceRefresh: true),
                           icon: const Icon(Icons.refresh_rounded, size: 18),
                           label: const Text('Retry'),
                           style: ElevatedButton.styleFrom(
@@ -544,7 +544,7 @@ class _MarketplaceFeed extends StatelessWidget {
                     // snapping back to "All".
                     return state.selectedCategory != null
                         ? cubit.loadProductsByCategory(state.selectedCategory!)
-                        : cubit.loadProducts();
+                        : cubit.loadProducts(forceRefresh: true);
                   },
                   child: NotificationListener<ScrollNotification>(
                     onNotification: (scrollInfo) {

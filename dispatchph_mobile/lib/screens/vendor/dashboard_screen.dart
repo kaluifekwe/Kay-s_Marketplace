@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../theme/app_theme.dart';
 import '../../core/services/error_text.dart';
+import '../settings/delete_account.dart';
 import '../auth/welcome_screen.dart';
 import '../../bloc_exports.dart';
 import '../../core/services/auth_service.dart';
@@ -421,6 +422,22 @@ class _VendorDashboardState extends State<VendorDashboard> {
                   MaterialPageRoute(builder: (_) => const WelcomeScreen()),
                   (route) => false,
                 );
+              },
+            ),
+            ListTile(
+              leading: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: AppColors.errorRed.withAlpha(20),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.delete_forever, color: AppColors.errorRed),
+              ),
+              title: const Text('Delete account', style: TextStyle(color: AppColors.errorRed)),
+              onTap: () {
+                final rootContext = Navigator.of(context, rootNavigator: true).context;
+                Navigator.of(context, rootNavigator: true).pop();
+                deleteAccountFlow(rootContext);
               },
             ),
             const SizedBox(height: 8),

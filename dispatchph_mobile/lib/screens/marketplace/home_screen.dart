@@ -32,6 +32,7 @@ import '../wallet/wallet_screen.dart';
 import '../delivery/buyer_addresses_screen.dart';
 import '../policy/policy_screen.dart';
 import '../kyc/kyc_screen.dart';
+import '../settings/delete_account.dart';
 
 class MarketplaceHome extends StatefulWidget {
   final int initialIndex;
@@ -1110,6 +1111,8 @@ class ProfileTab extends StatelessWidget {
                       (route) => false,
                     );
                   }, danger: true),
+                  divider,
+                  tile(Icons.delete_forever, 'Delete account', () => deleteAccountFlow(context), danger: true),
                 ]),
               ],
             ),

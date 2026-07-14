@@ -1,4 +1,5 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 import 'supabase_service.dart';
 import 'error_text.dart';
@@ -87,6 +88,66 @@ class AuthService {
     } catch (e) {
       print('[AuthService] Register error: $e');
       return friendlyAuthError(e, fallback: "We couldn't create your account. Please try again.");
+    }
+  }
+
+  /// Whether the signed-in user has verified their email (OTP). Existing/legacy
+  /// users (null column) are grandfathered as verified. Fails OPEN (returns true)
+  /// on any error so a transient hiccup never locks out a legitimate user.
+  static Future<bool> isEmailVerified() async {
+    try {
+      final uid = SupabaseService.auth.currentUser?.id;
+      if (uid == null) return true;
+      final row = await SupabaseService.client
+          .from('users')
+          .select('email_verified')
+          .eq('id', uid)
+          .maybeSingle();
+      if (row == null) return true;
+      return row['email_verified'] != false; // null or true => verified
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static ({bool ok, String? error}) _fnResult(dynamic data, int? status, {required String fallback}) {
+    final msg = data is Map ? (data['message'] ?? data['error']) : null;
+    return (ok: false, error: (msg ?? (status != null ? '$fallback ($status).' : fallback)).toString());
+  }
+
+  /// Password reset step 1 — email a 6-digit code (logged-out flow). Returns
+  /// null on success, else a user-facing message.
+  static Future<String?> requestPasswordReset(String email) async {
+    try {
+      final res = await SupabaseService.client.functions
+          .invoke('request-password-reset', body: {'email': email.trim()});
+      if (res.status == 200) return null;
+      return _fnResult(res.data, res.status, fallback: "We couldn't send the reset code. Please try again.").error;
+    } on FunctionException catch (e) {
+      return _fnResult(e.details, e.status, fallback: "We couldn't send the reset code").error;
+    } catch (_) {
+      return 'Could not reach the server. Check your connection and try again.';
+    }
+  }
+
+  /// Password reset step 2 — verify the code and set a new password. Returns
+  /// null on success, else a user-facing message.
+  static Future<String?> confirmPasswordReset({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) async {
+    try {
+      final res = await SupabaseService.client.functions.invoke(
+        'confirm-password-reset',
+        body: {'email': email.trim(), 'code': code.trim(), 'new_password': newPassword},
+      );
+      if (res.status == 200) return null;
+      return _fnResult(res.data, res.status, fallback: 'Could not reset your password. Please try again.').error;
+    } on FunctionException catch (e) {
+      return _fnResult(e.details, e.status, fallback: 'Could not reset your password').error;
+    } catch (_) {
+      return 'Could not reach the server. Check your connection and try again.';
     }
   }
 

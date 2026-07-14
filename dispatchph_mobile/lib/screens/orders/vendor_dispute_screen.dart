@@ -360,8 +360,9 @@ class _VendorDisputeScreenState extends State<VendorDisputeScreen> {
             ),
           ],
 
-          // Strict-flow action: vendor submits one response with optional evidence;
-          // admin makes the final refund decision (no direct accept/reject by vendor).
+          // Negotiation-first: the vendor tries to resolve directly with the
+          // buyer — accept the refund (auto-processed) or offer a replacement —
+          // and only sends it to admin if they disagree with the claim.
           if (_dispute!.status == 'awaiting_vendor_response') ...[
             const SizedBox(height: 16),
             Card(
@@ -370,13 +371,30 @@ class _VendorDisputeScreenState extends State<VendorDisputeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text('Submit Your Response', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Text('Resolve this dispute', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 4),
                     const Text(
-                      'Explain your side and attach evidence (e.g., pre-ship photos). Admin will review both sides and decide.',
+                      'Sort it out with the buyer directly: offer a replacement, or accept the refund. If you disagree with the claim, reject it and admin will decide.',
                       style: TextStyle(color: AppColors.mediumGray, fontSize: 13),
                     ),
                     const SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      onPressed: _showReplacementPicker,
+                      icon: const Icon(Icons.swap_horiz),
+                      label: const Text('Offer Replacement'),
+                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.escrowBlue, foregroundColor: Colors.white),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton.icon(
+                      onPressed: _showAcceptRefundDialog,
+                      icon: const Icon(Icons.check_circle),
+                      label: const Text('Accept Refund'),
+                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.primaryGreen, foregroundColor: Colors.white),
+                    ),
+                    const Divider(height: 26),
+                    const Text('Disagree with the buyer?',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
                     OutlinedButton.icon(
                       onPressed: _showUploadEvidenceSheet,
                       icon: const Icon(Icons.camera_alt),
@@ -384,11 +402,11 @@ class _VendorDisputeScreenState extends State<VendorDisputeScreen> {
                       style: OutlinedButton.styleFrom(foregroundColor: AppColors.warningOrange),
                     ),
                     const SizedBox(height: 8),
-                    ElevatedButton.icon(
+                    OutlinedButton.icon(
                       onPressed: _showRespondStrictDialog,
-                      icon: const Icon(Icons.send),
-                      label: const Text('Submit Response to Admin'),
-                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.primaryGreen, foregroundColor: Colors.white),
+                      icon: const Icon(Icons.gavel),
+                      label: const Text('Reject & send to admin'),
+                      style: OutlinedButton.styleFrom(foregroundColor: AppColors.errorRed),
                     ),
                   ],
                 ),

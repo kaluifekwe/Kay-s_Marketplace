@@ -65,6 +65,36 @@ class _DeliveryConfirmationScreenState extends State<DeliveryConfirmationScreen>
       return;
     }
 
+    // Final, explicit warning: confirmation is irreversible. This is the moment
+    // the buyer waives any dispute/refund, so make the consequence unmistakable
+    // BEFORE we release the money to the vendor.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirm & release payment?'),
+        content: const Text(
+          "By confirming, you're saying you received this order and it's exactly what you ordered.\n\n"
+          "The payment will be released to the vendor and this CANNOT be reversed or refunded.\n\n"
+          "If anything is wrong or you haven't received it, tap \"Not yet\" and report a problem instead.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not yet'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.successGreen,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Yes, confirm'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
     setState(() => _isSubmitting = true);
 
     final buyerId = await AuthService.getUserId();

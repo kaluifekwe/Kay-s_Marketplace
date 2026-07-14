@@ -1,3 +1,26 @@
+# ============================================================================
+# verify_jwt governance — READ BEFORE ADDING ANYTHING HERE.
+#
+# This file is the SINGLE SOURCE OF TRUTH for which functions run WITHOUT
+# Supabase's platform JWT gate. Any function NOT listed here defaults to
+# verify_jwt = true (the platform verifies the caller's token signature before
+# our code runs), which is what makes the manual getUserIdFromToken() decode in
+# the money functions safe.
+#
+# ONLY two kinds of function belong here (verify_jwt = false):
+#   1. Webhooks called server-to-server by a provider with no Supabase JWT —
+#      they MUST authenticate themselves via a signature/secret header.
+#   2. Public read-only pages fetched by crawlers / logged-out users.
+#
+# NEVER add a money/auth function (wallet-*, release-escrow, process-refund,
+# prepare-checkout, flutterwave-proxy, vendor-confirm-return, create-payment,
+# create-virtual-account, verify-*, withdrawal-pin, buyer-bank-account, …).
+# Setting one of those to false turns getUserIdFromToken() into a forgeable
+# auth bypass — a caller could spoof any user id. If a money function ever
+# needs to accept an unauthenticated caller, verify the token/signature INSIDE
+# the function instead of disabling the gate.
+# ============================================================================
+
 # Paystack calls this function directly (server-to-server webhook, and a
 # GET redirect from the in-app checkout webview) with no Supabase auth
 # header — it authenticates itself via the x-paystack-signature header,
@@ -5,6 +28,15 @@
 # gateway must be disabled for this one function or every real webhook
 # call gets rejected with 401 before our code ever runs.
 [functions.paystack-webhook]
+verify_jwt = false
+
+# Flutterwave calls this directly (server-to-server webhook) with no Supabase
+# auth header — it verifies the flutterwave-signature header (HMAC of the raw
+# body, keyed by FLUTTERWAVE_SECRET_HASH) internally. Same reasoning as
+# paystack-webhook. This entry codifies what was previously only set in the
+# dashboard, so a redeploy can't silently flip it back to true and 401 every
+# payment/funding/withdrawal webhook.
+[functions.flutterwave-webhook]
 verify_jwt = false
 
 # Shipbubble calls this directly (server-to-server webhook) with no Supabase

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
@@ -47,12 +48,19 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Timer? _refreshTimer;
   bool _hasReviewed = false;
   bool _loadFailed = false;
+  String? _currentUserId;
 
   @override
   void initState() {
     super.initState();
+    _loadCurrentUser();
     _loadOrder();
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadOrder());
+  }
+
+  Future<void> _loadCurrentUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _currentUserId = prefs.getString('auth_user_id'));
   }
 
   Future<void> _loadOrder() async {
@@ -228,8 +236,26 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
+                                const Text('Subtotal', style: TextStyle(color: AppColors.mediumGray)),
+                                Text('\u20A6${format.format(order.total)}', style: const TextStyle(color: AppColors.mediumGray)),
+                              ],
+                            ),
+                            if ((order.deliveryFee) > 0) ...[
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('Delivery', style: TextStyle(color: AppColors.mediumGray)),
+                                  Text('\u20A6${format.format(order.deliveryFee)}', style: const TextStyle(color: AppColors.mediumGray)),
+                                ],
+                              ),
+                            ],
+                            const Divider(),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
                                 const Text('Total', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                                Text('\u20A6${format.format(order.total)}',
+                                Text('\u20A6${format.format(order.totalWithDelivery ?? order.total)}',
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: AppColors.primaryGreen)),
                               ],
                             ),
@@ -242,7 +268,33 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                       CourierTrackTile(deliveryId: order.deliveryId!),
                       const SizedBox(height: 16),
                     ],
-                    if (order.status == 'shipped') ...[
+                    // Dispute open on a shipped order — the auto-release countdown
+                    // is paused (the server excludes disputed orders), so show the
+                    // dispute state instead of a still-ticking timer + confirm button.
+                    if (order.status == 'shipped' && _disputeId != null) ...[
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppColors.errorRed.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColors.errorRed.withOpacity(0.3)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.gavel, color: AppColors.errorRed, size: 22),
+                            SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Refund/dispute in progress. The release countdown is paused until this is resolved.',
+                                style: TextStyle(fontSize: 13, height: 1.4),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (order.status == 'shipped' && _disputeId == null) ...[
                       _TimerCard(remaining: _remaining),
                       const SizedBox(height: 16),
                       // Delivery info
@@ -326,7 +378,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                         ),
                       ],
                     ],
-                    if (order.status == 'confirmed' && !_hasReviewed) ...[
+                    if (order.status == 'confirmed' && order.buyerId == _currentUserId && !_hasReviewed) ...[
                       _InfoRow(icon: Icons.check_circle, text: 'Payment released to vendor', color: AppColors.successGreen),
                       const SizedBox(height: 8),
                       SizedBox(
@@ -342,10 +394,13 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                         ),
                       ),
                     ],
-                    if (order.status == 'confirmed' && _hasReviewed) ...[
+                    if (order.status == 'confirmed' && order.buyerId == _currentUserId && _hasReviewed) ...[
                       _InfoRow(icon: Icons.check_circle, text: 'Payment released to vendor', color: AppColors.successGreen),
                       const SizedBox(height: 8),
                       _InfoRow(icon: Icons.star, text: 'You already reviewed this store', color: AppColors.starYellow),
+                    ],
+                    if (order.status == 'confirmed' && order.buyerId != _currentUserId) ...[
+                      _InfoRow(icon: Icons.check_circle, text: 'Payment released to your wallet', color: AppColors.successGreen),
                     ],
                     if (order.status == 'refund_requested')
                       _InfoRow(icon: Icons.report_problem, text: 'Refund requested — vendor will review'),

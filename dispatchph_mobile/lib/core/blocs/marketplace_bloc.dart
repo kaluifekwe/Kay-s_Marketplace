@@ -209,6 +209,20 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
     }
   }
 
+  /// Clear an active search and restore the browse feed (respecting any category
+  /// filter). Called when returning to the home feed from the search screen so
+  /// it isn't left showing stale search results. No-op if nothing was searched;
+  /// the feed itself comes from cache, so this is effectively instant.
+  Future<void> resetFeed() async {
+    if (state.searchQuery == null || state.searchQuery!.isEmpty) return;
+    emit(state.copyWith(clearSearchQuery: true));
+    if (state.selectedCategory != null) {
+      await loadProductsByCategory(state.selectedCategory!);
+    } else {
+      await loadProducts();
+    }
+  }
+
   Future<void> searchProducts(String query) async {
     emit(state.copyWith(isLoading: true, searchQuery: query, searchedStore: null));
     try {
@@ -604,13 +618,15 @@ class MarketplaceState {
     // Because copyWith uses `?? this`, passing selectedCategory: null can't
     // clear it. Set this to reset back to "All" (no category filter).
     bool clearSelectedCategory = false,
+    // Same reason — set this to clear an active search query (back to browse).
+    bool clearSearchQuery = false,
   }) {
     return MarketplaceState(
       isLoading: isLoading ?? this.isLoading,
       isLoadingMore: isLoadingMore ?? this.isLoadingMore,
       products: products ?? this.products,
       stores: stores ?? this.stores,
-      searchQuery: searchQuery ?? this.searchQuery,
+      searchQuery: clearSearchQuery ? null : (searchQuery ?? this.searchQuery),
       selectedCategory: clearSelectedCategory ? null : (selectedCategory ?? this.selectedCategory),
       hasMore: hasMore ?? this.hasMore,
       currentPage: currentPage ?? this.currentPage,

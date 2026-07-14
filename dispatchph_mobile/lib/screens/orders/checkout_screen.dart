@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/services/error_text.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
@@ -10,10 +11,13 @@ import '../../core/models/delivery_models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/credit_service.dart';
 import '../../core/services/wallet_service.dart';
+import '../../core/services/payment_service.dart';
 import '../../core/services/delivery_service.dart';
+import '../../widgets/rider_searching_indicator.dart';
 import '../delivery/buyer_addresses_screen.dart';
-import '../kyc/kyc_screen.dart';
+import '../chat/chat_screen.dart';
 import '../wallet/add_money_screen.dart';
+import 'flutterwave_checkout_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
   const CheckoutScreen({super.key});
@@ -35,6 +39,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   final Map<String, DeliveryQuote> _storeQuotes = {};
   final Map<String, CourierOption?> _storeCourier = {};
   final Map<String, bool> _storeQuoteLoading = {};
+  // Stable key for this checkout session so a timeout-then-retry of wallet
+  // payment reuses the same reference and can't double-charge (server dedupes).
+  final String _walletCheckoutKey = const Uuid().v4();
   // Whether each store's courier-quote search has definitively finished — found
   // couriers, genuine zero-coverage, or errored after all retries. Lets us tell
   // "still searching / not yet tried" apart from "searched, none available", so
@@ -129,7 +136,16 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             .limit(1)
             .maybeSingle();
 
-        if (accepted != null) {
+        // A negotiated fee is only valid for a short window. A stale one — left
+        // over from a previous order, or accepted long ago and never paid —
+        // must NOT show as the default; the buyer re-negotiates a fresh fee.
+        // (The server enforces the same window at checkout.)
+        final acceptedAt = accepted != null
+            ? DateTime.tryParse(accepted['created_at'] as String? ?? '')
+            : null;
+        final feeFresh = acceptedAt != null &&
+            DateTime.now().difference(acceptedAt) <= const Duration(minutes: 60);
+        if (accepted != null && feeFresh) {
           deliveryFees[storeId] = (accepted['buyer_fee_amount'] as num?)?.toDouble() ?? 0;
           deliveryContributions[storeId] = (accepted['vendor_contribution'] as num?)?.toDouble() ?? 0;
           deliveryAgreed[storeId] = true;
@@ -205,78 +221,89 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         .whereType<String>()
         .toSet();
 
-    for (final storeId in storeIds) {
-      final vendorId = _storeVendorIds[storeId];
-      if (vendorId == null) continue;
-      // A vendor offering free delivery handles it themselves — no courier.
-      if (_storeDeliveryType[storeId] == 'free') continue;
+    // Fetch every store's courier rates CONCURRENTLY instead of one-by-one —
+    // with several vendors this collapses N sequential round-trips into a single
+    // wait, so "searching for riders" takes about as long as the slowest store,
+    // not the sum of them all.
+    await Future.wait(
+      storeIds.map((storeId) => _loadQuoteForStore(storeId, addr)),
+    );
+  }
 
-      // Items for this store, in the shape get-delivery-quotes expects.
-      final items = cartState.items
-          .where((i) => cartState.productMap[i.productId]?.storeId == storeId)
-          .map((i) {
-        final p = cartState.productMap[i.productId];
-        return {
-          'name': p?.name ?? 'Item',
-          'weight': 0.5, // no per-product weight yet; matches server default
-          'quantity': i.quantity,
-          'amount': i.variantPrice ?? p?.price ?? 0,
-        };
-      }).toList();
+  /// Fetch courier rates for ONE store and fold the result into state. Runs
+  /// concurrently with the other stores (see [_loadQuotes]).
+  Future<void> _loadQuoteForStore(String storeId, BuyerAddress addr) async {
+    final vendorId = _storeVendorIds[storeId];
+    if (vendorId == null) return;
+    // A vendor offering free delivery handles it themselves — no courier.
+    if (_storeDeliveryType[storeId] == 'free') return;
 
-      if (mounted) {
-        setState(() {
-          _storeQuoteLoading[storeId] = true;
-          _storeQuoteResolved[storeId] = false;
-        });
-      }
+    final cartState = context.read<CartCubit>().state;
+    // Items for this store, in the shape get-delivery-quotes expects.
+    final items = cartState.items
+        .where((i) => cartState.productMap[i.productId]?.storeId == storeId)
+        .map((i) {
+      final p = cartState.productMap[i.productId];
+      return {
+        'name': p?.name ?? 'Item',
+        'weight': 0.5, // no per-product weight yet; matches server default
+        'quantity': i.quantity,
+        'amount': i.variantPrice ?? p?.price ?? 0,
+      };
+    }).toList();
 
-      // Auto-retry transient failures (network/API error, provider timeout). A
-      // valid "no courier covers this route" result is NOT retried — retrying
-      // won't change coverage — so it falls straight through to the warning.
-      DeliveryQuote? quote;
-      for (var attempt = 1; attempt <= _quoteMaxAttempts; attempt++) {
-        try {
-          final q = await DeliveryService.getDeliveryQuotes(
-            vendorId: vendorId,
-            buyerId: _buyerId,
-            deliveryAddress: addr.address,
-            deliveryLandmark: addr.landmark,
-            deliveryCity: addr.city,
-            deliveryState: addr.state,
-            deliveryLatitude: addr.latitude,
-            deliveryLongitude: addr.longitude,
-            items: items,
-          );
-          quote = q;
-          // Stop once we have couriers or a genuine (non-transient) empty
-          // result; only transient provider failures consume another attempt.
-          if (q.hasCouriers || !_isTransientQuoteFailure(q.reason)) break;
-        } catch (e) {
-          debugPrint('[Checkout] quote attempt $attempt error for $storeId: $e');
-        }
-        if (attempt < _quoteMaxAttempts) {
-          await Future.delayed(Duration(milliseconds: 500 * attempt));
-        }
-      }
-
-      if (!mounted) return;
+    if (mounted) {
       setState(() {
-        _storeQuoteLoading[storeId] = false;
-        _storeQuoteResolved[storeId] = true;
-        if (quote != null && quote.hasCouriers) {
-          // Server returns options fastest-first (price as tiebreak), so the
-          // first option is the fastest — pre-select it as the default.
-          final preferred = quote.couriers.first;
-          _storeQuotes[storeId] = quote;
-          _storeCourier[storeId] = preferred;
-          _storeDeliveryType[storeId] = 'courier';
-          _storeDeliveryFee[storeId] = preferred.fee;
-          _storeDeliveryContribution[storeId] = 0;
-          _storeDeliveryAgreed[storeId] = true;
-        }
+        _storeQuoteLoading[storeId] = true;
+        _storeQuoteResolved[storeId] = false;
       });
     }
+
+    // Auto-retry transient failures (network/API error, provider timeout). A
+    // valid "no courier covers this route" result is NOT retried — retrying
+    // won't change coverage — so it falls straight through to the warning.
+    DeliveryQuote? quote;
+    for (var attempt = 1; attempt <= _quoteMaxAttempts; attempt++) {
+      try {
+        final q = await DeliveryService.getDeliveryQuotes(
+          vendorId: vendorId,
+          buyerId: _buyerId,
+          deliveryAddress: addr.address,
+          deliveryLandmark: addr.landmark,
+          deliveryCity: addr.city,
+          deliveryState: addr.state,
+          deliveryLatitude: addr.latitude,
+          deliveryLongitude: addr.longitude,
+          items: items,
+        );
+        quote = q;
+        // Stop once we have couriers or a genuine (non-transient) empty
+        // result; only transient provider failures consume another attempt.
+        if (q.hasCouriers || !_isTransientQuoteFailure(q.reason)) break;
+      } catch (e) {
+        debugPrint('[Checkout] quote attempt $attempt error for $storeId: $e');
+      }
+      if (attempt < _quoteMaxAttempts) {
+        await Future.delayed(Duration(milliseconds: 500 * attempt));
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _storeQuoteLoading[storeId] = false;
+      _storeQuoteResolved[storeId] = true;
+      if (quote != null && quote.hasCouriers) {
+        // Server returns options fastest-first (price as tiebreak), so the
+        // first option is the fastest — pre-select it as the default.
+        final preferred = quote.couriers.first;
+        _storeQuotes[storeId] = quote;
+        _storeCourier[storeId] = preferred;
+        _storeDeliveryType[storeId] = 'courier';
+        _storeDeliveryFee[storeId] = preferred.fee;
+        _storeDeliveryContribution[storeId] = 0;
+        _storeDeliveryAgreed[storeId] = true;
+      }
+    });
   }
 
   Future<void> _changeAddress() async {
@@ -376,6 +403,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             padding: const EdgeInsets.all(16),
             children: [
               _deliveryAddressSection(),
+              if (deliveryUnagreed) _deliveryHelpBanner(),
               const SizedBox(height: 16),
               const Text('Order Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
@@ -624,12 +652,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: (_isPayingWithCredit || _isPayingWithWallet || deliveryUnagreed)
+                  onPressed: (_isPayingWithCredit || _isPayingWithWallet)
                       ? null
-                      : () async {
-                          // KYC gate — a buyer must verify their NIN before buying.
-                          if (!await requireKyc(context)) return;
-                          if (!context.mounted) return;
+                      : () {
+                          if (deliveryUnagreed) {
+                            _showDeliveryBlockedSnack();
+                            return;
+                          }
                           if (creditCoversFull) {
                             _completeWithCredit(totalWithDelivery);
                           } else {
@@ -658,6 +687,53 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: AppColors.mediumGray, fontSize: 12),
               ),
+              // Card / bank transfer (Flutterwave). Only shown when Kay's Credit
+              // doesn't already cover the full order — otherwise the button above
+              // completes for free. No NIN needed: money flows FROM the buyer.
+              if (!creditCoversFull) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: const [
+                    Expanded(child: Divider()),
+                    Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 12),
+                      child: Text('or', style: TextStyle(color: AppColors.mediumGray)),
+                    ),
+                    Expanded(child: Divider()),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _isPayingWithCard
+                        ? null
+                        : () {
+                            if (deliveryUnagreed) {
+                              _showDeliveryBlockedSnack();
+                              return;
+                            }
+                            _completeWithCard(totalWithDelivery, '');
+                          },
+                    icon: _isPayingWithCard
+                        ? const SizedBox(
+                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primaryGreen))
+                        : const Icon(Icons.credit_card),
+                    label: Text('Pay ₦${format.format(totalWithDelivery)} online'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.primaryGreen,
+                      side: const BorderSide(color: AppColors.primaryGreen),
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  "Opens on card — tap “Change payment method” for transfer, USSD or eNaira • held in escrow",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.mediumGray, fontSize: 12),
+                ),
+              ],
             ],
           );
         },
@@ -686,6 +762,138 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               color: valueColor ?? AppColors.charcoal,
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  // Explains WHY the buyer can't pay yet, with the exact fix per store:
+  //  • no delivery address  → "Add address" (needed to price a courier)
+  //  • address set, but a store has no courier coverage → "Message vendor"
+  Widget _deliveryHelpBanner() {
+    // No address yet — the buyer must add one before any courier can be priced.
+    if (_selectedAddress == null) {
+      return _deliveryPromptCard(
+        icon: Icons.location_on,
+        color: AppColors.warningOrange,
+        title: 'Add your delivery address',
+        body: "We need it to show courier prices and let you pay.",
+        buttonLabel: 'Add address',
+        onTap: _changeAddress,
+      );
+    }
+    // Address set — flag any store whose courier search finished with no cover.
+    final blocked = _storeNames.keys.where((id) =>
+        _storeDeliveryAgreed[id] != true &&
+        _storeQuoteResolved[id] == true &&
+        _storeQuoteLoading[id] != true);
+    if (blocked.isEmpty) return const SizedBox.shrink();
+    return Column(
+      children: blocked
+          .map((id) => _deliveryPromptCard(
+                icon: Icons.local_shipping,
+                color: AppColors.errorRed,
+                title: 'No courier for ${_storeNames[id] ?? 'this vendor'}',
+                body: 'No courier covers this route. Message the vendor to arrange delivery.',
+                buttonLabel: 'Message vendor',
+                onTap: () => _messageVendor(id),
+              ))
+          .toList(),
+    );
+  }
+
+  Widget _deliveryPromptCard({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String body,
+    required String buttonLabel,
+    required VoidCallback onTap,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withAlpha(20),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withAlpha(80)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 13)),
+                const SizedBox(height: 2),
+                Text(body, style: const TextStyle(fontSize: 12, color: AppColors.charcoal)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: onTap,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: color,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text(buttonLabel, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _messageVendor(String storeId) {
+    final vendorId = _storeVendorIds[storeId];
+    if (vendorId == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          orderId: 'product_$storeId',
+          buyerId: _buyerId,
+          vendorId: vendorId,
+          vendorName: _storeNames[storeId] ?? 'Vendor',
+          buyerName: 'You',
+        ),
+      ),
+    );
+  }
+
+  // Immediate, unmissable feedback when the buyer taps a blocked Pay button —
+  // a centre-screen dialog (not a bottom snackbar they might miss) with the fix.
+  void _showDeliveryBlockedSnack() {
+    final noAddress = _selectedAddress == null;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(noAddress ? Icons.location_on : Icons.local_shipping,
+            color: AppColors.warningOrange, size: 44),
+        title: Text(noAddress ? 'Add your delivery address' : 'Delivery not arranged yet'),
+        content: Text(
+          noAddress
+              ? 'You need a delivery address before you can pay — it lets us show courier prices and deliver your order.'
+              : 'Some items have no courier available for your area. Message the vendor to arrange delivery, then come back and pay.',
+          textAlign: TextAlign.center,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Not now')),
+          if (noAddress)
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _changeAddress();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryGreen,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Add address'),
+            ),
         ],
       ),
     );
@@ -737,16 +945,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   Widget _courierSelector(String storeId) {
     final format = NumberFormat('#,##0');
     if (_storeQuoteLoading[storeId] == true) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 10),
-        child: Row(
-          children: [
-            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primaryGreen)),
-            SizedBox(width: 10),
-            Text('Getting delivery prices...', style: TextStyle(fontSize: 12, color: AppColors.mediumGray)),
-          ],
-        ),
-      );
+      return const RiderSearchingIndicator();
     }
 
     final quote = _storeQuotes[storeId];
@@ -841,9 +1040,15 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   bool _isPayingWithCredit = false;
   bool _isPayingWithWallet = false;
+  bool _isPayingWithCard = false;
+
+  /// Any payment method currently in flight. Handlers check this to block a
+  /// second payment starting, so we don't need to visually disable every button
+  /// when one is tapped (which looked like both buttons were being pressed).
+  bool get _paymentInFlight => _isPayingWithCredit || _isPayingWithWallet || _isPayingWithCard;
 
   Future<void> _completeWithCredit(double total) async {
-    if (_buyerId.isEmpty || _isPayingWithCredit) return;
+    if (_buyerId.isEmpty || _paymentInFlight) return;
     setState(() => _isPayingWithCredit = true);
 
     try {
@@ -940,79 +1145,152 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
+  /// Build one vendor order per store from the current cart, attaching any
+  /// courier selection. Shared by the wallet and card/transfer paths so both
+  /// send an identical shape to the server (which re-derives prices anyway).
+  /// Returns null (and shows a snackbar) if no valid items are found.
+  Future<List<Map<String, dynamic>>?> _buildVendorOrders() async {
+    final cartState = context.read<CartCubit>().state;
+
+    final Map<String, List<Map<String, dynamic>>> vendorItemGroups = {};
+    final Map<String, String> vendorStoreMap = {};
+
+    for (final item in cartState.items) {
+      final product = cartState.productMap[item.productId];
+      if (product == null) continue;
+      final storeId = product.storeId;
+      if (storeId.isEmpty) continue;
+
+      String vendorId = '';
+      final cachedStore = context.read<MarketplaceCubit>().state.stores[storeId];
+      if (cachedStore != null) {
+        vendorId = cachedStore.vendorId;
+      } else {
+        try {
+          final storeData = await SupabaseService.client
+              .from('stores')
+              .select('id, vendor_id')
+              .eq('id', storeId)
+              .maybeSingle();
+          if (storeData != null) vendorId = storeData['vendor_id'] as String;
+        } catch (_) {}
+      }
+      if (vendorId.isEmpty) continue;
+
+      vendorStoreMap[vendorId] = storeId;
+      final unitPrice = item.variantPrice ?? product.price;
+      final itemData = <String, dynamic>{
+        'product_id': product.id,
+        'name': product.name,
+        'price': unitPrice,
+        'quantity': item.quantity,
+      };
+      if (item.variantLabel != null) itemData['variant_label'] = item.variantLabel;
+      vendorItemGroups.putIfAbsent(vendorId, () => []).add(itemData);
+    }
+
+    if (vendorItemGroups.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No valid items found for checkout'), backgroundColor: AppColors.errorRed),
+        );
+      }
+      return null;
+    }
+
+    final courierSelections = _buildCourierSelections();
+    return vendorItemGroups.entries.map((e) {
+      final storeId = vendorStoreMap[e.key] ?? '';
+      final courier = courierSelections[storeId];
+      return <String, dynamic>{
+        'vendor_id': e.key,
+        'store_id': storeId,
+        'items': e.value,
+        if (courier != null) 'delivery_quote_id': courier['quote_id'],
+        if (courier != null) 'selected_courier_name': courier['courier_name'],
+        if (courier != null && courier['option_ref'] != null) 'selected_option_ref': courier['option_ref'],
+      };
+    }).toList();
+  }
+
+  /// Pay the whole order via Flutterwave (card + bank transfer + USSD). The
+  /// server (prepare-checkout) re-derives prices/delivery and returns a hosted
+  /// payment link; we open it in a webview. flutterwave-webhook creates the
+  /// orders + escrow once the charge completes — this path never touches money
+  /// client-side.
+  /// Open Flutterwave's inline checkout. With an empty [paymentOption] the buyer
+  /// sees Flutterwave's full "Payment Methods" list (card, transfer, USSD, eNaira,
+  /// …) all selectable and picks one there.
+  Future<void> _completeWithCard(double total, String paymentOption) async {
+    if (_buyerId.isEmpty || _paymentInFlight) return;
+    setState(() => _isPayingWithCard = true);
+
+    try {
+      final vendorOrders = await _buildVendorOrders();
+      if (vendorOrders == null) return;
+
+      final res = await PaymentService.prepareCheckout(
+        buyerId: _buyerId,
+        vendorOrders: vendorOrders,
+        paymentOption: paymentOption,
+      );
+      final txRef = res['tx_ref'] as String?;
+      final publicKey = res['public_key'] as String?;
+      final amount = (res['amount'] as num?)?.toDouble() ?? total;
+      final redirectUrl = res['redirect_url'] as String? ?? 'https://kaysmarket-legal.web.app/payment-complete';
+      final customer = (res['customer'] as Map?)?.cast<String, dynamic>() ?? {};
+      if (txRef == null || txRef.isEmpty || publicKey == null || publicKey.isEmpty) {
+        throw Exception("We couldn't start your payment. Please try again.");
+      }
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => FlutterwaveCheckoutScreen(
+            publicKey: publicKey,
+            txRef: txRef,
+            buyerId: _buyerId,
+            total: amount,
+            redirectUrl: redirectUrl,
+            paymentOption: paymentOption,
+            email: customer['email'] as String? ?? '',
+            name: customer['name'] as String? ?? '',
+            phone: customer['phone'] as String? ?? '',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isPayingWithCard = false);
+    }
+  }
+
   /// Pay the whole order from the buyer's wallet. Builds one vendor order per
   /// store (mirroring the credit + card paths) with any courier selection
   /// attached, then calls wallet-checkout. If the balance is short, offers to
   /// top up.
   Future<void> _completeWithWallet(double total) async {
-    if (_buyerId.isEmpty || _isPayingWithWallet) return;
+    if (_buyerId.isEmpty || _paymentInFlight) return;
     setState(() => _isPayingWithWallet = true);
 
     try {
-      final cartState = context.read<CartCubit>().state;
-
-      final Map<String, List<Map<String, dynamic>>> vendorItemGroups = {};
-      final Map<String, String> vendorStoreMap = {};
-
-      for (final item in cartState.items) {
-        final product = cartState.productMap[item.productId];
-        if (product == null) continue;
-        final storeId = product.storeId;
-        if (storeId.isEmpty) continue;
-
-        String vendorId = '';
-        final cachedStore = context.read<MarketplaceCubit>().state.stores[storeId];
-        if (cachedStore != null) {
-          vendorId = cachedStore.vendorId;
-        } else {
-          try {
-            final storeData = await SupabaseService.client
-                .from('stores')
-                .select('id, vendor_id')
-                .eq('id', storeId)
-                .maybeSingle();
-            if (storeData != null) vendorId = storeData['vendor_id'] as String;
-          } catch (_) {}
-        }
-        if (vendorId.isEmpty) continue;
-
-        vendorStoreMap[vendorId] = storeId;
-        final unitPrice = item.variantPrice ?? product.price;
-        final itemData = <String, dynamic>{
-          'product_id': product.id,
-          'name': product.name,
-          'price': unitPrice,
-          'quantity': item.quantity,
-        };
-        if (item.variantLabel != null) itemData['variant_label'] = item.variantLabel;
-        vendorItemGroups.putIfAbsent(vendorId, () => []).add(itemData);
-      }
-
-      if (vendorItemGroups.isEmpty) {
-        if (mounted) {
-          setState(() => _isPayingWithWallet = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No valid items found for checkout'), backgroundColor: AppColors.errorRed),
-          );
-        }
+      final vendorOrders = await _buildVendorOrders();
+      if (vendorOrders == null) {
+        if (mounted) setState(() => _isPayingWithWallet = false);
         return;
       }
 
-      final courierSelections = _buildCourierSelections();
-      final vendorOrders = vendorItemGroups.entries.map((e) {
-        final storeId = vendorStoreMap[e.key] ?? '';
-        final courier = courierSelections[storeId];
-        return <String, dynamic>{
-          'vendor_id': e.key,
-          'store_id': storeId,
-          'items': e.value,
-          if (courier != null) 'delivery_quote_id': courier['quote_id'],
-          if (courier != null) 'selected_courier_name': courier['courier_name'],
-          if (courier != null && courier['option_ref'] != null) 'selected_option_ref': courier['option_ref'],
-        };
-      }).toList();
-
-      await WalletService.checkout(buyerId: _buyerId, vendorOrders: vendorOrders);
+      await WalletService.checkout(
+        buyerId: _buyerId,
+        vendorOrders: vendorOrders,
+        idempotencyKey: _walletCheckoutKey,
+      );
 
       if (!mounted) return;
       await context.read<CartCubit>().clearCart(_buyerId);

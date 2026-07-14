@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { flwTransfer } from "../_shared/flutterwave.ts";
-import { hashPin } from "../_shared/pin.ts";
+import { hashPin, verifyPin } from "../_shared/pin.ts";
 
 const PIN_MAX_ATTEMPTS = 5;
 const PIN_LOCK_MINUTES = 15;
@@ -95,8 +95,8 @@ serve(async (req) => {
     if (!/^\d{4}$/.test(String(pin ?? ""))) {
       return json({ error: "pin_invalid", message: "Enter your 4-digit withdrawal PIN." }, 400);
     }
-    const providedHash = await hashPin(callerId, String(pin));
-    if (providedHash !== pinRow.pin_hash) {
+    const { ok: pinOk, needsRehash } = await verifyPin(callerId, String(pin), pinRow.pin_hash);
+    if (!pinOk) {
       const attempts = (pinRow.failed_attempts ?? 0) + 1;
       const lock = attempts >= PIN_MAX_ATTEMPTS;
       await supabase.from("withdrawal_pins").update({
@@ -111,11 +111,13 @@ serve(async (req) => {
           : "Incorrect PIN.",
       }, 403);
     }
-    // Correct PIN — clear any failed-attempt counter.
-    if (pinRow.failed_attempts) {
-      await supabase.from("withdrawal_pins")
-        .update({ failed_attempts: 0, locked_until: null, updated_at: new Date().toISOString() })
-        .eq("user_id", callerId);
+    // Correct PIN — clear any failed-attempt counter and, if this was still a
+    // legacy SHA-256 hash, transparently upgrade it to the PBKDF2 (v2) hash.
+    if (pinRow.failed_attempts || needsRehash) {
+      const pinUpdate: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (pinRow.failed_attempts) { pinUpdate.failed_attempts = 0; pinUpdate.locked_until = null; }
+      if (needsRehash) { pinUpdate.pin_hash = await hashPin(callerId, String(pin)); }
+      await supabase.from("withdrawal_pins").update(pinUpdate).eq("user_id", callerId);
     }
 
     // How much this user may withdraw (vendor=full, buyer=refunds only).
@@ -168,56 +170,99 @@ serve(async (req) => {
     const withdrawalId = wd.id as string;
     const ref = `wd${withdrawalId.replace(/-/g, "")}`;
 
-    // 2) Debit the wallet as a hold (idempotent on the withdrawal reference).
-    const { data: newBalance, error: debitErr } = await supabase.rpc("wallet_debit", {
+    // 2) Debit the wallet as a hold — the withdrawable-cap check AND the debit
+    // happen in ONE row-locked RPC, so two concurrent withdrawals can't both
+    // pass the cap check (idempotent on the withdrawal reference).
+    const { data: debitRes, error: debitErr } = await supabase.rpc("wallet_withdraw_debit", {
       p_user_id: callerId,
       p_amount: amt,
-      p_type: "withdrawal",
       p_reference: ref,
-      p_description: "Withdrawal to bank",
-      p_metadata: { withdrawal_id: withdrawalId },
+      p_withdrawal_id: withdrawalId,
     });
     if (debitErr) {
       await supabase.from("withdrawals").update({ status: "failed", failure_reason: "debit_error" }).eq("id", withdrawalId);
-      console.error("wallet_debit error:", debitErr);
+      console.error("wallet_withdraw_debit error:", debitErr);
       return json({ error: "Wallet debit failed" }, 500);
     }
-    if (newBalance === null) {
+    const debitStatus = (debitRes as any)?.status;
+    if (debitStatus === "exceeds_withdrawable") {
+      await supabase.from("withdrawals").update({ status: "failed", failure_reason: "exceeds_withdrawable" }).eq("id", withdrawalId);
+      return json({
+        error: "exceeds_withdrawable",
+        message: role === "vendor"
+          ? "Amount exceeds your wallet balance."
+          : "You can only withdraw refunded money. This exceeds your withdrawable amount.",
+        withdrawable: Number((debitRes as any)?.withdrawable ?? 0),
+      }, 400);
+    }
+    if (debitStatus === "insufficient" || debitStatus === "no_wallet") {
       await supabase.from("withdrawals").update({ status: "failed", failure_reason: "insufficient" }).eq("id", withdrawalId);
       return json({ error: "insufficient_balance", message: "Your wallet balance is too low." }, 402);
     }
+    const newBalance = Number((debitRes as any)?.balance ?? 0);
+
+    // Reverse the up-front hold and fail the withdrawal. Called on BOTH a
+    // rejected transfer AND a thrown error (token mint / relay network failure),
+    // so the wallet is NEVER left debited without a matching credit. The reversal
+    // is idempotent on rev_<ref>. If the reversal RPC itself fails we log loudly
+    // and tag the row `reversal_failed:*` so the stranded money is reconcilable.
+    const reverseHold = async (reason: string) => {
+      const { error: revErr } = await supabase.rpc("wallet_credit", {
+        p_user_id: callerId,
+        p_amount: amt,
+        p_type: "reversal",
+        p_reference: `rev_${ref}`,
+        p_description: "Withdrawal reversal (transfer not completed)",
+      });
+      if (revErr) {
+        console.error(`CRITICAL: withdrawal reversal failed for ${ref} — wallet left short:`, revErr);
+      }
+      await supabase.from("wallet_transactions").update({ status: "failed" }).eq("reference", ref);
+      await supabase
+        .from("withdrawals")
+        .update({ status: "failed", failure_reason: revErr ? `reversal_failed:${reason}` : reason })
+        .eq("id", withdrawalId);
+    };
 
     // 3) Initiate the Flutterwave v4 bank transfer (routed through the static-IP
-    // relay so Flutterwave sees a whitelisted IP).
-    const transfer = await flwTransfer(
-      {
-        action: "instant",
-        type: "bank",
-        reference: ref,
-        payment_instruction: {
-          source_currency: "NGN",
-          destination_currency: "NGN",
-          amount: { applies_to: "destination_currency", value: amt },
-          recipient: { bank: { account_number: bank.account_number, code: bank.bank_code } },
+    // relay so Flutterwave sees a whitelisted IP). A THROWN error here (auth
+    // token mint, relay/network failure) must still reverse the hold — otherwise
+    // the exception skips straight to the outer catch and the money is stranded.
+    let transfer: { ok: boolean; status: number; data: any };
+    try {
+      transfer = await flwTransfer(
+        {
+          action: "instant",
+          type: "bank",
+          reference: ref,
+          // Shown on the vendor's bank credit alert where the receiving bank
+          // honours the sender narration (many NIP banks display the sender
+          // account/business name instead — that descriptor is set on the
+          // Flutterwave account, not here).
+          narration: "Kays Market payout",
+          payment_instruction: {
+            source_currency: "NGN",
+            destination_currency: "NGN",
+            amount: { applies_to: "destination_currency", value: amt },
+            recipient: { bank: { account_number: bank.account_number, code: bank.bank_code } },
+          },
         },
-      },
-      ref
-    );
+        ref
+      );
+    } catch (transferErr: any) {
+      console.error(`Flutterwave transfer threw for ${ref}:`, transferErr);
+      await reverseHold("transfer_error");
+      return json({
+        error: "Could not reach the transfer service. Your balance was not affected — please try again.",
+      }, 502);
+    }
 
     const tData = transfer.data?.data ?? transfer.data;
     if (!transfer.ok) {
       // Transfer never left Flutterwave — reverse the hold so the money is
       // available again, and free the withdrawal ledger row from the cap.
       console.error(`Flutterwave transfer error: status=${transfer.status} body=${JSON.stringify(transfer.data)}`);
-      await supabase.rpc("wallet_credit", {
-        p_user_id: callerId,
-        p_amount: amt,
-        p_type: "reversal",
-        p_reference: `rev_${ref}`,
-        p_description: "Withdrawal reversal (transfer not accepted)",
-      });
-      await supabase.from("wallet_transactions").update({ status: "failed" }).eq("reference", ref);
-      await supabase.from("withdrawals").update({ status: "failed", failure_reason: tData?.message || "transfer_rejected" }).eq("id", withdrawalId);
+      await reverseHold(tData?.message || "transfer_rejected");
       return json({ error: tData?.message || "Transfer could not be initiated" }, 400);
     }
 

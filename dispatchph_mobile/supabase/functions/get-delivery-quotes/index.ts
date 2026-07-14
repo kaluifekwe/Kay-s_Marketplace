@@ -127,6 +127,49 @@ serve(async (req) => {
     }));
     const totalWeight = packageItems.reduce((s, i) => s + i.weight * i.quantity, 0);
 
+    // ── Quote cache ─────────────────────────────────────────────────────────
+    // Re-quoting the SAME cart to the SAME address re-hits BOTH courier APIs
+    // (Shipbubble + Terminal) and is the slow part of checkout. Reuse a fresh,
+    // unexpired quote for an identical route+cart instead of calling the
+    // providers again — cuts provider load + latency on retries, re-renders and
+    // navigating back into checkout. (request-pickup deliberately does NOT cache:
+    // it needs a fresh price to actually book the rider.)
+    const cacheWindowIso = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const itemSig = JSON.stringify(packageItems.map((i) => [i.name, i.weight, i.quantity, i.amount]));
+    const { data: cachedRows } = await supabase
+      .from("delivery_quotes")
+      .select("id, available_couriers")
+      .eq("vendor_id", vendor_id)
+      .eq("buyer_id", buyer_id)
+      .eq("delivery_address", delivery_address)
+      .gt("expires_at", new Date().toISOString())
+      .gte("created_at", cacheWindowIso)
+      .order("created_at", { ascending: false })
+      .limit(5);
+    for (const row of cachedRows ?? []) {
+      const ac = (row as any).available_couriers ?? {};
+      const rowItems = Array.isArray(ac.items) ? ac.items : [];
+      const rowSig = JSON.stringify(rowItems.map((i: any) => [i.name, i.weight, i.quantity, i.amount]));
+      const rowCouriers = Array.isArray(ac.couriers) ? ac.couriers : [];
+      // Same vendor + buyer + address + exact cart, still within its validity
+      // window → serve the stored options and skip the provider round-trip.
+      if (rowSig === itemSig && rowCouriers.length > 0) {
+        return json({
+          quote_id: (row as any).id,
+          cached: true,
+          couriers: rowCouriers.map((c: any) => ({
+            provider: c.provider,
+            option_ref: c.optionRef,
+            name: c.name,
+            logo: c.logo,
+            fee: c.fee,
+            currency: c.currency,
+            eta: c.eta,
+          })),
+        });
+      }
+    }
+
     // Fan out to every enabled provider, merge, sort fastest-first (price tiebreak).
     const { couriers, providerData, reason } = await quoteAll({ sender, receiver, items: packageItems });
 

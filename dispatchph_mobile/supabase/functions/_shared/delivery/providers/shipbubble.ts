@@ -75,8 +75,13 @@ export const shipbubble: DeliveryProvider = {
   async getQuotes(input: QuoteInput): Promise<ProviderQuote> {
     if (!KEY) return { provider: "shipbubble", couriers: [], providerData: {}, reason: "no_api_key" };
 
-    const sender = await validateAddress(input.sender, "Kay Vendor");
-    const receiver = await validateAddress(input.receiver, "Kay Customer");
+    // Resolve both addresses + the package category CONCURRENTLY — they're
+    // independent, so this removes ~2 sequential round-trips from every quote.
+    const [sender, receiver, categoryId] = await Promise.all([
+      validateAddress(input.sender, "Kay Vendor"),
+      validateAddress(input.receiver, "Kay Customer"),
+      getCategoryId(),
+    ]);
     if (!sender.code || !receiver.code) {
       return {
         provider: "shipbubble",
@@ -86,7 +91,6 @@ export const shipbubble: DeliveryProvider = {
       };
     }
 
-    const categoryId = await getCategoryId();
     if (categoryId === null) {
       return { provider: "shipbubble", couriers: [], providerData: {}, reason: "no_rates (could not resolve package category)" };
     }

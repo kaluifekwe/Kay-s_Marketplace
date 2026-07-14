@@ -35,6 +35,26 @@ serve(async (req) => {
     const { action, account_number, bank_code } = await req.json();
 
     if (action === "list-banks") {
+      // Prefer the stable v3 bank list (secret key). Fall back to v4 if v3 isn't
+      // configured or errors. Either way we return { banks: [{code, name}] }.
+      const flwSecret = Deno.env.get("FLUTTERWAVE_SECRET_KEY") || "";
+      if (flwSecret) {
+        try {
+          const v3 = await fetch("https://api.flutterwave.com/v3/banks/NG", {
+            headers: { Authorization: `Bearer ${flwSecret}`, "Content-Type": "application/json" },
+          });
+          const v3data = await v3.json().catch(() => ({}));
+          if (v3.ok && Array.isArray(v3data.data) && v3data.data.length > 0) {
+            const banks = v3data.data.map((b: any) => ({ code: b.code, name: b.name }));
+            return json({ banks });
+          }
+          console.error("v3 list-banks failed:", v3.status, JSON.stringify(v3data).slice(0, 200));
+        } catch (e) {
+          console.error("v3 list-banks threw:", String(e));
+        }
+      }
+
+      // v4 fallback.
       const token = await getFlwToken();
       const res = await fetch(flwUrl("/banks?country=NG"), {
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

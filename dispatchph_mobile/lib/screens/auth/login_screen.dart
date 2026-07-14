@@ -3,7 +3,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../core/services/auth_service.dart';
+import '../../core/services/supabase_service.dart';
 import 'home_router.dart';
+import 'email_otp_screen.dart';
+import 'forgot_password_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -15,6 +18,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  bool _obscurePassword = true;
   bool _isLoading = false;
   String? _error;
 
@@ -47,6 +51,25 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (error == null) {
+      // Email-verification gate: an account that never finished its OTP must
+      // verify before entering the app. Route it back to the OTP screen.
+      final verified = await AuthService.isEmailVerified();
+      if (!mounted) return;
+      if (!verified) {
+        final ok = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(builder: (_) => EmailOtpScreen(email: email)),
+        );
+        if (ok != true) {
+          await SupabaseService.auth.signOut();
+          if (!mounted) return;
+          setState(() {
+            _isLoading = false;
+            _error = 'Please verify your email to continue.';
+          });
+          return;
+        }
+      }
       final prefs = await SharedPreferences.getInstance();
       final role = prefs.getString('auth_role') ?? 'buyer';
       final userId = prefs.getString('auth_user_id') ?? '';
@@ -88,7 +111,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                "Log in to your Kays Market account",
+                "Log in to your Kay's Market account",
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: AppColors.mediumGray),
               ),
               const SizedBox(height: 32),
@@ -103,16 +126,33 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 16),
               TextField(
                 controller: _passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(
+                obscureText: _obscurePassword,
+                decoration: InputDecoration(
                   labelText: 'Password',
+                  suffixIcon: IconButton(
+                    icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility),
+                    tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  ),
                 ),
               ),
               if (_error != null) ...[
                 const SizedBox(height: 12),
                 Text(_error!, style: const TextStyle(color: AppColors.errorRed, fontSize: 13)),
               ],
-              const SizedBox(height: 24),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ForgotPasswordScreen(initialEmail: _emailController.text.trim()),
+                    ),
+                  ),
+                  child: const Text('Forgot password?', style: TextStyle(color: AppColors.primaryGreen)),
+                ),
+              ),
+              const SizedBox(height: 12),
               PrimaryButton(
                 text: 'Log In',
                 isLoading: _isLoading,

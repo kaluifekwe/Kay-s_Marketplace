@@ -90,12 +90,13 @@ class WalletService {
   static Future<Map<String, dynamic>> checkout({
     required String buyerId,
     required List<Map<String, dynamic>> vendorOrders,
+    required String idempotencyKey,
   }) async {
     try {
       final response = await _client.functions.invoke(
         'wallet-checkout',
         headers: _headers,
-        body: {'buyer_id': buyerId, 'vendor_orders': vendorOrders},
+        body: {'buyer_id': buyerId, 'vendor_orders': vendorOrders, 'idempotency_key': idempotencyKey},
       ).timeout(_timeout);
       return (response.data as Map).cast<String, dynamic>();
     } on FunctionException catch (e) {

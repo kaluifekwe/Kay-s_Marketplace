@@ -12,6 +12,8 @@ import '../../core/services/storage_service.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/error_text.dart';
 import '../kyc/kyc_screen.dart';
+import '../../core/services/delivery_service.dart';
+import '../delivery/vendor_locations_screen.dart';
 
 class AddProductScreen extends StatefulWidget {
   const AddProductScreen({super.key});
@@ -43,9 +45,57 @@ class _AddProductScreenState extends State<AddProductScreen> {
   }
 
   Future<void> _ensureVerified() async {
+    // 1. Identity verified (KYC).
     final ok = await requireKyc(context, action: KycAction.sell);
     if (!mounted) return;
-    if (!ok) Navigator.pop(context); // declined / not verified — can't list
+    if (!ok) {
+      Navigator.pop(context); // declined / not verified — can't list
+      return;
+    }
+
+    // 2. Pickup address required — couriers collect orders from the vendor's
+    // address, so a product can't go live without one. Mirrors the buyer
+    // "add address" gate at checkout. If they don't add it, they can't list.
+    final vendorId = await AuthService.getUserId();
+    if (!mounted) return;
+    final locations = await DeliveryService.getVendorLocations(vendorId);
+    if (!mounted) return;
+    if (locations.isEmpty) {
+      final add = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          icon: const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 48),
+          title: const Text('Add your pickup address'),
+          content: const Text(
+            'Couriers pick up orders from your address, so you need a pickup '
+            'location before you can list a product. It only takes a minute.',
+            textAlign: TextAlign.center,
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not now')),
+            ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Add address')),
+          ],
+        ),
+      );
+      if (add != true || !mounted) {
+        Navigator.pop(context);
+        return;
+      }
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const VendorLocationsScreen()),
+      );
+      if (!mounted) return;
+      // Re-check after they return — still none means they can't list yet.
+      final after = await DeliveryService.getVendorLocations(vendorId);
+      if (!mounted) return;
+      if (after.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Add a pickup address to list products.')),
+        );
+        Navigator.pop(context);
+      }
+    }
   }
 
   @override

@@ -160,6 +160,51 @@ serve(async (req) => {
       }
     }
 
+    // ---- 1c. Buyer confirmation reminders ----
+    // While the delivery-confirmation window is still open (shipped, not yet due,
+    // no dispute), nudge the buyer roughly every 6h to confirm receipt. This
+    // makes auto-release fair — the buyer is repeatedly warned, not surprised —
+    // and undercuts a later "I was never told to confirm" / "not received" claim.
+    // The first nudge lands ~6h after the window opened (shipped_at), so it never
+    // doubles up with the "Order Shipped/Arrived" push.
+    const { data: toRemind } = await supabase
+      .from("orders")
+      .select("id, buyer_id, auto_release_at, shipped_at, confirm_last_reminder_at")
+      .eq("status", "shipped")
+      .eq("has_dispute", false)
+      .not("auto_release_at", "is", null)
+      .gt("auto_release_at", now);
+
+    const buyerReminders: string[] = [];
+    for (const order of toRemind || []) {
+      if (!order.buyer_id) continue;
+      // Baseline for the 6h cadence: the last reminder, or (first time) when the
+      // window opened. Fall back to auto_release_at - 24h if shipped_at is unset.
+      const windowOpenedAt = order.shipped_at
+        ? new Date(order.shipped_at)
+        : new Date(new Date(order.auto_release_at).getTime() - 24 * 60 * 60 * 1000);
+      const baseline = order.confirm_last_reminder_at ? new Date(order.confirm_last_reminder_at) : windowOpenedAt;
+      if (Date.now() - baseline.getTime() < 6 * 60 * 60 * 1000) continue;
+
+      const remainingMs = new Date(order.auto_release_at).getTime() - Date.now();
+      const remHours = Math.max(0, Math.floor(remainingMs / (60 * 60 * 1000)));
+      const remMins = Math.max(0, Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000)));
+
+      await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: order.buyer_id,
+          title: "Confirm you received your order",
+          body: `Confirm order #${String(order.id).substring(0, 8)} if you've received it — or report a problem if you haven't. It completes automatically in ${remHours}h ${remMins}m.`,
+          data: { type: "order", orderId: order.id, screen: "buyer_orders" },
+        }),
+      }).catch((e) => console.error("buyer confirm reminder push failed:", e));
+
+      await supabase.from("orders").update({ confirm_last_reminder_at: now }).eq("id", order.id);
+      buyerReminders.push(order.id);
+    }
+
     // ---- 2. Auto-escalate disputes whose vendor missed the 24h response window ----
     const { data: escalated, error: escalateError } = await supabase
       .from("disputes")
@@ -266,22 +311,10 @@ serve(async (req) => {
         await supabase.from("orders").update({ has_dispute: false }).eq("id", d.order_id);
 
         // Release any payout hold tied to this dispute now that it's settled.
-        if (d.is_post_payment) {
-          const { data: vendor } = await supabase
-            .from("users")
-            .select("payout_blocked_amount")
-            .eq("id", d.vendor_id)
-            .maybeSingle();
-          const remaining = ((vendor?.payout_blocked_amount as number | undefined) || 0) - (d.vendor_owes_refund || 0);
-          await supabase
-            .from("users")
-            .update({
-              payout_blocked: remaining > 0,
-              payout_blocked_reason: remaining > 0 ? "Other active disputes" : null,
-              payout_blocked_amount: remaining > 0 ? remaining : 0,
-            })
-            .eq("id", d.vendor_id);
-        }
+        // process-refund (called just above) already releases it; this is an
+        // idempotent belt-and-braces call (the claim on payout_hold_released
+        // makes the second call a no-op) in case that request failed.
+        await supabase.rpc("release_dispute_payout_hold", { p_dispute_id: d.id });
 
         // Vendor warning for missing the confirmation window.
         const { data: vendorRow } = await supabase
@@ -350,6 +383,7 @@ serve(async (req) => {
         success: true,
         orders_released: released,
         orders_flagged_for_review: flaggedForReview,
+        buyer_confirm_reminders: buyerReminders,
         order_errors: releaseErrors,
         disputes_escalated: (escalated?.length || 0) + (legacyEscalated?.length || 0),
         disputes_auto_closed: autoClosed,

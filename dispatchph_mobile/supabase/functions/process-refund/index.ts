@@ -58,7 +58,7 @@ serve(async (req) => {
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("id, buyer_id, vendor_id, store_id, status, payment_reference, delivery_type, total, delivery_fee, delivered_at, has_shipbubble_delivery")
+      .select("id, buyer_id, vendor_id, store_id, status, payment_reference, delivery_type, total, total_with_delivery, delivery_fee, delivered_at, has_shipbubble_delivery, payment_released")
       .eq("id", order_id)
       .maybeSingle();
 
@@ -165,21 +165,22 @@ serve(async (req) => {
       .eq("type", "payment")
       .maybeSingle();
 
-    if (!tx) {
-      await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
-      return new Response(
-        JSON.stringify({ error: "No successful payment found for this order" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    // Don't hard-require a payment transaction. Some orders never got one (an
+    // older order, or a webhook whose payment-tx insert failed) — refusing to
+    // refund those left buyers stuck and disputes un-closable ("refund failed").
+    // Fall back to the order's own amount, exactly like release-escrow computes
+    // the payout from the order.
 
     // Once a COURIER order has actually been delivered, the courier was used and
     // the delivery fee was earned — a post-delivery dispute refunds the ITEM
     // value only, not the delivery fee. Before delivery (incl. "not received"),
     // or for vendor-handled delivery, the full amount is refundable.
     const courierDelivered = order.delivery_type === "courier" && order.delivered_at != null;
-    const itemSubtotal = Number(order.total) || (Number(tx.amount) - (Number(order.delivery_fee) || 0));
-    const refundAmount = courierDelivered ? itemSubtotal : tx.amount;
+    const orderPaid = Number(order.total_with_delivery ?? order.total) || 0;
+    const itemSubtotal = Number(order.total) || 0;
+    const refundAmount = courierDelivered
+      ? itemSubtotal
+      : (tx ? Number(tx.amount) : orderPaid);
     // Refunds now default to the buyer's WALLET. card/bank/credit remain
     // available when explicitly requested (e.g. legacy card-paid orders).
     const method = refund_method || "wallet";
@@ -287,7 +288,7 @@ serve(async (req) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          transaction: order.payment_reference || tx.paystack_reference,
+          transaction: order.payment_reference || tx?.paystack_reference,
           amount: Math.round(refundAmount * 100),
           reason: reason || "Dispute resolved in buyer's favor",
           merchant_note: `Refund for order ${order_id.substring(0, 8)}${dispute_id ? `, dispute: ${dispute_id}` : ""}`,
@@ -325,6 +326,24 @@ serve(async (req) => {
       }),
     });
 
+    // H2 — Vendor clawback. If the vendor was ALREADY paid for this order, the
+    // buyer's refund came out of the platform's pocket. Recover it from the
+    // vendor's wallet (up to their balance); any shortfall becomes a pending
+    // vendor_charge that release-escrow nets off their next payout. Atomic and
+    // idempotent on the reference, so a retried refund never double-claws.
+    // Non-fatal: the buyer is already refunded either way.
+    if (order.payment_released === true) {
+      const { data: cb, error: cbErr } = await supabase.rpc("wallet_clawback", {
+        p_vendor_id: order.vendor_id,
+        p_amount: refundAmount,
+        p_reference: `clawback_${order_id}`,
+        p_order_id: order_id,
+        p_reason: "dispute_refund_shortfall",
+      });
+      if (cbErr) console.error("wallet_clawback error:", cbErr);
+      else console.log(`clawback order=${order_id}:`, JSON.stringify(cb));
+    }
+
     // Update order status
     await supabase
       .from("orders")
@@ -335,7 +354,9 @@ serve(async (req) => {
       .eq("id", order_id);
 
     // Update dispute if exists, and release any vendor payout hold that was
-    // funding this refund (see release-escrow's payout_blocked check).
+    // reserving money for this refund. release_dispute_payout_hold is atomic
+    // (M2) and idempotent (claims disputes.payout_hold_released once), so the
+    // hold is decremented exactly once even if another path also calls it.
     if (dispute_id) {
       await supabase
         .from("disputes")
@@ -346,28 +367,8 @@ serve(async (req) => {
         })
         .eq("id", dispute_id);
 
-      const { data: disputeRow } = await supabase
-        .from("disputes")
-        .select("is_post_payment, vendor_owes_refund")
-        .eq("id", dispute_id)
-        .maybeSingle();
-
-      if (disputeRow?.is_post_payment) {
-        const { data: vendorRow } = await supabase
-          .from("users")
-          .select("payout_blocked_amount")
-          .eq("id", order.vendor_id)
-          .maybeSingle();
-        const remaining = (vendorRow?.payout_blocked_amount || 0) - (disputeRow.vendor_owes_refund || 0);
-        await supabase
-          .from("users")
-          .update({
-            payout_blocked: remaining > 0,
-            payout_blocked_reason: remaining > 0 ? "Other active disputes" : null,
-            payout_blocked_amount: remaining > 0 ? remaining : 0,
-          })
-          .eq("id", order.vendor_id);
-      }
+      const { error: relErr } = await supabase.rpc("release_dispute_payout_hold", { p_dispute_id: dispute_id });
+      if (relErr) console.error("release_dispute_payout_hold error:", relErr);
     }
 
     console.log(`Refund processed: order=${order_id}, amount=${refundAmount}, method=${method}`);

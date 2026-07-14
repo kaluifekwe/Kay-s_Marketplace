@@ -15,6 +15,10 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
+// A chat-negotiated delivery fee is only valid for this long (from when the
+// vendor sent the offer) before checkout must use a freshly re-quoted fee.
+const DELIVERY_FEE_VALID_MS = 60 * 60 * 1000; // 60 minutes
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -48,7 +52,7 @@ serve(async (req) => {
 
   try {
     const callerId = getUserIdFromToken(req.headers.get("Authorization"));
-    const { buyer_id, vendor_orders } = await req.json();
+    const { buyer_id, vendor_orders, idempotency_key } = await req.json();
 
     if (!buyer_id || !Array.isArray(vendor_orders) || vendor_orders.length === 0) {
       return json({ error: "Missing required fields: buyer_id, vendor_orders" }, 400);
@@ -59,15 +63,14 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // KYC + state gates (mirror create-payment).
+    // Buyers are NOT identity-gated to buy (verification is only for vendors and
+    // for withdrawing to a bank). We still need the buyer's state for the
+    // intrastate rule below.
     const { data: buyerRow } = await supabase
       .from("users")
-      .select("state, kyc_status")
+      .select("state")
       .eq("id", buyer_id)
       .maybeSingle();
-    if (buyerRow?.kyc_status !== "verified") {
-      return json({ error: "kyc_required", message: "Verify your identity (NIN) before buying." }, 403);
-    }
     if (!buyerRow?.state) {
       return json({ error: "Buyer state not set. Please update your profile state." }, 400);
     }
@@ -142,14 +145,18 @@ serve(async (req) => {
         courierName = selected.name;
         courierOptionRef = selected.optionRef;
         courierProvider = selected.provider;
-      } else if (deliveryType === "negotiate" || deliveryType === "split") {
+      } else if (deliveryType === "free") {
+        deliveryFee = 0;
+      } else {
+        // No courier selected and not free → use the fee agreed with the vendor
+        // in chat, regardless of the product's delivery_type (mirrors the app).
         const { data: chats } = await supabase.from("chats").select("id").eq("buyer_id", buyer_id).eq("vendor_id", vendorId);
         const chatIds = (chats || []).map((c: any) => c.id);
         let accepted = null;
         if (chatIds.length > 0) {
           const { data } = await supabase
             .from("messages")
-            .select("buyer_fee_amount, vendor_contribution")
+            .select("buyer_fee_amount, vendor_contribution, created_at")
             .in("chat_id", chatIds)
             .eq("delivery_fee_status", "accepted")
             .order("created_at", { ascending: false })
@@ -160,8 +167,17 @@ serve(async (req) => {
         if (!accepted) {
           return json({ error: "no_delivery_fee_agreed", message: "Please agree on a delivery fee with the vendor in chat before checkout.", vendor_id: vendorId }, 400);
         }
+        // A negotiated fee is only good for a short window. A stale one — a leftover
+        // from a previous order, or accepted but left unpaid — must be re-quoted so
+        // the buyer never checks out on an out-of-date price.
+        if (Date.now() - new Date(accepted.created_at).getTime() > DELIVERY_FEE_VALID_MS) {
+          return json({ error: "delivery_fee_expired", message: "The delivery fee you agreed has expired. Please ask the vendor for a fresh delivery fee in chat.", vendor_id: vendorId }, 400);
+        }
         deliveryFee = Number(accepted.buyer_fee_amount) || 0;
         vendorContribution = Number(accepted.vendor_contribution) || 0;
+        // Chat-agreed fee = vendor handles delivery. Mark 'negotiate' (not
+        // courier) so the vendor keeps the fee and the fee gets consumed.
+        deliveryType = "negotiate";
       }
 
       enriched.push({
@@ -175,9 +191,48 @@ serve(async (req) => {
     if (enriched.length === 0) return json({ error: "No valid vendor orders" }, 400);
     if (total <= 0 || total > 50000000) return json({ error: "Invalid amount" }, 400);
 
+    // Idempotency is REQUIRED — reject a checkout we can't de-duplicate. A stable
+    // client key means a timeout-then-retry (or accidental double-tap) reuses the
+    // same debit reference and wallet_debit dedupes on it, so the buyer is never
+    // charged twice. We deliberately DON'T fall back to a time-based ref: it
+    // isn't stable across retries and reintroduced the double-charge this guards
+    // against. The app has sent this key for every wallet checkout since launch.
+    if (!idempotency_key || String(idempotency_key).trim().length < 8) {
+      return json({
+        error: "missing_idempotency_key",
+        message: "Couldn't secure this payment against duplicates. Please update the app and try again.",
+      }, 400);
+    }
+    const debitRef = `wchk_${String(idempotency_key).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 36)}`;
+
+    // If this exact checkout was already charged, return the orders it created
+    // instead of charging + creating them again (full idempotent replay).
+    {
+      const { data: prior } = await supabase
+        .from("wallet_transactions")
+        .select("metadata")
+        .eq("reference", debitRef)
+        .eq("type", "purchase")
+        .maybeSingle();
+      const priorOrderIds = (prior?.metadata as any)?.order_ids;
+      if (Array.isArray(priorOrderIds) && priorOrderIds.length > 0) {
+        const { data: priorOrders } = await supabase
+          .from("orders")
+          .select("id, vendor_id, total")
+          .in("id", priorOrderIds);
+        const { data: w } = await supabase.from("wallets").select("balance").eq("user_id", buyer_id).maybeSingle();
+        return json({
+          success: true,
+          idempotent_replay: true,
+          orders: (priorOrders ?? []).map((o: any) => ({ id: o.id, vendorId: o.vendor_id, subtotal: o.total })),
+          total_paid: total,
+          balance: Number(w?.balance ?? 0),
+        });
+      }
+    }
+
     // Atomic, race-safe wallet debit. Fails (null) if balance < total — in which
     // case report the shortfall so the app can prompt "Add money".
-    const debitRef = `wchk${buyer_id.replace(/-/g, "")}${Date.now().toString(36)}`.slice(0, 42);
     const { data: newBalance, error: debitErr } = await supabase.rpc("wallet_debit", {
       p_user_id: buyer_id,
       p_amount: total,
@@ -260,6 +315,18 @@ serve(async (req) => {
         }
       } catch (_) { /* non-fatal */ }
 
+      // Consume the negotiated delivery fee so the next order re-negotiates
+      // instead of reusing this one.
+      if (vo.deliveryType !== "courier" && Number(vo.deliveryFee) > 0) {
+        try {
+          const { data: chats } = await supabase.from("chats").select("id").eq("buyer_id", buyer_id).eq("vendor_id", vo.vendorId);
+          const chatIds = (chats || []).map((c: any) => c.id);
+          if (chatIds.length) {
+            await supabase.from("messages").update({ delivery_fee_status: "used" }).in("chat_id", chatIds).eq("delivery_fee_status", "accepted");
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+
       createdOrders.push({ id: orderId, vendorId: vo.vendorId, subtotal: vo.subtotal });
     }
 
@@ -275,6 +342,13 @@ serve(async (req) => {
       });
       return json({ error: "Order creation failed — your wallet has been refunded, please try again" }, 500);
     }
+
+    // Record the created orders on the debit ledger row so a retry with the same
+    // idempotency key returns them (above) instead of charging again.
+    await supabase
+      .from("wallet_transactions")
+      .update({ metadata: { funding_source: "wallet", order_ids: createdOrders.map((o) => o.id) } })
+      .eq("reference", debitRef);
 
     try { await supabase.from("cart_items").delete().eq("buyer_id", buyer_id); } catch (_) { /* non-fatal */ }
     try {

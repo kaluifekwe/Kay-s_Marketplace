@@ -206,8 +206,27 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
+                          const Text('Subtotal', style: TextStyle(color: AppColors.mediumGray)),
+                          Text('\u20A6${format.format(currentOrder.total)}', style: const TextStyle(color: AppColors.mediumGray)),
+                        ],
+                      ),
+                      if (currentOrder.deliveryFee > 0) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(currentOrder.deliveryType == 'courier' ? 'Delivery (courier)' : 'Delivery',
+                                style: const TextStyle(color: AppColors.mediumGray)),
+                            Text('\u20A6${format.format(currentOrder.deliveryFee)}', style: const TextStyle(color: AppColors.mediumGray)),
+                          ],
+                        ),
+                      ],
+                      const Divider(),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
                           const Text('Total', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                          Text('\u20A6${format.format(currentOrder.total)}',
+                          Text('\u20A6${format.format(currentOrder.totalWithDelivery ?? currentOrder.total)}',
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: AppColors.primaryGreen)),
                         ],
                       ),

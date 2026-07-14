@@ -57,7 +57,7 @@ serve(async (req) => {
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("id, buyer_id, vendor_id, store_id, status, payment_released, total, has_dispute, payout_attempts")
+      .select("id, buyer_id, vendor_id, store_id, status, payment_released, total, total_with_delivery, delivery_type, has_dispute, payout_attempts")
       .eq("id", order_id)
       .maybeSingle();
 
@@ -157,24 +157,26 @@ serve(async (req) => {
 
     const vendor_id = order.vendor_id;
 
-    const { data: tx } = await supabase
+    // Use the payment transaction's payout if present, but DON'T require it —
+    // fall back to computing from the order itself (courier = item subtotal only,
+    // since the platform pays the courier; otherwise item + delivery). limit(1)
+    // (not maybeSingle) so a duplicate payment tx can't throw. This makes release
+    // resilient to a missing/duplicate payment row, which was leaving confirmed
+    // orders stuck and unpaid.
+    const { data: txRows } = await supabase
       .from("transactions")
-      .select("*")
+      .select("vendor_payout, amount, platform_fee")
       .eq("order_id", order_id)
       .eq("status", "success")
       .eq("type", "payment")
-      .maybeSingle();
+      .limit(1);
+    const tx = (txRows && txRows[0]) || null;
 
-    if (!tx) {
-      // Release the claim so this can be retried once a payment exists.
-      await supabase.from("orders").update({ payment_released: false }).eq("id", order_id);
-      return new Response(
-        JSON.stringify({ error: "No successful payment found for this order" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const vendorPayout = tx.vendor_payout || tx.amount;
+    const orderPayout = order.delivery_type === "courier"
+      ? Number(order.total)
+      : Number(order.total_with_delivery ?? order.total);
+    const vendorPayout = (tx && (Number(tx.vendor_payout) || Number(tx.amount))) || orderPayout;
+    const platformFee = tx ? (Number(tx.platform_fee) || 0) : 0;
 
     // Net any pending charges (e.g. failed-pickup courier fees) off this payout.
     // Settle whole charges that fit within the payout; larger ones wait for the
@@ -212,7 +214,7 @@ serve(async (req) => {
         vendor_id,
         store_id: order.store_id,
         amount: 0,
-        platform_fee: tx.platform_fee,
+        platform_fee: platformFee,
         vendor_payout: 0,
         status: "success",
         type: "release",
@@ -259,7 +261,7 @@ serve(async (req) => {
       vendor_id,
       store_id: order.store_id,
       amount: netPayout,
-      platform_fee: tx.platform_fee,
+      platform_fee: platformFee,
       vendor_payout: netPayout,
       status: "success",
       type: "release",

@@ -27,7 +27,7 @@ class ProfileSelectionScreen extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                "Choose how you want to use Kays Market",
+                "Choose how you want to use Kay's Market",
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                       color: AppColors.mediumGray,
                     ),

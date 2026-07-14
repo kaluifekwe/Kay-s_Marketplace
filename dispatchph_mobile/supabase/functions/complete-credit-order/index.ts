@@ -15,6 +15,10 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
+// A chat-negotiated delivery fee is valid for this long (from the vendor's offer)
+// before checkout must use a freshly re-quoted fee.
+const DELIVERY_FEE_VALID_MS = 60 * 60 * 1000; // 60 minutes
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -94,6 +98,9 @@ serve(async (req) => {
       deliveryFee: number;
       deliveryType: string;
       vendorContribution: number;
+      courierQuoteId: string | null;
+      courierName: string | null;
+      courierProvider: string | null;
     }[] = [];
     let total = 0;
 
@@ -138,11 +145,43 @@ serve(async (req) => {
         );
       }
 
-      const deliveryType = (products || []).find((p: any) => p.id === items[0]?.product_id)?.delivery_type || "negotiate";
+      let deliveryType = (products || []).find((p: any) => p.id === items[0]?.product_id)?.delivery_type || "negotiate";
       let deliveryFee = 0;
       let vendorContribution = 0;
+      let courierQuoteId: string | null = null;
+      let courierName: string | null = null;
+      let courierProvider: string | null = null;
+      const err = (body: any, status = 400) =>
+        new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-      if (deliveryType === "negotiate" || deliveryType === "split") {
+      if (vendorOrder.delivery_quote_id && vendorOrder.selected_courier_name) {
+        // A courier was selected — verify the quote and use its fee (platform
+        // pays the courier, so the vendor is NOT credited the delivery fee).
+        const { data: quote } = await supabase
+          .from("delivery_quotes")
+          .select("available_couriers, expires_at, buyer_id, vendor_id")
+          .eq("id", vendorOrder.delivery_quote_id)
+          .maybeSingle();
+        if (!quote || quote.buyer_id !== buyer_id || quote.vendor_id !== vendorId) {
+          return err({ error: "invalid_quote", message: "Delivery quote not found for this order.", vendor_id: vendorId });
+        }
+        if (quote.expires_at && new Date(quote.expires_at) < new Date()) {
+          return err({ error: "quote_expired", message: "Your delivery quote expired. Please refresh delivery options.", vendor_id: vendorId });
+        }
+        const couriers = quote.available_couriers?.couriers || [];
+        const selected = couriers.find((c: any) =>
+          vendorOrder.selected_option_ref ? c.optionRef === vendorOrder.selected_option_ref : c.name === vendorOrder.selected_courier_name);
+        if (!selected) return err({ error: "courier_unavailable", message: "Selected courier is no longer available.", vendor_id: vendorId });
+        deliveryFee = Number(selected.fee) || 0;
+        deliveryType = "courier";
+        courierQuoteId = vendorOrder.delivery_quote_id;
+        courierName = selected.name;
+        courierProvider = selected.provider;
+      } else if (deliveryType === "free") {
+        deliveryFee = 0;
+      } else {
+        // No courier selected and not free → use the fee agreed with the vendor
+        // in chat, regardless of the product's delivery_type (mirrors the app).
         const { data: chats } = await supabase
           .from("chats")
           .select("id")
@@ -154,7 +193,7 @@ serve(async (req) => {
         if (chatIds.length > 0) {
           const { data } = await supabase
             .from("messages")
-            .select("buyer_fee_amount, vendor_contribution")
+            .select("buyer_fee_amount, vendor_contribution, created_at")
             .in("chat_id", chatIds)
             .eq("delivery_fee_status", "accepted")
             .order("created_at", { ascending: false })
@@ -164,21 +203,30 @@ serve(async (req) => {
         }
 
         if (!accepted) {
-          return new Response(
-            JSON.stringify({
-              error: "no_delivery_fee_agreed",
-              message: "Please agree on a delivery fee with the vendor in chat before checkout.",
-              vendor_id: vendorId,
-            }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
+          return err({
+            error: "no_delivery_fee_agreed",
+            message: "Please agree on a delivery fee with the vendor in chat before checkout.",
+            vendor_id: vendorId,
+          });
+        }
+
+        // Reject a stale negotiated fee so checkout never uses an out-of-date price.
+        if (Date.now() - new Date(accepted.created_at).getTime() > DELIVERY_FEE_VALID_MS) {
+          return err({
+            error: "delivery_fee_expired",
+            message: "The delivery fee you agreed has expired. Please ask the vendor for a fresh delivery fee in chat.",
+            vendor_id: vendorId,
+          });
         }
 
         deliveryFee = Number(accepted.buyer_fee_amount) || 0;
         vendorContribution = Number(accepted.vendor_contribution) || 0;
+        // Chat-agreed fee = vendor handles delivery. Mark 'negotiate' (not
+        // courier) so the vendor keeps the fee and the fee gets consumed.
+        deliveryType = "negotiate";
       }
 
-      verifiedOrders.push({ vendorId, storeId: vendorOrder.store_id || "", items, subtotal, deliveryFee, deliveryType, vendorContribution });
+      verifiedOrders.push({ vendorId, storeId: vendorOrder.store_id || "", items, subtotal, deliveryFee, deliveryType, vendorContribution, courierQuoteId, courierName, courierProvider });
       total += subtotal + deliveryFee;
     }
 
@@ -208,13 +256,15 @@ serve(async (req) => {
     let creationFailed = false;
 
     for (const vo of verifiedOrders) {
-      // No commission at launch — vendor receives 100% of item price plus
-      // the full delivery fee.
+      // No commission at launch. Courier: platform pays the courier, so the fee
+      // is NOT the vendor's. Free/negotiate: the vendor delivers and keeps it.
       const totalWithDelivery = vo.subtotal + vo.deliveryFee;
       const platformFee = 0;
-      const vendorPayout = totalWithDelivery;
+      const vendorPayout = vo.deliveryType === "courier" ? vo.subtotal : totalWithDelivery;
       const orderId = crypto.randomUUID();
       const reference = `credit_${buyer_id.substring(0, 8)}_${Date.now()}`;
+      const pickupDeadline = vo.deliveryType === "courier"
+        ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() : null;
 
       const { error: orderError } = await supabase.from("orders").insert({
         id: orderId,
@@ -230,6 +280,10 @@ serve(async (req) => {
         vendor_delivery_contribution: vo.vendorContribution,
         total_with_delivery: totalWithDelivery,
         payment_reference: reference,
+        delivery_quote_id: vo.courierQuoteId,
+        selected_courier_name: vo.courierName,
+        selected_provider: vo.courierProvider,
+        pickup_deadline: pickupDeadline,
       });
 
       if (orderError) {
@@ -272,6 +326,17 @@ serve(async (req) => {
         }
       } catch (pushErr) {
         console.error(`Failed to push vendor ${vo.vendorId}:`, pushErr);
+      }
+
+      // Consume the negotiated delivery fee so the next order re-negotiates.
+      if (vo.deliveryType !== "courier" && Number(vo.deliveryFee) > 0) {
+        try {
+          const { data: chats } = await supabase.from("chats").select("id").eq("buyer_id", buyer_id).eq("vendor_id", vo.vendorId);
+          const chatIds = (chats || []).map((c: any) => c.id);
+          if (chatIds.length) {
+            await supabase.from("messages").update({ delivery_fee_status: "used" }).in("chat_id", chatIds).eq("delivery_fee_status", "accepted");
+          }
+        } catch (_) { /* non-fatal */ }
       }
 
       createdOrders.push({ id: orderId, vendorId: vo.vendorId, subtotal: vo.subtotal });

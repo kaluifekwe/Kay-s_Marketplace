@@ -30,6 +30,7 @@ class _BuyerDisputeScreenState extends State<BuyerDisputeScreen> {
   File? _packagePhoto;
   File? _handoverPhoto;
   bool _isSubmittingReturn = false;
+  bool _notFound = false;
 
   @override
   void initState() {
@@ -101,12 +102,31 @@ class _BuyerDisputeScreenState extends State<BuyerDisputeScreen> {
 
   Future<void> _loadData() async {
     if (!mounted) return;
-    final disputeData = await SupabaseService.client
+    const cols =
+        'id, order_id, raised_by, buyer_id, vendor_id, reason, status, vendor_response, replacement_product_id, resolution_type, buyer_explanation, evidence_urls, vendor_evidence_urls, vendor_response_deadline, admin_decision, admin_notes, return_required, return_deadline, return_receipt_photos, return_verified, refund_method, vendor_confirm_deadline, vendor_return_confirmed_at, created_at';
+    var disputeData = await SupabaseService.client
         .from('disputes')
-        .select('id, order_id, raised_by, buyer_id, vendor_id, reason, status, vendor_response, replacement_product_id, resolution_type, buyer_explanation, evidence_urls, vendor_evidence_urls, vendor_response_deadline, admin_decision, admin_notes, return_required, return_deadline, return_receipt_photos, return_verified, refund_method, vendor_confirm_deadline, vendor_return_confirmed_at, created_at')
+        .select(cols)
         .eq('id', widget.disputeId)
         .maybeSingle();
-    if (disputeData == null || !mounted) return;
+    // The id we were handed might actually be an ORDER id — some notifications
+    // (e.g. "Refund approved") reference the order, not the dispute. Fall back to
+    // the newest dispute for that order so a tapped notification never hangs.
+    if (disputeData == null) {
+      disputeData = await SupabaseService.client
+          .from('disputes')
+          .select(cols)
+          .eq('order_id', widget.disputeId)
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+    }
+    if (!mounted) return;
+    if (disputeData == null) {
+      // Genuinely nothing — stop the spinner and show a readable state.
+      setState(() => _notFound = true);
+      return;
+    }
     _dispute = Dispute.fromJson(disputeData);
 
     final results = await Future.wait([
@@ -146,6 +166,21 @@ class _BuyerDisputeScreenState extends State<BuyerDisputeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_notFound) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Dispute')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'This dispute is no longer available.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppColors.mediumGray),
+            ),
+          ),
+        ),
+      );
+    }
     if (_dispute == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }

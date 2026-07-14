@@ -135,11 +135,14 @@ export const terminal: DeliveryProvider = {
   async getQuotes(input: QuoteInput): Promise<ProviderQuote> {
     if (!KEY) return { provider: "terminal", couriers: [], providerData: {}, reason: "no_api_key" };
 
-    const pkg = await packagingId();
+    // Packaging + both addresses are independent — create them CONCURRENTLY so
+    // Terminal isn't three sequential round-trips before we can even ask for rates.
+    const [pkg, from, to] = await Promise.all([
+      packagingId(),
+      createAddress(input.sender),
+      createAddress(input.receiver),
+    ]);
     if (!pkg) return { provider: "terminal", couriers: [], providerData: {}, reason: "no_packaging" };
-
-    const from = await createAddress(input.sender);
-    const to = await createAddress(input.receiver);
     if (!from.id || !to.id) {
       return {
         provider: "terminal",

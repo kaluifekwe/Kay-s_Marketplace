@@ -84,7 +84,7 @@ class WelcomeScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 28),
                     Text(
-                      "Kays",
+                      "Kay's",
                       style: Theme.of(context).textTheme.headlineLarge?.copyWith(
                             color: AppColors.white,
                             fontWeight: FontWeight.bold,

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../core/services/error_text.dart';
 import '../settings/delete_account.dart';
@@ -13,6 +15,7 @@ import '../../core/models/models.dart';
 import '../../widgets/app_image.dart';
 import '../delivery/vendor_locations_screen.dart';
 import '../../widgets/loading_skeleton.dart';
+import '../../widgets/whatsapp_support_button.dart';
 import '../notifications/notification_bell_icon.dart';
 import '../notifications/notification_screen.dart';
 import '../chat/chat_list_screen.dart';
@@ -38,6 +41,7 @@ class _VendorDashboardState extends State<VendorDashboard> {
   String _storeId = '';
   Store? _store;
   String _vendorName = 'Vendor';
+  bool _balanceHidden = false;
 
   @override
   void initState() {
@@ -48,14 +52,19 @@ class _VendorDashboardState extends State<VendorDashboard> {
   Future<void> _init() async {
     _storeId = await AuthService.getStoreId();
     _vendorName = await AuthService.getUserName();
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _balanceHidden = prefs.getBool('wallet_balance_hidden') ?? false);
     if (_storeId.isNotEmpty) {
       _loadStore();
       context.read<MarketplaceCubit>().loadStoreProducts(_storeId);
-      context.read<DisputeCubit>().loadDisputesForVendor(_storeId);
     }
     final userId = await AuthService.getUserId();
     context.read<OrderCubit>().loadVendorOrders(userId);
     context.read<NotificationCubit>().loadNotifications(userId);
+    context.read<WalletCubit>().load(userId);
+    // Disputes are keyed by the vendor's USER id (same as VendorDisputesScreen),
+    // not the store id — load with userId so the dashboard alert is accurate.
+    context.read<DisputeCubit>().loadDisputesForVendor(userId);
     // Populate the chat inbox so the message-icon unread badge shows on load.
     context.read<ChatCubit>().loadChatsForVendor(userId);
     _notifPoll = Timer.periodic(const Duration(seconds: 15), (_) {
@@ -118,15 +127,17 @@ class _VendorDashboardState extends State<VendorDashboard> {
                       final userId = await AuthService.getUserId();
                       context.read<OrderCubit>().loadVendorOrders(userId);
                       context.read<NotificationCubit>().loadNotifications(userId);
-                      if (_storeId.isNotEmpty) {
-                        context.read<DisputeCubit>().loadDisputesForVendor(_storeId);
-                      }
+                      context.read<WalletCubit>().load(userId);
+                      context.read<DisputeCubit>().loadDisputesForVendor(userId);
                     },
                     child: loading
                         ? _buildLoadingSkeleton()
                         : ListView(
                             padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
                             children: [
+                              _buildWalletCard(context),
+                              _buildDisputeAlert(context),
+                              const SizedBox(height: 16),
                               _buildStatsStrip(context, storeProducts),
                               const SizedBox(height: 16),
                               _buildPrimaryActions(context),
@@ -140,15 +151,23 @@ class _VendorDashboardState extends State<VendorDashboard> {
             );
           },
         ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const AddProductScreen()),
-          ),
-          backgroundColor: AppColors.riderYellow,
-          foregroundColor: AppColors.charcoal,
-          elevation: 4,
-          child: const Icon(Icons.add, size: 28),
+        floatingActionButton: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            const WhatsAppSupportButton(),
+            const SizedBox(height: 14),
+            FloatingActionButton(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AddProductScreen()),
+              ),
+              backgroundColor: AppColors.riderYellow,
+              foregroundColor: AppColors.charcoal,
+              elevation: 4,
+              child: const Icon(Icons.add, size: 28),
+            ),
+          ],
         ),
       ),
     );
@@ -465,12 +484,153 @@ class _VendorDashboardState extends State<VendorDashboard> {
     );
   }
 
+  Future<void> _toggleBalanceHidden() async {
+    final prefs = await SharedPreferences.getInstance();
+    final next = !_balanceHidden;
+    await prefs.setBool('wallet_balance_hidden', next);
+    if (mounted) setState(() => _balanceHidden = next);
+  }
+
+  Future<void> _openWallet(BuildContext context) async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()));
+    final userId = await AuthService.getUserId();
+    if (mounted) context.read<WalletCubit>().load(userId);
+    // Re-sync the hide/show choice in case it was toggled on the wallet screen.
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _balanceHidden = prefs.getBool('wallet_balance_hidden') ?? false);
+  }
+
+  // Front-and-centre money card: balance (with a privacy toggle) + quick access
+  // to withdraw / history, so the vendor sees their money the moment they land.
+  Widget _buildWalletCard(BuildContext context) {
+    return BlocBuilder<WalletCubit, WalletState>(
+      builder: (context, wallet) {
+        final format = NumberFormat('#,##0.00');
+        return Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [AppColors.primaryGreen, AppColors.darkGreen],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [BoxShadow(color: Colors.black.withAlpha(18), blurRadius: 10, offset: const Offset(0, 3))],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.account_balance_wallet, color: Colors.white70, size: 18),
+                  const SizedBox(width: 6),
+                  const Text('Wallet balance', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  const Spacer(),
+                  InkWell(
+                    onTap: _toggleBalanceHidden,
+                    borderRadius: BorderRadius.circular(20),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(_balanceHidden ? Icons.visibility_off : Icons.visibility,
+                          color: Colors.white70, size: 20),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(_balanceHidden ? '₦ • • • • • •' : '₦${format.format(wallet.balance)}',
+                  style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 2),
+              const Text('Available to withdraw', style: TextStyle(color: Colors.white60, fontSize: 11)),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () => _openWallet(context),
+                      icon: const Icon(Icons.account_balance, size: 18),
+                      label: const Text('Withdraw'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: AppColors.primaryGreen,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton(
+                    onPressed: () => _openWallet(context),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Colors.white54),
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('History'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // Time-sensitive alert: disputes waiting on the vendor's response or return
+  // confirmation. Hidden when there's nothing to act on.
+  Widget _buildDisputeAlert(BuildContext context) {
+    return BlocBuilder<DisputeCubit, DisputeState>(
+      builder: (context, state) {
+        final needs = state.vendorDisputes
+            .where((d) => d.status == 'awaiting_vendor_response' || d.status == 'vendor_confirming')
+            .length;
+        if (needs == 0) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const VendorDisputesScreen()),
+            ),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.errorRed.withAlpha(18),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.errorRed.withAlpha(70)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: AppColors.errorRed),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '$needs dispute${needs == 1 ? '' : 's'} need${needs == 1 ? 's' : ''} your response — tap to act before it auto-escalates.',
+                      style: const TextStyle(color: AppColors.errorRed, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  const Icon(Icons.arrow_forward_ios, size: 14, color: AppColors.errorRed),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildStatsStrip(BuildContext context, List<Product> products) {
     final ordersCount = context.watch<OrderCubit>().state.vendorOrders
         .where((o) => o.status == 'paid').length;
+    // Only money actually released to the wallet counts as earnings — an order
+    // can be 'confirmed' but still held (e.g. payouts blocked during a dispute),
+    // in which case it is NOT yet in the wallet.
     final earnings = context.watch<OrderCubit>().state.vendorOrders
-        .where((o) => o.status == 'confirmed' || o.status == 'auto_released')
-        .fold<double>(0, (s, o) => s + o.total);
+        .where((o) => o.paymentReleased)
+        .fold<double>(0, (s, o) => s + (o.totalWithDelivery ?? o.total));
     final productsCount = products.length;
 
     Widget metric(String value, String label, Color color) => Expanded(

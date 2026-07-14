@@ -192,7 +192,7 @@ class _SplashScreenState extends State<SplashScreen>
                       const SizedBox(height: 40),
                       // Brand name
                       Text(
-                        "Kays",
+                        "Kay's",
                         style: Theme.of(context).textTheme.headlineLarge?.copyWith(
                               color: AppColors.white,
                               fontWeight: FontWeight.bold,

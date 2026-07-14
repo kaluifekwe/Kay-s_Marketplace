@@ -21,6 +21,7 @@ class WalletScreen extends StatefulWidget {
 class _WalletScreenState extends State<WalletScreen> {
   String _userId = '';
   String _role = 'buyer';
+  bool _balanceHidden = false;
 
   @override
   void initState() {
@@ -32,9 +33,20 @@ class _WalletScreenState extends State<WalletScreen> {
     final prefs = await SharedPreferences.getInstance();
     _userId = prefs.getString('auth_user_id') ?? '';
     _role = prefs.getString('auth_role') ?? 'buyer';
+    final hidden = prefs.getBool('wallet_balance_hidden') ?? false;
+    if (mounted) setState(() => _balanceHidden = hidden);
     if (_userId.isNotEmpty && mounted) {
       await context.read<WalletCubit>().load(_userId);
     }
+  }
+
+  // Privacy toggle — remembers the choice across sessions so a shoulder-surfer
+  // can't see the balance if the user keeps it hidden.
+  Future<void> _toggleBalanceHidden() async {
+    final prefs = await SharedPreferences.getInstance();
+    final next = !_balanceHidden;
+    await prefs.setBool('wallet_balance_hidden', next);
+    if (mounted) setState(() => _balanceHidden = next);
   }
 
   Future<void> _openWithdraw() async {
@@ -73,10 +85,28 @@ class _WalletScreenState extends State<WalletScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('Wallet Balance',
-                            style: TextStyle(color: Colors.white70, fontSize: 14)),
+                        Row(
+                          children: [
+                            const Text('Wallet Balance',
+                                style: TextStyle(color: Colors.white70, fontSize: 14)),
+                            const Spacer(),
+                            InkWell(
+                              onTap: _toggleBalanceHidden,
+                              borderRadius: BorderRadius.circular(20),
+                              child: Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: Icon(
+                                  _balanceHidden ? Icons.visibility_off : Icons.visibility,
+                                  color: Colors.white70,
+                                  size: 20,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                         const SizedBox(height: 8),
-                        Text('₦${format.format(state.balance)}',
+                        Text(
+                            _balanceHidden ? '₦ • • • • • •' : '₦${format.format(state.balance)}',
                             style: const TextStyle(
                                 color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold)),
                         if (state.status == 'frozen') ...[

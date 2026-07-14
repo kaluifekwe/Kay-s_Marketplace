@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -364,9 +365,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final tmp = await cached.copy(tmpPath);
 
       if (isVideo) {
-        await Gal.putVideo(tmp.path, album: "Kays Market");
+        await Gal.putVideo(tmp.path, album: "Kay's Market");
       } else {
-        await Gal.putImage(tmp.path, album: "Kays Market");
+        await Gal.putImage(tmp.path, album: "Kay's Market");
       }
 
       if (!mounted) return;
@@ -464,7 +465,21 @@ class _ChatScreenState extends State<ChatScreen> {
                     if (msgIndex < 0) return const SizedBox.shrink();
                     final msg = state.messages[msgIndex];
                     final isMine = msg.senderId == _currentUserId;
-                    final senderName = msg.senderRole == 'buyer' ? widget.buyerName : widget.vendorName;
+                    // Attribute the name by WHO sent it (senderId vs the chat's
+                    // real buyer/vendor ids), NOT by senderRole. senderRole is
+                    // stamped from a device-global `auth_role` pref that can be
+                    // stale (e.g. a phone that previously held the other role),
+                    // which mislabelled messages with the other party's name —
+                    // "my name showed as though the vendor sent it". Fall back to
+                    // role only if the id matches neither participant.
+                    final String senderName;
+                    if (msg.senderId == widget.vendorId) {
+                      senderName = widget.vendorName;
+                    } else if (msg.senderId == widget.buyerId) {
+                      senderName = widget.buyerName;
+                    } else {
+                      senderName = msg.senderRole == 'buyer' ? widget.buyerName : widget.vendorName;
+                    }
                     return _MessageBubble(
                       message: msg,
                       isMine: isMine,
@@ -830,6 +845,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _acceptDeliveryFee(Message message) async {
     if (_currentUserId == null) return;
+    // 30-minute acceptance window — an offer left un-accepted goes stale and the
+    // vendor must send a fresh one. (UI hides the button after expiry too; this
+    // guards the case where the screen hasn't rebuilt yet.)
+    if (DateTime.now().difference(message.createdAt) > const Duration(minutes: 30)) {
+      _showError('This delivery offer has expired. Ask the vendor to send a new one.');
+      return;
+    }
     final ok = await context.read<ChatCubit>().acceptDeliveryFee(
       message: message,
       orderId: widget.orderId,
@@ -938,8 +960,10 @@ class _MessageBubble extends StatelessWidget {
         buyerPays: buyerPays,
         vendorCovers: vendorCovers,
         status: status,
-        // Only the buyer (recipient, not the vendor who sent it) gets action buttons.
-        showActions: !isVendor && status == 'pending',
+        // The bubble computes the accept window from createdAt and only shows
+        // the buyer (not the vendor) Accept/Decline while the offer is live.
+        isVendor: isVendor,
+        createdAt: message.createdAt,
         onAccept: onAcceptDelivery,
         onDecline: onDeclineDelivery,
       );
@@ -1235,16 +1259,20 @@ class _VideoThumbnailState extends State<_VideoThumbnail> {
   }
 }
 
-class _DeliveryRequestBubble extends StatelessWidget {
+class _DeliveryRequestBubble extends StatefulWidget {
   final String icon;
   final String title;
   final String description;
   final double buyerPays;
   final double vendorCovers;
   final String status;
-  final bool showActions;
+  final bool isVendor;
+  final DateTime createdAt;
   final VoidCallback? onAccept;
   final VoidCallback? onDecline;
+
+  /// How long a buyer has to accept an offer before it goes stale.
+  static const acceptWindow = Duration(minutes: 30);
 
   const _DeliveryRequestBubble({
     required this.icon,
@@ -1253,13 +1281,60 @@ class _DeliveryRequestBubble extends StatelessWidget {
     required this.buyerPays,
     required this.vendorCovers,
     required this.status,
-    required this.showActions,
+    required this.isVendor,
+    required this.createdAt,
     this.onAccept,
     this.onDecline,
   });
 
   @override
+  State<_DeliveryRequestBubble> createState() => _DeliveryRequestBubbleState();
+}
+
+class _DeliveryRequestBubbleState extends State<_DeliveryRequestBubble> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    // Only a live pending offer needs to tick toward expiry.
+    if (widget.status == 'pending') {
+      _ticker = Timer.periodic(const Duration(seconds: 20), (_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  Duration get _remaining =>
+      _DeliveryRequestBubble.acceptWindow - DateTime.now().difference(widget.createdAt);
+  bool get _expired => widget.status == 'pending' && _remaining.isNegative;
+  bool get _showActions => !widget.isVendor && widget.status == 'pending' && !_expired;
+
+  String get _remainingLabel {
+    final m = _remaining.inMinutes;
+    if (m >= 1) return 'Expires in ${m}m';
+    final s = _remaining.inSeconds;
+    return s > 0 ? 'Expires in ${s}s' : 'Expired';
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final status = widget.status;
+    final badgeAccepted = status == 'accepted' || status == 'used';
+    final showBadge = status != 'pending' || _expired;
+    final badgeText = _expired
+        ? 'Expired'
+        : badgeAccepted
+            ? 'Accepted'
+            : status == 'declined'
+                ? 'Declined'
+                : 'Superseded';
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.all(14),
@@ -1273,34 +1348,30 @@ class _DeliveryRequestBubble extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(icon, style: const TextStyle(fontSize: 20)),
+              Text(widget.icon, style: const TextStyle(fontSize: 20)),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  title,
+                  widget.title,
                   style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryGreen, fontSize: 14),
                 ),
               ),
-              if (status != 'pending')
+              if (showBadge)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: status == 'accepted' ? AppColors.primaryGreen : Colors.grey[400],
+                    color: badgeAccepted ? AppColors.primaryGreen : Colors.grey[400],
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Text(
-                    status == 'accepted'
-                        ? 'Accepted'
-                        : status == 'declined'
-                            ? 'Declined'
-                            : 'Superseded',
+                    badgeText,
                     style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600),
                   ),
                 ),
             ],
           ),
           const SizedBox(height: 8),
-          Text(description, style: const TextStyle(fontSize: 13)),
+          Text(widget.description, style: const TextStyle(fontSize: 13)),
           const SizedBox(height: 6),
           Container(
             padding: const EdgeInsets.all(10),
@@ -1312,19 +1383,19 @@ class _DeliveryRequestBubble extends StatelessWidget {
                   children: [
                     const Text('You pay:', style: TextStyle(fontSize: 13)),
                     Text(
-                      '₦${buyerPays.toStringAsFixed(0)}',
+                      '₦${widget.buyerPays.toStringAsFixed(0)}',
                       style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryGreen, fontSize: 15),
                     ),
                   ],
                 ),
-                if (vendorCovers > 0) ...[
+                if (widget.vendorCovers > 0) ...[
                   const SizedBox(height: 4),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text('Vendor covers:', style: TextStyle(fontSize: 13)),
                       Text(
-                        '₦${vendorCovers.toStringAsFixed(0)}',
+                        '₦${widget.vendorCovers.toStringAsFixed(0)}',
                         style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue[700], fontSize: 15),
                       ),
                     ],
@@ -1333,13 +1404,34 @@ class _DeliveryRequestBubble extends StatelessWidget {
               ],
             ),
           ),
-          if (showActions) ...[
+          // Live countdown while the offer is still acceptable.
+          if (widget.status == 'pending' && !_expired) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.timer_outlined, size: 14, color: AppColors.mediumGray),
+                const SizedBox(width: 4),
+                Text(_remainingLabel, style: const TextStyle(fontSize: 12, color: AppColors.mediumGray)),
+              ],
+            ),
+          ],
+          // Expired before acceptance — no longer actionable.
+          if (_expired) ...[
+            const SizedBox(height: 8),
+            Text(
+              widget.isVendor
+                  ? 'This offer expired before it was accepted. Send a new one if still needed.'
+                  : 'This offer has expired. Ask the vendor to send a new delivery fee.',
+              style: const TextStyle(fontSize: 12, color: AppColors.errorRed),
+            ),
+          ],
+          if (_showActions) ...[
             const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: onDecline,
+                    onPressed: widget.onDecline,
                     style: OutlinedButton.styleFrom(
                       side: BorderSide(color: Colors.red[300]!),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -1350,7 +1442,7 @@ class _DeliveryRequestBubble extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: onAccept,
+                    onPressed: widget.onAccept,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primaryGreen,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),

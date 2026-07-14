@@ -55,7 +55,16 @@ async function verifyIdWithProvider(
   idType: "nin" | "bvn",
 ): Promise<{ ok: boolean; record?: any; reason?: string }> {
   const label = idType.toUpperCase();
-  const res = await fetch(`${premblyBase}/identitypass/verification/${idType}`, {
+  // Prembly split NIN/vNIN out of the /identitypass/verification/* family: NIN
+  // now lives at /verification/nin and the number field was renamed to
+  // `number_nin`. The old path+field now 400s "invalid request data". BVN was
+  // NOT moved, so it stays on the /identitypass/verification/bvn path. We still
+  // send `number` alongside `number_nin` for backward/test compatibility.
+  const path = idType === "nin"
+    ? "/verification/nin"
+    : `/identitypass/verification/${idType}`;
+  const payload = idType === "nin" ? { number_nin: number, number } : { number };
+  const res = await fetch(`${premblyBase}${path}`, {
     method: "POST",
     headers: {
       "x-api-key": premblyApiKey,
@@ -63,7 +72,7 @@ async function verifyIdWithProvider(
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ number }),
+    body: JSON.stringify(payload),
   });
   const body = await res.json().catch(() => ({}));
   const rec = body?.[`${idType}_data`] ?? body?.data ?? body;
@@ -88,11 +97,11 @@ serve(async (req) => {
     const uid = callerId(req.headers.get("Authorization"));
     if (!uid) return json({ error: "Authentication required" }, 401);
 
-    const { nin, first_name, last_name } = await req.json();
-    // KYC uses NIN only — one NIN per person, so accounts are capped per real
-    // identity (a person can't add more by also using a BVN).
-    const idType = "nin" as const;
-    const label = "NIN";
+    const { nin, id_type, first_name, last_name } = await req.json();
+    // The user chooses NIN or BVN. Both are 11-digit numbers, both land in the
+    // `nin` column, and uniqueness stays scoped per role (see below).
+    const idType: "nin" | "bvn" = id_type === "bvn" ? "bvn" : "nin";
+    const label = idType.toUpperCase();
     if (!nin || !/^\d{11}$/.test(String(nin))) {
       return json({ error: `Enter a valid 11-digit ${label}` }, 400);
     }
@@ -172,8 +181,8 @@ serve(async (req) => {
       })
       .eq("id", uid);
     if (upErr) {
-      // Unique-index race: the NIN got linked to another account first.
-      return json({ error: "This NIN is already linked to another account." }, 409);
+      // Unique-index race: the ID got linked to another account first.
+      return json({ error: `This ${label} is already linked to another account.` }, 409);
     }
 
     return json({ success: true, status: "verified" });

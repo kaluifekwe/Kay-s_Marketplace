@@ -11,7 +11,7 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const playStoreUrl = Deno.env.get("APP_PLAY_STORE_URL") ?? "";
 const appStoreUrl = Deno.env.get("APP_STORE_URL") ?? "";
-const appName = "Kays Market";
+const appName = "Kay's Market";
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 

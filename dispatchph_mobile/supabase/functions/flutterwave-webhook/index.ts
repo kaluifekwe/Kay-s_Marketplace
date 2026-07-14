@@ -155,6 +155,115 @@ async function finalizeWithdrawal(supabase: any, data: any) {
   return { ignored: true, reason: "unhandled_status" };
 }
 
+const SUCCESS_STATUSES = ["successful", "succeeded", "success", "completed", "complete", "paid"];
+const PICKUP_WINDOW_HOURS = 24;
+
+// A Flutterwave checkout payment (tx_ref = chk...) succeeded. Create the per-
+// vendor orders + escrow from the VERIFIED intent that prepare-checkout stored.
+// Idempotent: an atomic claim on the pending intent row (pending -> success)
+// means only ONE webhook delivery creates the orders, even though Flutterwave
+// retries. Underpayments are credited to the buyer's wallet instead of shipping.
+async function createOrdersFromCheckout(supabase: any, txRef: string, data: any) {
+  const status = String(data?.status ?? "").toLowerCase();
+  if (!SUCCESS_STATUSES.includes(status)) return { ignored: true, reason: "not_successful", got: data?.status };
+  if (data.currency && data.currency !== "NGN") return { ignored: true, reason: "non_ngn" };
+
+  // Atomic claim — only the winner (pending -> success) creates the orders.
+  const { data: claimed } = await supabase
+    .from("transactions")
+    .update({ status: "success" })
+    .eq("paystack_reference", txRef)
+    .eq("status", "pending")
+    .eq("type", "payment")
+    .select("id, buyer_id, amount, metadata");
+  if (!claimed || claimed.length === 0) return { ignored: true, reason: "already_processed_or_unknown_ref" };
+
+  const intent = claimed[0];
+  const buyer_id = intent.buyer_id as string;
+  const meta = typeof intent.metadata === "string" ? JSON.parse(intent.metadata) : (intent.metadata || {});
+  const enriched: any[] = meta.vendor_orders || [];
+  const total = Number(meta.total ?? intent.amount) || 0;
+  const paid = Number(data.amount) || 0;
+
+  // Underpaid (e.g. a partial transfer) — don't ship. Credit what came in to the
+  // buyer's wallet so they're not out of pocket, and leave for support.
+  if (paid + 1 < total) {
+    console.error(`checkout underpaid: ref=${txRef} paid=${paid} total=${total}`);
+    await supabase.rpc("wallet_credit", {
+      p_user_id: buyer_id, p_amount: paid, p_type: "fund",
+      p_reference: `flw_charge_${data.id ?? txRef}`, p_provider: "flutterwave",
+      p_description: "Payment received (order not completed — contact support)",
+    });
+    return { ignored: true, reason: "underpaid", paid, total };
+  }
+
+  const created: any[] = [];
+  for (const vo of enriched) {
+    const totalWithDelivery = Number(vo.subtotal) + Number(vo.delivery_fee || 0);
+    const vendorPayout = vo.delivery_type === "courier" ? Number(vo.subtotal) : totalWithDelivery;
+    const orderId = crypto.randomUUID();
+    const reference = `flw_${orderId}`;
+    const pickupDeadline = vo.delivery_type === "courier"
+      ? new Date(Date.now() + PICKUP_WINDOW_HOURS * 3600 * 1000).toISOString() : null;
+
+    const { error: orderErr } = await supabase.from("orders").insert({
+      id: orderId, buyer_id, vendor_id: vo.vendor_id, store_id: vo.store_id,
+      status: "paid", paid_at: new Date().toISOString(),
+      items: JSON.stringify(vo.items), total: vo.subtotal,
+      delivery_fee: vo.delivery_fee || 0, delivery_type: vo.delivery_type,
+      vendor_delivery_contribution: vo.vendor_contribution || 0,
+      total_with_delivery: totalWithDelivery, payment_reference: reference,
+      delivery_quote_id: vo.delivery_quote_id, selected_courier_name: vo.selected_courier_name,
+      selected_provider: vo.selected_provider, pickup_deadline: pickupDeadline,
+    });
+    if (orderErr) { console.error(`checkout order insert failed vendor=${vo.vendor_id}:`, orderErr); continue; }
+
+    const { error: txInsErr } = await supabase.from("transactions").insert({
+      order_id: orderId, buyer_id, vendor_id: vo.vendor_id, store_id: vo.store_id || null,
+      amount: totalWithDelivery, platform_fee: 0, vendor_payout,
+      paystack_reference: `tx_${orderId}`, status: "success", type: "payment",
+      metadata: JSON.stringify({ funding_source: "flutterwave", checkout_ref: txRef }),
+    });
+    if (txInsErr) console.error(`checkout payment tx insert failed order=${orderId}:`, JSON.stringify(txInsErr));
+
+    try {
+      const { data: tok } = await supabase.from("device_tokens").select("fcm_token").eq("user_id", vo.vendor_id).maybeSingle();
+      if (tok?.fcm_token) {
+        await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: vo.vendor_id, title: "New Order!", body: `You received a new order of ₦${totalWithDelivery.toLocaleString()}`, data: { type: "order", orderId } }),
+        });
+      }
+    } catch (_) { /* non-fatal */ }
+
+    // Consume the negotiated delivery fee: a chat-agreed fee is good for THIS
+    // order only. Mark it "used" so the buyer's next order from this vendor
+    // starts a fresh negotiation instead of silently reusing the old fee.
+    if (vo.delivery_type !== "courier" && Number(vo.delivery_fee) > 0) {
+      try {
+        const { data: chats } = await supabase.from("chats").select("id").eq("buyer_id", buyer_id).eq("vendor_id", vo.vendor_id);
+        const chatIds = (chats || []).map((c: any) => c.id);
+        if (chatIds.length) {
+          await supabase.from("messages").update({ delivery_fee_status: "used" }).in("chat_id", chatIds).eq("delivery_fee_status", "accepted");
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+    created.push({ id: orderId, vendorId: vo.vendor_id });
+  }
+
+  try { await supabase.from("cart_items").delete().eq("buyer_id", buyer_id); } catch (_) { /* non-fatal */ }
+  try {
+    await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: buyer_id, title: "Order Confirmed!", body: `Payment received. ${created.length} order(s) confirmed.`, data: { type: "order" } }),
+    });
+  } catch (_) { /* non-fatal */ }
+
+  return { success: true, orders: created, count: created.length };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -185,8 +294,16 @@ serve(async (req) => {
     const data = event.data ?? event;
 
     if (eventName === "charge.completed" || event["event.type"] === "BANK_TRANSFER_TRANSACTION") {
-      const result = await creditFunding(supabase, data);
-      console.log("funding result:", JSON.stringify(result));
+      // A checkout payment carries our tx_ref (chk...); anything else is a buyer
+      // funding their wallet via their permanent virtual account.
+      const ref = String(data.tx_ref || data.reference || "");
+      if (ref.startsWith("chk")) {
+        const result = await createOrdersFromCheckout(supabase, ref, data);
+        console.log("checkout result:", JSON.stringify(result));
+      } else {
+        const result = await creditFunding(supabase, data);
+        console.log("funding result:", JSON.stringify(result));
+      }
     } else if (eventName === "transfer.disburse" || eventName === "transfer.completed") {
       const result = await finalizeWithdrawal(supabase, data);
       console.log("withdrawal result:", JSON.stringify(result));

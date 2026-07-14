@@ -74,7 +74,7 @@ class DispatchPHApp extends StatelessWidget {
         BlocProvider(create: (_) => WalletCubit()),
       ],
       child: MaterialApp(
-        title: "Kays Market",
+        title: "Kay's Market",
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
         home: const SplashScreen(),

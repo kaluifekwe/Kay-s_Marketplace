@@ -31,7 +31,7 @@ import 'buyer_bank_account_screen.dart';
 import '../wallet/wallet_screen.dart';
 import '../delivery/buyer_addresses_screen.dart';
 import '../policy/policy_screen.dart';
-import '../kyc/kyc_screen.dart';
+import '../../widgets/whatsapp_support_button.dart';
 import '../settings/delete_account.dart';
 
 class MarketplaceHome extends StatefulWidget {
@@ -76,9 +76,6 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       });
       if (widget.showWelcomeCredit) {
         _showWelcomeCreditDialog();
-      } else {
-        // Nudge unverified buyers to complete KYC (browsing is free; buying needs it).
-        promptKycReminder(context);
       }
     });
   }
@@ -89,7 +86,7 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         icon: const Icon(Icons.celebration, color: AppColors.primaryGreen, size: 64),
-        title: const Text("Welcome to Kays Market!"),
+        title: const Text("Welcome to Kay's Market!"),
         content: const Text(
           "Congratulations! 🎉\nYou've received ₦200 welcome credit to use on your first purchase.",
           textAlign: TextAlign.center,
@@ -329,12 +326,13 @@ class _MarketplaceFeed extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.lightGray,
+      floatingActionButton: const WhatsAppSupportButton(),
       appBar: AppBar(
         backgroundColor: AppColors.primaryGreen,
         elevation: 0,
         leading: const SizedBox.shrink(),
         title: const Text(
-          "Kays Market",
+          "Kay's Market",
           style: TextStyle(
             color: Colors.white,
             fontSize: 18,
@@ -372,10 +370,16 @@ class _MarketplaceFeed extends StatelessWidget {
             color: AppColors.primaryGreen,
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: GestureDetector(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SearchScreen()),
-              ),
+              onTap: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SearchScreen()),
+                );
+                // Search runs on the shared cubit and overwrites the feed —
+                // restore the browse feed on return so it isn't left stuck on
+                // the last search results until a manual refresh.
+                if (context.mounted) context.read<MarketplaceCubit>().resetFeed();
+              },
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 decoration: BoxDecoration(
@@ -1093,9 +1097,6 @@ class ProfileTab extends StatelessWidget {
                   divider,
                   tile(Icons.storefront_outlined, 'My Stores',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MyStoresScreen()))),
-                  divider,
-                  tile(Icons.verified_user_outlined, 'Verify Identity (KYC)',
-                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KycScreen()))),
                   divider,
                   tile(Icons.description_outlined, 'Terms & Policy',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PolicyScreen()))),

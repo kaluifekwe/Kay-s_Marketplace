@@ -3,11 +3,13 @@ import 'package:uuid/uuid.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
+import '../../widgets/password_strength_indicator.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/store_service.dart';
 import '../../core/constants/nigerian_states.dart';
 import 'home_router.dart';
+import 'email_otp_screen.dart';
 
 class RegistrationScreen extends StatefulWidget {
   final String userType;
@@ -55,8 +57,8 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       _showError('Enter a valid email address');
       return;
     }
-    if (_passwordController.text.length < 6) {
-      _showError('Password must be at least 6 characters');
+    if (!PasswordStrengthIndicator.isAcceptable(_passwordController.text)) {
+      _showError('Password must be at least 8 characters and include both letters and numbers');
       return;
     }
     if (_passwordController.text != _confirmPasswordController.text) {
@@ -91,6 +93,39 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       if (!mounted) return;
 
       if (regError != null) {
+        // The account may already exist but be UNVERIFIED — a prior signup whose
+        // OTP was never completed. If these same credentials log in, resume
+        // verification instead of dead-ending on "already registered".
+        final loginErr = await AuthService.login(
+          _emailController.text.trim(),
+          _passwordController.text,
+        );
+        if (!mounted) return;
+        if (loginErr == null) {
+          final verified = await AuthService.isEmailVerified();
+          if (!mounted) return;
+          if (verified) {
+            // Already a complete account — just take them in.
+            await _goHome();
+            return;
+          }
+          final ok = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(builder: (_) => EmailOtpScreen(email: _emailController.text.trim())),
+          );
+          if (!mounted) return;
+          if (ok == true) {
+            await _goHome();
+            return;
+          }
+          await SupabaseService.auth.signOut();
+          if (mounted) {
+            setState(() => _isLoading = false);
+            _showError('Please verify your email to finish signing up.');
+          }
+          return;
+        }
+        // Genuinely taken by someone else (wrong password) or another error.
         setState(() => _isLoading = false);
         _showError(regError);
         return;
@@ -138,6 +173,17 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       if (!mounted) return;
       setState(() => _isLoading = false);
 
+      // Email OTP gate: the account exists but is unverified. Require the emailed
+      // code before entering the app. If they back out without verifying they
+      // stay here (the unverified account is picked up again at next login).
+      final verified = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => EmailOtpScreen(email: _emailController.text.trim()),
+        ),
+      );
+      if (!mounted || verified != true) return;
+
       if (_isVendor) {
         Navigator.pushReplacement(
           context,
@@ -164,6 +210,18 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// Route into the app after a resumed (already-registered) sign-in, using the
+  /// account's real role from prefs.
+  Future<void> _goHome() async {
+    final prefs = await SharedPreferences.getInstance();
+    final role = prefs.getString('auth_role') ?? widget.userType;
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => HomeRouter(role: role)),
+    );
   }
 
   @override
@@ -211,6 +269,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
               TextField(
                 controller: _passwordController,
                 obscureText: _obscurePassword,
+                onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
                   labelText: 'Password',
                   suffixIcon: IconButton(
@@ -219,11 +278,26 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                   ),
                 ),
               ),
+              PasswordStrengthIndicator(password: _passwordController.text),
               const SizedBox(height: 16),
               TextField(
                 controller: _confirmPasswordController,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Confirm password'),
+                obscureText: _obscurePassword,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: 'Confirm password',
+                  suffixIcon: _confirmPasswordController.text.isEmpty
+                      ? null
+                      : Icon(
+                          _confirmPasswordController.text == _passwordController.text
+                              ? Icons.check_circle
+                              : Icons.error_outline,
+                          color: _confirmPasswordController.text == _passwordController.text
+                              ? AppColors.successGreen
+                              : AppColors.errorRed,
+                          size: 20,
+                        ),
+                ),
               ),
               if (_isVendor) ...[
                 const SizedBox(height: 16),

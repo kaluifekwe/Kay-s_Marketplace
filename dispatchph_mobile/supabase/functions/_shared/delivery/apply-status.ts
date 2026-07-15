@@ -65,10 +65,7 @@ const NOTIF: Record<string, { buyer?: [string, string]; vendor?: [string, string
   delivered: {
     buyer: ["🎉 Order Arrived!", "Your order has been delivered! Please confirm receipt within 24h."],
   },
-  failed: {
-    buyer: ["⚠️ Delivery Issue", "There was an issue with your delivery. Contact support."],
-    vendor: ["⚠️ Delivery Failed", "Delivery was unsuccessful. Please contact Kay's support."],
-  },
+  // cancelled / failed are handled explicitly (refund + charge) in the body.
 };
 
 export async function applyDeliveryStatus(supabase: any, delivery: any, ev: WebhookEvent, location?: string | null) {
@@ -93,23 +90,6 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     location: location ?? null,
     timestamp: nowIso,
   });
-
-  // Failed pickup: courier dispatched but the vendor had nothing ready (failed
-  // BEFORE pickup). The platform already paid the courier fee, so record it as a
-  // pending charge against the vendor — release-escrow nets it off a future
-  // payout. Idempotent via the unique (order_id, reason) index.
-  if (status === "failed" && !delivery.picked_up_at) {
-    await supabase.from("vendor_charges").upsert(
-      {
-        vendor_id: delivery.vendor_id,
-        order_id: delivery.order_id,
-        amount: delivery.shipbubble_fee ?? delivery.buyer_charged ?? 0,
-        reason: "failed_pickup",
-        status: "pending",
-      },
-      { onConflict: "order_id,reason", ignoreDuplicates: true },
-    );
-  }
 
   // Don't let a late courier event resurrect a CLOSED order. If the order was
   // already refunded or cancelled (e.g. an admin refund on a booked order), a
@@ -142,6 +122,69 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
       .eq("id", delivery.order_id);
   } else if (status === "picked_up" || status === "in_transit") {
     await supabase.from("orders").update({ status: "in_transit" }).eq("id", delivery.order_id);
+  } else if ((status === "cancelled" || status === "failed") && !delivery.picked_up_at) {
+    // Delivery didn't happen and the item was never collected — the buyer paid
+    // but got nothing. 1) Charge the vendor the wasted courier fee the platform
+    // already paid (netted off their next payout). 2) Auto-refund the buyer in
+    // full to their wallet via process-refund (service-role, idempotent).
+    // 3) Notify both parties. (Fixes the "cancelled = silent + stuck" gap.)
+    await supabase.from("vendor_charges").upsert(
+      {
+        vendor_id: delivery.vendor_id,
+        order_id: delivery.order_id,
+        amount: delivery.shipbubble_fee ?? delivery.buyer_charged ?? 0,
+        reason: status === "cancelled" ? "cancelled_pickup" : "failed_pickup",
+        status: "pending",
+      },
+      { onConflict: "order_id,reason", ignoreDuplicates: true },
+    );
+    let refunded = false;
+    try {
+      const r = await fetch(`${supabaseUrl}/functions/v1/process-refund`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order_id: delivery.order_id,
+          reason: `delivery_${status}_before_pickup`,
+          refund_method: "wallet",
+        }),
+      });
+      refunded = r.ok;
+      if (!r.ok) console.error("apply-status auto-refund failed:", r.status, await r.text().catch(() => ""));
+    } catch (e) {
+      console.error("apply-status auto-refund error:", e);
+    }
+    await sendPush(
+      delivery.buyer_id,
+      "❌ Delivery Cancelled",
+      refunded
+        ? "The courier couldn't pick up your order, so you've been fully refunded to your wallet."
+        : "There was a problem picking up your order. We're sorting your refund — contact support if it isn't resolved shortly.",
+      { type: "delivery_update", status, order_id: delivery.order_id, delivery_id: delivery.id, screen: "order_tracking" },
+    );
+    await sendPush(
+      delivery.vendor_id,
+      "❌ Pickup Cancelled",
+      "The courier couldn't collect this order, so the buyer was refunded. The courier fee will be netted off your next payout.",
+      { type: "delivery_update", status, order_id: delivery.order_id, screen: "vendor_orders" },
+    );
+    return;
+  } else if (status === "cancelled" || status === "failed") {
+    // Cancelled/failed AFTER pickup — the item is already with the courier, so we
+    // do NOT auto-refund; notify both and leave it for support/dispute review.
+    await sendPush(
+      delivery.buyer_id,
+      "⚠️ Delivery Issue",
+      "There's a problem with your delivery after pickup. Our team is looking into it — you can also report an issue from the order.",
+      { type: "delivery_update", status, order_id: delivery.order_id, delivery_id: delivery.id, screen: "order_tracking" },
+    );
+    await sendPush(
+      delivery.vendor_id,
+      "⚠️ Delivery Problem After Pickup",
+      "A delivery was cancelled or failed after pickup. Kay's support is reviewing it.",
+      { type: "delivery_update", status, order_id: delivery.order_id, screen: "vendor_orders" },
+    );
+    return;
   }
 
   const n = NOTIF[status];

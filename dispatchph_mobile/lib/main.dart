@@ -36,7 +36,6 @@ void main() {
     );
 
     await SupabaseService.init();
-    await NotificationService.init();
 
     // Friendly UI for render errors + remote logging of uncaught errors.
     ErrorReporter.install(appVersion: '1.0.4+5');
@@ -46,6 +45,10 @@ void main() {
     final escrow = EscrowService();
 
     runApp(DispatchPHApp(escrow: escrow));
+
+    // Non-critical for first paint: registering local-notification channels
+    // doesn't need to block the UI, so do it right after the app is on screen.
+    unawaited(NotificationService.init());
   }, (error, stack) {
     ErrorReporter.report(error, stack, context: 'zone');
   });

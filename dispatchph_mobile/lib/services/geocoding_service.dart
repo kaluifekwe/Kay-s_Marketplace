@@ -1,26 +1,87 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import '../core/services/supabase_service.dart';
 
+/// An address suggestion from Google Places Autocomplete.
+class PlacePrediction {
+  final String placeId;
+  final String description; // full text, e.g. "12 Aba Rd, Port Harcourt, Rivers"
+  final String primary; // main line, e.g. "12 Aba Rd"
+  final String secondary; // context, e.g. "Port Harcourt, Rivers"
+
+  PlacePrediction({
+    required this.placeId,
+    required this.description,
+    required this.primary,
+    required this.secondary,
+  });
+}
+
+/// Resolved coordinates + formatted address for a chosen prediction.
+class PlaceDetails {
+  final String address;
+  final double lat;
+  final double lng;
+
+  PlaceDetails({required this.address, required this.lat, required this.lng});
+}
+
+/// Address search + geocoding via the `places-proxy` Edge Function (Google
+/// Places). The API key stays server-side; we only ever call the proxy.
+///
+/// [sessionToken] should be a single uuid generated when the user starts
+/// typing, reused for every [autocomplete] call and the final [details] call,
+/// then discarded — that lets Google bill the search as one session.
 class GeocodingService {
-  static const String _nominatimBase = 'https://nominatim.openstreetmap.org';
+  static Future<List<PlacePrediction>> autocomplete(
+    String input, {
+    required String sessionToken,
+    String? city,
+  }) async {
+    final res = await SupabaseService.client.functions.invoke('places-proxy', body: {
+      'action': 'autocomplete',
+      'input': input,
+      'sessionToken': sessionToken,
+      'city': ?city,
+    });
+    final data = res.data;
+    final list = (data is Map && data['predictions'] is List) ? data['predictions'] as List : const [];
+    return list
+        .map((e) => PlacePrediction(
+              placeId: e['place_id'] as String? ?? '',
+              description: e['description'] as String? ?? '',
+              primary: e['primary'] as String? ?? '',
+              secondary: e['secondary'] as String? ?? '',
+            ))
+        .where((p) => p.placeId.isNotEmpty)
+        .toList();
+  }
 
-  static Future<List<Map<String, dynamic>>> searchAddress(String query) async {
-    final uri = Uri.parse('$_nominatimBase/search?q=${Uri.encodeComponent(query)}&format=json&limit=5&countrycodes=ng');
-    final response = await http.get(uri, headers: {'User-Agent': 'DispatchPH/1.0'});
-    if (response.statusCode != 200) return [];
-    final List data = jsonDecode(response.body);
-    return data.map((e) => {
-      'display_name': e['display_name'] as String,
-      'lat': double.parse(e['lat'] as String),
-      'lng': double.parse(e['lon'] as String),
-    }).toList();
+  static Future<PlaceDetails?> details(String placeId, {required String sessionToken}) async {
+    final res = await SupabaseService.client.functions.invoke('places-proxy', body: {
+      'action': 'details',
+      'placeId': placeId,
+      'sessionToken': sessionToken,
+    });
+    final data = res.data;
+    if (data is! Map || data['lat'] == null || data['lng'] == null) return null;
+    return PlaceDetails(
+      address: data['address'] as String? ?? '',
+      lat: (data['lat'] as num).toDouble(),
+      lng: (data['lng'] as num).toDouble(),
+    );
   }
 
   static Future<String> reverseGeocode(double lat, double lng) async {
-    final uri = Uri.parse('$_nominatimBase/reverse?lat=$lat&lon=$lng&format=json');
-    final response = await http.get(uri, headers: {'User-Agent': 'DispatchPH/1.0'});
-    if (response.statusCode != 200) return '$lat, $lng';
-    final data = jsonDecode(response.body);
-    return data['display_name'] as String? ?? '$lat, $lng';
+    try {
+      final res = await SupabaseService.client.functions.invoke('places-proxy', body: {
+        'action': 'reverse',
+        'lat': lat,
+        'lng': lng,
+      });
+      final data = res.data;
+      if (data is Map && data['address'] is String) return data['address'] as String;
+    } catch (_) {
+      // fall through to raw coords
+    }
+    return '$lat, $lng';
   }
 }

@@ -394,7 +394,7 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
                                   ClipRRect(
                                     borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
                                     child: imageUrl != null
-                                        ? AppImage(source: imageUrl, fit: BoxFit.cover)
+                                        ? AppImage(source: imageUrl, fit: BoxFit.cover, thumbWidth: 400)
                                         : Container(
                                             color: AppColors.lightGray,
                                             child: const Center(
@@ -483,6 +483,13 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
   Widget _buildContactSection(BuildContext context, Store store) {
     if (_isOwner(store)) return const SizedBox.shrink();
     final isLoggedIn = _currentUserId != null;
+    // A vendor's phone/WhatsApp is hidden from buyers in a different state — they
+    // can browse the store but can't contact or buy across states.
+    final mp = context.read<MarketplaceCubit>();
+    final buyerState = mp.state.buyerState;
+    final vProducts = mp.state.products.where((p) => p.storeId == store.id);
+    final vendorState = vProducts.isNotEmpty ? vProducts.first.vendorState as String? : null;
+    final outOfState = buyerState != null && vendorState != null && vendorState != buyerState;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -550,7 +557,21 @@ class _VendorStoreScreenState extends State<VendorStoreScreen> {
                 ),
               ),
               const SizedBox(height: 10),
-              if (store.showPhoneToBuyers && store.phone != null && store.phone!.isNotEmpty)
+              if (outOfState)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    'This vendor is in ${vendorState ?? 'another state'}. Phone & WhatsApp are '
+                    'only shown for vendors in your state.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                ),
+              if (!outOfState && store.showPhoneToBuyers && store.phone != null && store.phone!.isNotEmpty)
                 Row(
                   children: [
                     Expanded(

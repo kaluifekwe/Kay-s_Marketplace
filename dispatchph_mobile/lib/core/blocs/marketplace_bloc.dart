@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/supabase_service.dart';
 import '../services/cache_service.dart';
 import '../models/models.dart';
@@ -58,6 +59,38 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
     }
   }
 
+  static const _sameStateKey = 'marketplace_same_state_only';
+
+  /// Restore the persisted "my-state only" toggle into state (call once the
+  /// buyer's state is known). Doesn't reload — the feed load reads the flag.
+  Future<void> initSameStateFilter() async {
+    final prefs = await SharedPreferences.getInstance();
+    emit(state.copyWith(sameStateOnly: prefs.getBool(_sameStateKey) ?? false));
+  }
+
+  /// Flip the "show only my-state vendors" toggle, persist it, and reload the
+  /// active view (browse / category / search) with the new filter.
+  Future<void> setSameStateOnly(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_sameStateKey, value);
+    emit(state.copyWith(sameStateOnly: value));
+    if (state.searchQuery != null && state.searchQuery!.isNotEmpty) {
+      await searchProducts(state.searchQuery!);
+    } else if (state.selectedCategory != null) {
+      await loadProductsByCategory(state.selectedCategory!);
+    } else {
+      await loadProducts(forceRefresh: true);
+    }
+  }
+
+  /// Adds the vendor-state filter to a products query when the toggle is on.
+  dynamic _stateFilter(dynamic q) {
+    if (state.sameStateOnly && state.buyerState != null && state.buyerState!.isNotEmpty) {
+      return q.eq('vendor_state', state.buyerState);
+    }
+    return q;
+  }
+
   Future<Map<String, Store>> _loadStoresFromProducts(List<dynamic> productsData, Map<String, Store> existing) async {
     final storeIds = productsData.map((p) => p['store_id'] as String).where((id) => id.isNotEmpty).toSet();
     if (storeIds.isEmpty) return existing;
@@ -94,11 +127,9 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
     }
     emit(state.copyWith(isLoading: true));
     try {
-      final data = await SupabaseService.client
-          .from('products')
-          .select(_productFields)
-          .order('created_at', ascending: false)
-          .range(0, _pageSize - 1);
+      final data = await _stateFilter(
+        SupabaseService.client.from('products').select(_productFields),
+      ).order('created_at', ascending: false).range(0, _pageSize - 1);
 
       final products = (data as List).map((p) => Product.fromJson(p)).toList();
       final stores = await _loadStoresFromProducts(data, {});
@@ -186,11 +217,9 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
       final from = nextPage * _pageSize;
       final to = from + _pageSize - 1;
 
-      final data = await SupabaseService.client
-          .from('products')
-          .select(_productFields)
-          .order('created_at', ascending: false)
-          .range(from, to);
+      final data = await _stateFilter(
+        SupabaseService.client.from('products').select(_productFields),
+      ).order('created_at', ascending: false).range(from, to);
 
       final newProducts = (data as List).map((p) => Product.fromJson(p)).toList();
       final stores = await _loadStoresFromProducts(data, state.stores);
@@ -249,18 +278,16 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
 
       List<dynamic> data;
       if (query.isEmpty) {
-        data = await SupabaseService.client
-            .from('products')
-            .select(_productFields)
-            .order('created_at', ascending: false)
-            .range(0, _pageSize - 1);
+        data = await _stateFilter(
+          SupabaseService.client.from('products').select(_productFields),
+        ).order('created_at', ascending: false).range(0, _pageSize - 1);
       } else {
-        data = await SupabaseService.client
-            .from('products')
-            .select(_productFields)
-            .or('name.ilike.%$query%,description.ilike.%$query%')
-            .order('created_at', ascending: false)
-            .range(0, _pageSize - 1);
+        data = await _stateFilter(
+          SupabaseService.client
+              .from('products')
+              .select(_productFields)
+              .or('name.ilike.%$query%,description.ilike.%$query%'),
+        ).order('created_at', ascending: false).range(0, _pageSize - 1);
       }
 
       final products = (data as List).map((p) => Product.fromJson(p)).toList();
@@ -293,18 +320,16 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
 
       List<dynamic> data;
       if (query.isEmpty) {
-        data = await SupabaseService.client
-            .from('products')
-            .select(_productFields)
-            .order('created_at', ascending: false)
-            .range(from, to);
+        data = await _stateFilter(
+          SupabaseService.client.from('products').select(_productFields),
+        ).order('created_at', ascending: false).range(from, to);
       } else {
-        data = await SupabaseService.client
-            .from('products')
-            .select(_productFields)
-            .or('name.ilike.%$query%,description.ilike.%$query%')
-            .order('created_at', ascending: false)
-            .range(from, to);
+        data = await _stateFilter(
+          SupabaseService.client
+              .from('products')
+              .select(_productFields)
+              .or('name.ilike.%$query%,description.ilike.%$query%'),
+        ).order('created_at', ascending: false).range(from, to);
       }
 
       final newProducts = (data as List).map((p) => Product.fromJson(p)).toList();
@@ -327,12 +352,9 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
   Future<void> loadProductsByCategory(String category) async {
     emit(state.copyWith(isLoading: true));
     try {
-      final data = await SupabaseService.client
-          .from('products')
-          .select(_productFields)
-          .eq('category', category)
-          .order('created_at', ascending: false)
-          .range(0, _pageSize - 1);
+      final data = await _stateFilter(
+        SupabaseService.client.from('products').select(_productFields).eq('category', category),
+      ).order('created_at', ascending: false).range(0, _pageSize - 1);
 
       final products = (data as List).map((p) => Product.fromJson(p)).toList();
       final stores = await _loadStoresFromProducts(data, {});
@@ -358,12 +380,9 @@ class MarketplaceCubit extends Cubit<MarketplaceState> {
       final from = nextPage * _pageSize;
       final to = from + _pageSize - 1;
 
-      final data = await SupabaseService.client
-          .from('products')
-          .select(_productFields)
-          .eq('category', state.selectedCategory!)
-          .order('created_at', ascending: false)
-          .range(from, to);
+      final data = await _stateFilter(
+        SupabaseService.client.from('products').select(_productFields).eq('category', state.selectedCategory!),
+      ).order('created_at', ascending: false).range(from, to);
 
       final newProducts = (data as List).map((p) => Product.fromJson(p)).toList();
       final stores = await _loadStoresFromProducts(data, state.stores);
@@ -584,6 +603,10 @@ class MarketplaceState {
   final List<Product> storeProducts;
   final bool isLoadingStoreProducts;
 
+  /// When true, the buyer feed is restricted to vendors in the buyer's own
+  /// state (the "Show only my-state vendors" toggle). Off = all states.
+  final bool sameStateOnly;
+
   MarketplaceState({
     this.isLoading = false,
     this.isLoadingMore = false,
@@ -598,6 +621,7 @@ class MarketplaceState {
     this.buyerState,
     List<Product>? storeProducts,
     this.isLoadingStoreProducts = false,
+    this.sameStateOnly = false,
   })  : products = products ?? [],
         storeProducts = storeProducts ?? [];
 
@@ -615,6 +639,7 @@ class MarketplaceState {
     String? buyerState,
     List<Product>? storeProducts,
     bool? isLoadingStoreProducts,
+    bool? sameStateOnly,
     // Because copyWith uses `?? this`, passing selectedCategory: null can't
     // clear it. Set this to reset back to "All" (no category filter).
     bool clearSelectedCategory = false,
@@ -635,6 +660,7 @@ class MarketplaceState {
       buyerState: buyerState ?? this.buyerState,
       storeProducts: storeProducts ?? this.storeProducts,
       isLoadingStoreProducts: isLoadingStoreProducts ?? this.isLoadingStoreProducts,
+      sameStateOnly: sameStateOnly ?? this.sameStateOnly,
     );
   }
 }

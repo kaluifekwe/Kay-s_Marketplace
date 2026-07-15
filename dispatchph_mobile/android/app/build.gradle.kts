@@ -18,6 +18,16 @@ if (hasReleaseKeystore) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+// Google Maps SDK key, read from android/secrets.properties (git-ignored, never
+// committed). Injected into the manifest as ${MAPS_API_KEY}. Empty when absent
+// so local builds still compile (the map just renders blank without a key).
+val secretsProperties = Properties()
+val secretsPropertiesFile = rootProject.file("secrets.properties")
+if (secretsPropertiesFile.exists()) {
+    secretsProperties.load(FileInputStream(secretsPropertiesFile))
+}
+val mapsApiKey = (secretsProperties["MAPS_API_KEY"] as String?) ?: ""
+
 android {
     namespace = "com.example.dispatchph_mobile"
     compileSdk = flutter.compileSdkVersion
@@ -37,6 +47,7 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         multiDexEnabled = true
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
     }
 
     signingConfigs {

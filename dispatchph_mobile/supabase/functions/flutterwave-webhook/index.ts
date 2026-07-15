@@ -252,7 +252,12 @@ async function createOrdersFromCheckout(supabase: any, txRef: string, data: any)
     created.push({ id: orderId, vendorId: vo.vendor_id });
   }
 
-  try { await supabase.from("cart_items").delete().eq("buyer_id", buyer_id); } catch (_) { /* non-fatal */ }
+  // Clear only the items that were checked out (single-item "Buy Now" leaves
+  // the rest of the cart alone). A normal checkout clears everything — same as before.
+  try {
+    const boughtIds = [...new Set(enriched.flatMap((vo: any) => (vo.items || []).map((it: any) => it.product_id)).filter(Boolean))] as string[];
+    await supabase.from("cart_items").delete().eq("buyer_id", buyer_id).in("product_id", boughtIds);
+  } catch (_) { /* non-fatal */ }
   try {
     await fetch(`${supabaseUrl}/functions/v1/send-push`, {
       method: "POST",

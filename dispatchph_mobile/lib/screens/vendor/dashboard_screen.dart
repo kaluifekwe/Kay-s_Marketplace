@@ -6,6 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../core/services/error_text.dart';
 import '../settings/delete_account.dart';
+import '../settings/edit_profile_screen.dart';
+import '../settings/phone_prompt.dart';
 import '../auth/welcome_screen.dart';
 import '../../bloc_exports.dart';
 import '../../core/services/auth_service.dart';
@@ -42,11 +44,17 @@ class _VendorDashboardState extends State<VendorDashboard> {
   Store? _store;
   String _vendorName = 'Vendor';
   bool _balanceHidden = false;
+  // True when the vendor has no valid contact phone — couriers need it for
+  // pickup, so we nudge them to add one (missing phone caused a failed pickup).
+  bool _vendorNoPhone = false;
 
   @override
   void initState() {
     super.initState();
     _init();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) maybePromptForPhone(context);
+    });
   }
 
   Future<void> _init() async {
@@ -59,6 +67,11 @@ class _VendorDashboardState extends State<VendorDashboard> {
       context.read<MarketplaceCubit>().loadStoreProducts(_storeId);
     }
     final userId = await AuthService.getUserId();
+    final profile = await AuthService.loadProfile();
+    final phoneDigits = (profile['phone'] ?? '').replaceAll(RegExp(r'\D'), '');
+    if (mounted) {
+      setState(() => _vendorNoPhone = !(phoneDigits.length == 11 && phoneDigits.startsWith('0')));
+    }
     context.read<OrderCubit>().loadVendorOrders(userId);
     context.read<NotificationCubit>().loadNotifications(userId);
     context.read<WalletCubit>().load(userId);
@@ -136,6 +149,7 @@ class _VendorDashboardState extends State<VendorDashboard> {
                             padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
                             children: [
                               _buildWalletCard(context),
+                              _buildPhoneAlert(context),
                               _buildDisputeAlert(context),
                               const SizedBox(height: 16),
                               _buildStatsStrip(context, storeProducts),
@@ -404,6 +418,18 @@ class _VendorDashboardState extends State<VendorDashboard> {
             ),
             _buildMenuItem(
               context,
+              Icons.person_outline,
+              'Edit Profile',
+              () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const EditProfileScreen()),
+                );
+              },
+            ),
+            _buildMenuItem(
+              context,
               Icons.description_outlined,
               'Terms & Policy',
               () {
@@ -581,6 +607,45 @@ class _VendorDashboardState extends State<VendorDashboard> {
 
   // Time-sensitive alert: disputes waiting on the vendor's response or return
   // confirmation. Hidden when there's nothing to act on.
+  Widget _buildPhoneAlert(BuildContext context) {
+    if (!_vendorNoPhone) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Material(
+        color: AppColors.riderYellow.withAlpha(45),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () async {
+            await Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const EditProfileScreen()));
+            final profile = await AuthService.loadProfile();
+            final d = (profile['phone'] ?? '').replaceAll(RegExp(r'\D'), '');
+            if (mounted) {
+              setState(() => _vendorNoPhone = !(d.length == 11 && d.startsWith('0')));
+            }
+          },
+          child: const Padding(
+            padding: EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Icon(Icons.phone_missed, color: AppColors.errorRed),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Add your phone number so couriers can reach you for pickups. Tap to add it.',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+                Icon(Icons.chevron_right),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildDisputeAlert(BuildContext context) {
     return BlocBuilder<DisputeCubit, DisputeState>(
       builder: (context, state) {
@@ -852,7 +917,7 @@ class _VendorDashboardState extends State<VendorDashboard> {
                   ClipRRect(
                     borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
                     child: imageUrl != null
-                        ? AppImage(source: imageUrl, fit: BoxFit.cover)
+                        ? AppImage(source: imageUrl, fit: BoxFit.cover, thumbWidth: 400)
                         : Container(
                             color: AppColors.lightGray,
                             child: const Center(

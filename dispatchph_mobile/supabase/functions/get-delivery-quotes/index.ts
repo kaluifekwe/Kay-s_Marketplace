@@ -94,10 +94,22 @@ serve(async (req) => {
     const { data: vendorUser } = await supabase.from("users").select("name, email, phone").eq("id", vendor_id).maybeSingle();
     const { data: buyerUser } = await supabase.from("users").select("name, email, phone").eq("id", buyer_id).maybeSingle();
 
+    // A courier MUST have a reachable pickup + delivery number. Never substitute
+    // a placeholder — a fake number means the rider can't reach anyone (this is
+    // what caused the failed pickup). Bail out with a clear reason instead so the
+    // client can tell the right person to add their phone.
+    const phoneOk = (p?: string | null) => /^0\d{10}$/.test((p || "").replace(/\D/g, ""));
+    if (!phoneOk(vendorUser?.phone)) {
+      return json({ quote_id: null, couriers: [], reason: "vendor_no_phone" });
+    }
+    if (!phoneOk(buyerUser?.phone)) {
+      return json({ quote_id: null, couriers: [], reason: "buyer_no_phone" });
+    }
+
     const sender: Address = {
       name: vendorUser?.name || "Vendor",
       email: vendorUser?.email || "vendor@kaysmarketplace.ng",
-      phone: vendorUser?.phone || "08000000000",
+      phone: vendorUser!.phone as string,
       address: pickup.address,
       landmark: pickup.landmark,
       city: pickup.city,
@@ -108,7 +120,7 @@ serve(async (req) => {
     const receiver: Address = {
       name: buyerUser?.name || "Buyer",
       email: buyerUser?.email || "buyer@kaysmarketplace.ng",
-      phone: buyerUser?.phone || "08000000000",
+      phone: buyerUser!.phone as string,
       address: delivery_address,
       landmark: delivery_landmark,
       city: delivery_city,

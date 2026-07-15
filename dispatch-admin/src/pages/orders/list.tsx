@@ -2,10 +2,15 @@ import { List, useTable, ShowButton, DateField } from "@refinedev/antd";
 import { Table, Space, Tag } from "antd";
 import { naira, statusColor } from "../../format";
 
+// Embed buyer + store names so the list reads in plain language, not UUIDs.
+const ORDER_LIST_SELECT =
+  "*, buyer:users!orders_buyer_id_fkey(name), store:stores!orders_store_id_fkey(name)";
+
 export const OrderList = () => {
   const { tableProps } = useTable({
     syncWithLocation: true,
     sorters: { initial: [{ field: "created_at", order: "desc" }] },
+    meta: { select: ORDER_LIST_SELECT },
   });
 
   return (
@@ -19,6 +24,14 @@ export const OrderList = () => {
           )}
         />
         <Table.Column
+          title="Buyer"
+          render={(_, r: { buyer?: { name?: string } }) => r.buyer?.name ?? "—"}
+        />
+        <Table.Column
+          title="Store"
+          render={(_, r: { store?: { name?: string } }) => r.store?.name ?? "—"}
+        />
+        <Table.Column
           dataIndex="status"
           title="Status"
           render={(v: string) => <Tag color={statusColor(v)}>{v}</Tag>}
@@ -26,19 +39,13 @@ export const OrderList = () => {
         <Table.Column
           dataIndex="total_with_delivery"
           title="Total"
-          render={(v, record: { total?: number }) =>
-            naira(v ?? record?.total)
-          }
+          render={(v, r: { total?: number }) => naira(v ?? r?.total)}
         />
         <Table.Column
           dataIndex="payment_released"
           title="Escrow"
           render={(v: boolean) =>
-            v ? (
-              <Tag color="green">Released</Tag>
-            ) : (
-              <Tag color="blue">Held</Tag>
-            )
+            v ? <Tag color="green">Released</Tag> : <Tag color="blue">Held</Tag>
           }
         />
         <Table.Column

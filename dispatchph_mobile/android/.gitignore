@@ -12,3 +12,6 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Google Maps SDK key (see secrets.properties.example)
+secrets.properties

@@ -45,7 +45,11 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _checkAuth() async {
-    await Future.delayed(const Duration(seconds: 2));
+    // Brief brand moment only — enough for the logo to fade in, not a fixed
+    // stall. Auth/redirect then happens as fast as the session check allows.
+    // (Was a hard-coded 2s, which added 2s of dead time to every cold start —
+    // painful on the slow networks most buyers are on.)
+    await Future.delayed(const Duration(milliseconds: 500));
     if (!mounted) return;
 
     final session = SupabaseService.auth.currentSession;

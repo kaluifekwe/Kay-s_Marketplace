@@ -2,10 +2,14 @@ import { List, useTable, ShowButton, DateField } from "@refinedev/antd";
 import { Table, Space, Tag } from "antd";
 import { statusColor } from "../../format";
 
+const DISPUTE_LIST_SELECT =
+  "*, buyer:users!disputes_buyer_id_fkey(name), vendor:users!disputes_vendor_id_fkey(name)";
+
 export const DisputeList = () => {
   const { tableProps } = useTable({
     syncWithLocation: true,
     sorters: { initial: [{ field: "created_at", order: "desc" }] },
+    meta: { select: DISPUTE_LIST_SELECT },
   });
 
   return (
@@ -19,11 +23,12 @@ export const DisputeList = () => {
           )}
         />
         <Table.Column
-          dataIndex="order_id"
-          title="Order"
-          render={(v: string) => (
-            <span style={{ fontFamily: "monospace" }}>{v?.slice(0, 8)}</span>
-          )}
+          title="Buyer"
+          render={(_, r: { buyer?: { name?: string } }) => r.buyer?.name ?? "—"}
+        />
+        <Table.Column
+          title="Vendor"
+          render={(_, r: { vendor?: { name?: string } }) => r.vendor?.name ?? "—"}
         />
         <Table.Column
           dataIndex="status"
@@ -31,9 +36,9 @@ export const DisputeList = () => {
           render={(v: string) => <Tag color={statusColor(v)}>{v}</Tag>}
         />
         <Table.Column
-          dataIndex="reason"
-          title="Reason"
-          render={(v: string) => (v ? v : "—")}
+          dataIndex="issue_type"
+          title="Issue"
+          render={(v: string) => v ?? "—"}
         />
         <Table.Column
           dataIndex="created_at"

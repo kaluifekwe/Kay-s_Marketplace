@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/password_strength_indicator.dart';
+import '../../widgets/phone_input.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/store_service.dart';
@@ -23,6 +24,7 @@ class RegistrationScreen extends StatefulWidget {
 class _RegistrationScreenState extends State<RegistrationScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   final _addressController = TextEditingController();
@@ -39,6 +41,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   void dispose() {
     _nameController.dispose();
     _emailController.dispose();
+    _phoneController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     _addressController.dispose();
@@ -55,6 +58,10 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     }
     if (_emailController.text.trim().isEmpty || !_emailController.text.contains('@')) {
       _showError('Enter a valid email address');
+      return;
+    }
+    if (!PhoneInputField.isValid(_phoneController.text)) {
+      _showError('Enter a valid 11-digit phone number (e.g. 08012345678)');
       return;
     }
     if (!PasswordStrengthIndicator.isAcceptable(_passwordController.text)) {
@@ -84,6 +91,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
         password: _passwordController.text,
         name: _nameController.text.trim(),
         role: widget.userType,
+        phone: _phoneController.text.trim(),
         address: _addressController.text.trim().isEmpty
             ? null
             : _addressController.text.trim(),
@@ -264,6 +272,15 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                   labelText: 'Email address',
                   hintText: 'e.g., chibueze@email.com',
                 ),
+              ),
+              const SizedBox(height: 16),
+              const Text('Phone number', style: TextStyle(fontSize: 12, color: AppColors.mediumGray)),
+              const SizedBox(height: 4),
+              PhoneInputField(controller: _phoneController),
+              const SizedBox(height: 4),
+              Text(
+                'Couriers call this number for pickup & delivery.',
+                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
               ),
               const SizedBox(height: 16),
               TextField(

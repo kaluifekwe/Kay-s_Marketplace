@@ -350,7 +350,13 @@ serve(async (req) => {
       .update({ metadata: { funding_source: "wallet", order_ids: createdOrders.map((o) => o.id) } })
       .eq("reference", debitRef);
 
-    try { await supabase.from("cart_items").delete().eq("buyer_id", buyer_id); } catch (_) { /* non-fatal */ }
+    // Clear only the items that were actually checked out, so a single-item
+    // "Buy Now" doesn't wipe the rest of the buyer's cart. For a normal
+    // full-cart checkout this is every cart item — identical to before.
+    try {
+      const boughtIds = [...new Set(vendor_orders.flatMap((vo: any) => (vo.items || []).map((it: any) => it.product_id)).filter(Boolean))] as string[];
+      await supabase.from("cart_items").delete().eq("buyer_id", buyer_id).in("product_id", boughtIds);
+    } catch (_) { /* non-fatal */ }
     try {
       await fetch(`${supabaseUrl}/functions/v1/send-push`, {
         method: "POST",

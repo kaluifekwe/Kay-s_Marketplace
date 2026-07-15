@@ -17,6 +17,7 @@ import routerBindings, {
 import { App as AntdApp, ConfigProvider } from "antd";
 import { BrowserRouter, Outlet, Route, Routes } from "react-router-dom";
 import {
+  DashboardOutlined,
   ShoppingOutlined,
   TeamOutlined,
   WarningOutlined,
@@ -24,6 +25,7 @@ import {
 
 import { supabaseClient } from "./supabaseClient";
 import { authProvider } from "./authProvider";
+import { Dashboard } from "./pages/dashboard";
 import { UserList, UserShow } from "./pages/users";
 import { OrderList, OrderShow } from "./pages/orders";
 import { DisputeList, DisputeShow } from "./pages/disputes";
@@ -42,6 +44,11 @@ function App() {
             routerProvider={routerBindings}
             notificationProvider={useNotificationProvider}
             resources={[
+              {
+                name: "dashboard",
+                list: "/",
+                meta: { label: "Dashboard", icon: <DashboardOutlined /> },
+              },
               {
                 name: "orders",
                 list: "/orders",
@@ -87,7 +94,7 @@ function App() {
                   </Authenticated>
                 }
               >
-                <Route index element={<NavigateToResource resource="orders" />} />
+                <Route index element={<Dashboard />} />
                 <Route path="/orders">
                   <Route index element={<OrderList />} />
                   <Route path="show/:id" element={<OrderShow />} />
@@ -106,7 +113,7 @@ function App() {
               <Route
                 element={
                   <Authenticated key="auth-pages" fallback={<Outlet />}>
-                    <NavigateToResource resource="orders" />
+                    <NavigateToResource resource="dashboard" />
                   </Authenticated>
                 }
               >

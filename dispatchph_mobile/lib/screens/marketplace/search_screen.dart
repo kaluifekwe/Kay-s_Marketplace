@@ -24,7 +24,7 @@ Widget _productThumb(Product p, double size) {
       height: size,
       child: imgs.isEmpty
           ? fallback
-          : AppImage(source: imgs.first, width: size, height: size, fit: BoxFit.cover, errorWidget: fallback),
+          : AppImage(source: imgs.first, width: size, height: size, fit: BoxFit.cover, thumbWidth: 300, errorWidget: fallback),
     ),
   );
 }

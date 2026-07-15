@@ -20,7 +20,11 @@ import '../wallet/add_money_screen.dart';
 import 'flutterwave_checkout_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
-  const CheckoutScreen({super.key});
+  /// When set, check out ONLY this product (a single-product "Buy Now"),
+  /// leaving the buyer's other cart items untouched. Null = whole-cart checkout.
+  final String? onlyProductId;
+
+  const CheckoutScreen({super.key, this.onlyProductId});
 
   @override
   State<CheckoutScreen> createState() => _CheckoutScreenState();
@@ -55,6 +59,41 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   bool get _hasCourierDelivery => _storeCourier.values.any((c) => c != null);
 
+  // When onlyProductId is set (single-product "Buy Now"), the whole checkout —
+  // display, totals, delivery quotes, orders, and the post-payment cart clear —
+  // works on just that product's cart line, so the rest of the cart is left
+  // intact. Null = normal whole-cart checkout.
+  List<CartItem> _scopedItems(CartState s) => widget.onlyProductId == null
+      ? s.items
+      : s.items.where((i) => i.productId == widget.onlyProductId).toList();
+
+  double _scopedTotal(CartState s) {
+    if (widget.onlyProductId == null) return s.total;
+    double t = 0;
+    for (final i in _scopedItems(s)) {
+      final unit = i.variantPrice ?? s.productMap[i.productId]?.price ?? 0;
+      t += unit * i.quantity;
+    }
+    return t;
+  }
+
+  /// Clear only what was checked out: the whole cart normally, or just the
+  /// single "Buy Now" product's line when scoped.
+  Future<void> _clearCheckedOut() async {
+    if (widget.onlyProductId == null) {
+      await _clearCheckedOut();
+    } else {
+      final ids = context
+          .read<CartCubit>()
+          .state
+          .items
+          .where((i) => i.productId == widget.onlyProductId)
+          .map((i) => i.id)
+          .toList();
+      await context.read<CartCubit>().removeItems(ids, _buyerId);
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -66,7 +105,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   Future<void> _loadData() async {
     final cartState = context.read<CartCubit>().state;
-    final storeIds = cartState.items
+    final storeIds = _scopedItems(cartState)
         .map((i) => cartState.productMap[i.productId]?.storeId)
         .whereType<String>()
         .toSet();
@@ -96,7 +135,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         // A vendor's delivery policy is per-product, but for checkout purposes
         // we use the first item's policy from that store (vendors generally
         // apply one consistent policy across their catalog).
-        final firstItem = cartState.items.firstWhere(
+        final firstItem = _scopedItems(cartState).firstWhere(
           (i) => cartState.productMap[i.productId]?.storeId == storeId,
         );
         final deliveryType = cartState.productMap[firstItem.productId]?.deliveryType ?? 'courier';
@@ -216,7 +255,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     if (addr == null || _buyerId.isEmpty) return;
 
     final cartState = context.read<CartCubit>().state;
-    final storeIds = cartState.items
+    final storeIds = _scopedItems(cartState)
         .map((i) => cartState.productMap[i.productId]?.storeId)
         .whereType<String>()
         .toSet();
@@ -240,7 +279,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
     final cartState = context.read<CartCubit>().state;
     // Items for this store, in the shape get-delivery-quotes expects.
-    final items = cartState.items
+    final items = _scopedItems(cartState)
         .where((i) => cartState.productMap[i.productId]?.storeId == storeId)
         .map((i) {
       final p = cartState.productMap[i.productId];
@@ -360,12 +399,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       appBar: AppBar(title: const Text('Checkout')),
       body: BlocBuilder<CartCubit, CartState>(
         builder: (context, state) {
-          if (state.items.isEmpty) {
+          if (_scopedItems(state).isEmpty) {
             return const Center(child: Text('Cart is empty'));
           }
 
           final Map<String, List<CartItem>> storeGroups = {};
-          for (final item in state.items) {
+          for (final item in _scopedItems(state)) {
             final product = state.productMap[item.productId];
             if (product == null) continue;
             storeGroups.putIfAbsent(product.storeId, () => []).add(item);
@@ -374,7 +413,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           final totalDeliveryFee = storeGroups.keys.fold<double>(0, (sum, id) => sum + (_storeDeliveryFee[id] ?? 0));
           final totalVendorContribution =
               storeGroups.keys.fold<double>(0, (sum, id) => sum + (_storeDeliveryContribution[id] ?? 0));
-          final totalWithDelivery = state.total + totalDeliveryFee;
+          final totalWithDelivery = _scopedTotal(state) + totalDeliveryFee;
           // Gates the pay button: any store without an agreed delivery — including
           // while its quote is still loading — blocks checkout.
           final deliveryUnagreed = storeGroups.keys.any((id) => _storeDeliveryAgreed[id] != true);
@@ -486,7 +525,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 );
               }),
               const Divider(height: 32),
-              _summaryRow('Items subtotal', '\u20A6${format.format(state.total)}'),
+              _summaryRow('Items subtotal', '\u20A6${format.format(_scopedTotal(state))}'),
               ...storeGroups.keys.map((storeId) {
                 final type = _storeDeliveryType[storeId] ?? 'negotiate';
                 final storeName = _storeNames[storeId] ?? 'Store';
@@ -1059,7 +1098,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final Map<String, List<Map<String, dynamic>>> vendorItemGroups = {};
       final Map<String, String> vendorStoreMap = {};
 
-      for (final item in cartState.items) {
+      for (final item in _scopedItems(cartState)) {
         final product = cartState.productMap[item.productId];
         if (product == null) continue;
         final storeId = product.storeId;
@@ -1114,7 +1153,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       await CreditService.completeCreditOrder(buyerId: _buyerId, vendorOrders: vendorOrders);
 
       if (!mounted) return;
-      await context.read<CartCubit>().clearCart(_buyerId);
+      await _clearCheckedOut();
 
       showDialog(
         context: context,
@@ -1155,7 +1194,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final Map<String, List<Map<String, dynamic>>> vendorItemGroups = {};
     final Map<String, String> vendorStoreMap = {};
 
-    for (final item in cartState.items) {
+    for (final item in _scopedItems(cartState)) {
       final product = cartState.productMap[item.productId];
       if (product == null) continue;
       final storeId = product.storeId;
@@ -1293,7 +1332,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       );
 
       if (!mounted) return;
-      await context.read<CartCubit>().clearCart(_buyerId);
+      await _clearCheckedOut();
 
       showDialog(
         context: context,

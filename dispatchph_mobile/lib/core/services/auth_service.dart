@@ -27,6 +27,7 @@ class AuthService {
     required String password,
     required String name,
     required String role,
+    String? phone,
     String? storeId,
     String? address,
     String? state,
@@ -53,6 +54,12 @@ class AuthService {
         'role': role,
         'password': 'managed_by_supabase_auth',
       };
+      // Contact phone — the number couriers call for pickup/delivery. Without it
+      // a booking would fall back to a placeholder and the rider couldn't reach
+      // the user, so it's captured at signup.
+      if (phone != null && phone.trim().isNotEmpty) {
+        userData['phone'] = phone.trim();
+      }
       if (address != null && address.isNotEmpty) {
         userData['address'] = address;
       }
@@ -288,6 +295,44 @@ class AuthService {
   static Future<String> getStoreId() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString('auth_store_id') ?? '';
+  }
+
+  /// Current name + contact phone for the edit-profile screen.
+  static Future<Map<String, String>> loadProfile() async {
+    try {
+      final userId = await getUserId();
+      if (userId.isEmpty) return {'name': '', 'phone': ''};
+      final data = await SupabaseService.client
+          .from('users')
+          .select('name, phone')
+          .eq('id', userId)
+          .maybeSingle();
+      return {
+        'name': (data?['name'] as String?) ?? '',
+        'phone': (data?['phone'] as String?) ?? '',
+      };
+    } catch (e) {
+      print('[AuthService] loadProfile error: $e');
+      return {'name': '', 'phone': ''};
+    }
+  }
+
+  /// Save edited name + contact phone. Returns null on success, else a message.
+  static Future<String?> updateProfile({required String name, required String phone}) async {
+    try {
+      final userId = await getUserId();
+      if (userId.isEmpty) return 'You are not signed in.';
+      await SupabaseService.client.from('users').update({
+        'name': name.trim(),
+        'phone': phone.trim(),
+      }).eq('id', userId);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('auth_name', name.trim());
+      return null;
+    } catch (e) {
+      print('[AuthService] updateProfile error: $e');
+      return 'Could not save your changes. Please try again.';
+    }
   }
 
   static Future<void> updateLastActive() async {

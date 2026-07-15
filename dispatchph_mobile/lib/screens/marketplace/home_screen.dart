@@ -15,7 +15,6 @@ import '../../bloc_exports.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
 import 'search_screen.dart';
-import 'all_vendors_screen.dart';
 import 'my_stores_screen.dart';
 import 'product_detail_screen.dart';
 import 'vendor_store_screen.dart';
@@ -30,6 +29,8 @@ import 'my_rewards_screen.dart';
 import 'buyer_bank_account_screen.dart';
 import '../wallet/wallet_screen.dart';
 import '../delivery/buyer_addresses_screen.dart';
+import '../settings/edit_profile_screen.dart';
+import '../settings/phone_prompt.dart';
 import '../policy/policy_screen.dart';
 import '../../widgets/whatsapp_support_button.dart';
 import '../settings/delete_account.dart';
@@ -60,11 +61,11 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<MarketplaceCubit>().loadProducts();
+      _initMarketplace();
       _loadCart();
       _loadChats();
       _loadNotifications();
-      _loadBuyerState();
+      maybePromptForPhone(context);
       AuthService.updateLastActive();
       _heartbeat = Timer.periodic(const Duration(minutes: 1), (_) {
         AuthService.updateLastActive();
@@ -139,8 +140,18 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
     final prefs = await SharedPreferences.getInstance();
     final userId = prefs.getString('auth_user_id') ?? '';
     if (userId.isNotEmpty && mounted) {
-      context.read<MarketplaceCubit>().loadBuyerState(userId);
+      await context.read<MarketplaceCubit>().loadBuyerState(userId);
     }
+  }
+
+  /// Order matters: know the buyer's state and restore the saved "my-state only"
+  /// toggle before the first feed load, so the filter applies from the start.
+  Future<void> _initMarketplace() async {
+    await _loadBuyerState();
+    if (!mounted) return;
+    await context.read<MarketplaceCubit>().initSameStateFilter();
+    if (!mounted) return;
+    await context.read<MarketplaceCubit>().loadProducts();
   }
 
   @override
@@ -437,37 +448,41 @@ class _MarketplaceFeed extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           BlocBuilder<MarketplaceCubit, MarketplaceState>(
-            buildWhen: (prev, curr) => prev.buyerState != curr.buyerState,
+            buildWhen: (prev, curr) =>
+                prev.buyerState != curr.buyerState || prev.sameStateOnly != curr.sameStateOnly,
             builder: (context, state) {
               if (state.buyerState == null) return const SizedBox.shrink();
-              return InkWell(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AllVendorsScreen()),
-                ),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  color: AppColors.primaryGreen.withAlpha(20),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 18),
-                      const SizedBox(width: 6),
-                      Text(
-                        '${state.buyerState} Marketplace',
+              return Container(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+                color: AppColors.primaryGreen.withAlpha(20),
+                child: Row(
+                  children: [
+                    const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 18),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        state.sameStateOnly
+                            ? 'Showing ${state.buyerState} vendors only'
+                            : 'Showing all vendors',
                         style: const TextStyle(
                           color: AppColors.primaryGreen,
                           fontWeight: FontWeight.bold,
-                          fontSize: 14,
+                          fontSize: 13,
                         ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const Spacer(),
-                      const Text(
-                        'View all vendors',
-                        style: TextStyle(color: AppColors.primaryGreen, fontSize: 12, fontWeight: FontWeight.w600),
-                      ),
-                      const Icon(Icons.chevron_right, color: AppColors.primaryGreen, size: 18),
-                    ],
-                  ),
+                    ),
+                    Text(
+                      '${state.buyerState} only',
+                      style: const TextStyle(color: AppColors.primaryGreen, fontSize: 12),
+                    ),
+                    Switch(
+                      value: state.sameStateOnly,
+                      activeColor: AppColors.primaryGreen,
+                      onChanged: (v) => context.read<MarketplaceCubit>().setSameStateOnly(v),
+                    ),
+                  ],
                 ),
               );
             },
@@ -482,7 +497,7 @@ class _MarketplaceFeed extends StatelessWidget {
                       physics: const NeverScrollableScrollPhysics(),
                       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 2,
-                        childAspectRatio: 0.68,
+                        childAspectRatio: 0.62,
                         crossAxisSpacing: 10,
                         mainAxisSpacing: 10,
                       ),
@@ -569,7 +584,7 @@ class _MarketplaceFeed extends StatelessWidget {
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
                       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 2,
-                        childAspectRatio: 0.68,
+                        childAspectRatio: 0.62,
                         crossAxisSpacing: 10,
                         mainAxisSpacing: 10,
                       ),
@@ -714,21 +729,25 @@ class _ProductCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              flex: 4,
+              flex: 5,
               child: Stack(
                 children: [
                   Container(
                     width: double.infinity,
                     decoration: const BoxDecoration(
-                      color: AppColors.lightGray,
+                      color: Colors.white,
                       borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
                     ),
-                    child: ClipRRect(
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                    // Consistent padding so every product "floats" on white the
+                    // same way (a clean catalog look), regardless of the photo's
+                    // own shape or background.
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
                       child: hasImages
                           ? AppImage(
                               source: images.first.toString(),
-                              fit: BoxFit.cover,
+                              fit: BoxFit.contain,
+                              thumbWidth: 600,
                             )
                           : const Center(
                               child: Icon(Icons.image_outlined, size: 40, color: AppColors.mediumGray),
@@ -1083,6 +1102,9 @@ class ProfileTab extends StatelessWidget {
                 ),
                 const SizedBox(height: 22),
                 card([
+                  tile(Icons.person_outline, 'Edit Profile',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfileScreen()))),
+                  divider,
                   tile(Icons.account_balance_wallet_outlined, 'Wallet',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()))),
                   divider,

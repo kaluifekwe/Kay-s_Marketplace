@@ -384,8 +384,12 @@ serve(async (req) => {
       console.error("Failed to push buyer:", pushErr);
     }
 
+    // Clear only the items actually checked out (so a single-item "Buy Now"
+    // leaves the rest of the cart intact). Full-cart checkout clears all — same
+    // as before.
     try {
-      await supabase.from("cart_items").delete().eq("buyer_id", buyer_id);
+      const boughtIds = [...new Set(vendor_orders.flatMap((vo: any) => (vo.items || []).map((it: any) => it.product_id)).filter(Boolean))] as string[];
+      await supabase.from("cart_items").delete().eq("buyer_id", buyer_id).in("product_id", boughtIds);
     } catch (cartErr) {
       console.error("Failed to clear cart:", cartErr);
     }

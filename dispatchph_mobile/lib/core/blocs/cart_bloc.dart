@@ -95,6 +95,21 @@ class CartCubit extends Cubit<CartState> {
     }
   }
 
+  /// Delete a specific set of cart items in one round-trip (multi-select
+  /// delete on the cart screen).
+  Future<void> removeItems(List<String> cartItemIds, String buyerId) async {
+    if (cartItemIds.isEmpty) return;
+    try {
+      await SupabaseService.client
+          .from('cart_items')
+          .delete()
+          .inFilter('id', cartItemIds);
+      await loadCart(buyerId);
+    } catch (e) {
+      print('[CartCubit] removeItems error: $e');
+    }
+  }
+
   Future<void> clearCart(String buyerId) async {
     try {
       await SupabaseService.client

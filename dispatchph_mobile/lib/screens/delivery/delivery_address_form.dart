@@ -24,8 +24,8 @@ class DeliveryAddressResult {
 }
 
 /// Shared bottom-sheet form for adding a pickup location (vendor) or delivery
-/// address (buyer). The street address + coordinates are picked on the existing
-/// OpenStreetMap [LocationPickerScreen]; landmark is required for NG addresses.
+/// address (buyer). The street address + coordinates are picked on the Google
+/// Maps [LocationPickerScreen]; landmark is required for NG addresses.
 class DeliveryAddressForm extends StatefulWidget {
   final String title;
   final List<String> labelOptions;
@@ -70,6 +70,7 @@ class _DeliveryAddressFormState extends State<DeliveryAddressForm> {
           initialAddress: _addressController.text.isEmpty ? null : _addressController.text,
           initialLat: _lat,
           initialLng: _lng,
+          city: _city,
         ),
       ),
     );

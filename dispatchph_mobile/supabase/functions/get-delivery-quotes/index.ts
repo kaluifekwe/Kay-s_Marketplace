@@ -189,6 +189,20 @@ serve(async (req) => {
       return json({ quote_id: null, couriers: [], reason });
     }
 
+    // Courier APIs quote only the carrier's shipping cost. The aggregator (e.g.
+    // Terminal) adds its OWN service charge (~₦300) when the platform actually
+    // books — that isn't in the quote, so without this the platform ate it on
+    // every delivery. Add a % buffer so the buyer's delivery fee covers it. It's
+    // a percentage (scales with shipping) and configurable via the
+    // DELIVERY_FEE_MARKUP_PCT secret (default 20). This marked-up fee is what's
+    // stored, shown, paid, and later read by book-delivery as buyer_charged.
+    const feeMarkupPct = Number(Deno.env.get("DELIVERY_FEE_MARKUP_PCT") ?? "20");
+    if (feeMarkupPct > 0) {
+      for (const c of couriers) {
+        c.fee = Math.ceil(Number(c.fee) * (1 + feeMarkupPct / 100));
+      }
+    }
+
     const { data: quote, error: quoteError } = await supabase
       .from("delivery_quotes")
       .insert({

@@ -1,11 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA"/>
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Gallery-save permissions (WRITE_EXTERNAL_STORAGE maxSdkVersion 29, etc.)
+    <!-- Deliberately NO READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_EXTERNAL_STORAGE.
+         Every image/video path here is image_picker (pickImage/pickMultiImage/
+         pickVideo), which uses the Android Photo Picker — the user hands us one
+         file and no permission is required. Google's Photo and Video Permissions
+         policy only allows those permissions when BROAD library access is core
+         functionality, which this app does not need; requesting them would force
+         a declaration we'd fail. Don't re-add them to "fix" a picker bug.
+         Gallery-save permissions (WRITE_EXTERNAL_STORAGE maxSdkVersion 29, etc.)
          are contributed by the gal plugin's own manifest. -->
     <application
         android:label="Kay&#39;s Market"

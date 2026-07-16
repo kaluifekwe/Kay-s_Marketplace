@@ -381,12 +381,22 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: OutlinedButton.icon(
+                    child: OutlinedButton(
                       onPressed: () => _contactVendor(context),
-                      icon: const Icon(Icons.chat),
-                      label: const Text('Contact'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.primaryGreen,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                      child: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.chat, size: 18),
+                            SizedBox(width: 6),
+                            Text('Chat with Vendor'),
+                          ],
+                        ),
                       ),
                     ),
                   ),

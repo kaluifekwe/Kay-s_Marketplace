@@ -140,20 +140,11 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     await supabase.from("orders").update({ status: "in_transit" }).eq("id", delivery.order_id);
   } else if ((status === "cancelled" || status === "failed") && !delivery.picked_up_at) {
     // Delivery didn't happen and the item was never collected — the buyer paid
-    // but got nothing. 1) Charge the vendor the wasted courier fee the platform
-    // already paid (netted off their next payout). 2) Auto-refund the buyer in
-    // full to their wallet via process-refund (service-role, idempotent).
-    // 3) Notify both parties. (Fixes the "cancelled = silent + stuck" gap.)
-    await supabase.from("vendor_charges").upsert(
-      {
-        vendor_id: delivery.vendor_id,
-        order_id: delivery.order_id,
-        amount: delivery.shipbubble_fee ?? delivery.buyer_charged ?? 0,
-        reason: status === "cancelled" ? "cancelled_pickup" : "failed_pickup",
-        status: "pending",
-      },
-      { onConflict: "order_id,reason", ignoreDuplicates: true },
-    );
+    // but got nothing. Auto-refund the buyer in full to their wallet via
+    // process-refund (idempotent) and notify both. We deliberately DON'T charge
+    // the vendor: Terminal refunds the platform the delivery fee on a no-show, so
+    // charging the vendor too would double-recover — and it's uncollectable from
+    // a first-time vendor who never sells again (no future payout to net against).
     let refunded = false;
     try {
       const r = await fetch(`${supabaseUrl}/functions/v1/process-refund`, {
@@ -181,7 +172,7 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     await sendPush(
       delivery.vendor_id,
       "❌ Pickup Cancelled",
-      "The courier couldn't collect this order, so the buyer was refunded. The courier fee will be netted off your next payout.",
+      "The courier couldn't collect this order, so it was cancelled and the buyer was refunded.",
       { type: "delivery_update", status, order_id: delivery.order_id, screen: "vendor_orders" },
     );
     return;

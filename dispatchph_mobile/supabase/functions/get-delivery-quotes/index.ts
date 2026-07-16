@@ -208,6 +208,14 @@ serve(async (req) => {
       const base = Number(c.fee);
       const buffer = Math.max(base * (feeMarkupPct / 100), feeMarkupFloor);
       c.fee = Math.ceil(base + buffer);
+      // The raw provider price is not persisted anywhere, so without this line
+      // there is no way to audit whether the buffer actually fired (a stored fee
+      // is indistinguishable from an un-marked-up one). Logged, not stored:
+      // delivery_quotes is buyer-readable and this reveals our margin.
+      console.log(
+        `fee-buffer ${c.provider}/${c.name}: raw=${base} buffer=${Math.ceil(buffer)} ` +
+        `charged=${c.fee} (pct=${feeMarkupPct} floor=${feeMarkupFloor} rule=${base * (feeMarkupPct / 100) >= feeMarkupFloor ? "pct" : "floor"})`,
+      );
     }
 
     const { data: quote, error: quoteError } = await supabase

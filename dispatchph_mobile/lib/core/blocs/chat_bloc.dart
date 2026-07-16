@@ -160,23 +160,20 @@ class ChatCubit extends Cubit<ChatState> {
   Future<void> openChat(String orderId, String buyerId, String vendorId, {String? currentUserId}) async {
     final sw = Stopwatch()..start();
     try {
-      var chatData = await SupabaseService.client
+      // A conversation is identified by the (buyer, vendor) pair; order_id only
+      // records where it started. NEVER look up by order_id: a 'product_<id>'
+      // order_id is shared by every buyer who chats about that product, so
+      // maybeSingle() threw on the second one and the exception aborted openChat
+      // before markChatRead could run — which is why those vendors' unread
+      // badges never cleared. chats_buyer_vendor_uniq guarantees one row here.
+      final existingChats = await SupabaseService.client
           .from('chats')
           .select('id, order_id, buyer_id, vendor_id, created_at')
-          .eq('order_id', orderId)
-          .maybeSingle();
-
-      // Fallback: find any existing chat between this buyer and vendor
-      if (chatData == null) {
-        final existingChats = await SupabaseService.client
-            .from('chats')
-            .select('id, order_id, buyer_id, vendor_id, created_at')
-            .eq('buyer_id', buyerId)
-            .eq('vendor_id', vendorId);
-        if ((existingChats as List).isNotEmpty) {
-          chatData = existingChats[0];
-        }
-      }
+          .eq('buyer_id', buyerId)
+          .eq('vendor_id', vendorId)
+          .order('created_at', ascending: true)
+          .limit(1);
+      dynamic chatData = (existingChats as List).isEmpty ? null : existingChats.first;
 
       if (chatData == null) {
         final chatId = _escrow.generateChatId();

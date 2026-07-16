@@ -1,7 +1,15 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- A dependency contributes READ_EXTERNAL_STORAGE with no maxSdkVersion, which
+         would request broad storage on modern Android too. Android 13+ replaced it
+         with the READ_MEDIA_* permissions we deliberately don't request (see below),
+         so cap it at 32 and let tools:replace beat the library's unbounded value. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"
+        tools:replace="android:maxSdkVersion"/>
     <!-- Deliberately NO READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_EXTERNAL_STORAGE.
          Every image/video path here is image_picker (pickImage/pickMultiImage/
          pickVideo), which uses the Android Photo Picker — the user hands us one

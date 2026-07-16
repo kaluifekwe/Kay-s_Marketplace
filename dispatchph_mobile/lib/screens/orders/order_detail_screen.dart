@@ -27,6 +27,8 @@ String orderStatusLabel(String status) {
     case 'refund_requested': return 'Refund Requested';
     case 'refunded': return 'Refunded';
     case 'auto_released': return 'Auto-Released to Vendor';
+    case 'delivery_failed': return 'Delivery Failed — Report to Refund';
+    case 'in_transit': return 'On the way to you';
     default: return status;
   }
 }
@@ -404,6 +406,33 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                     ],
                     if (order.status == 'refund_requested')
                       _InfoRow(icon: Icons.report_problem, text: 'Refund requested — vendor will review'),
+                    if (order.status == 'delivery_failed' && order.buyerId == _currentUserId) ...[
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.errorRed.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          "The rider couldn't complete your delivery, so the item is being returned to the vendor. "
+                          "Report the issue to get your item refund (the delivery fee isn't refundable).",
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () => _requestRefund(context, order),
+                          icon: const Icon(Icons.report_problem),
+                          label: const Text('Report Issue'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.errorRed,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
                     if (_disputeId != null && order.status != 'refunded' && order.status != 'cancelled') ...[
                       const SizedBox(height: 8),
                       Row(
@@ -625,6 +654,7 @@ class _StatusBanner extends StatelessWidget {
         return AppColors.mediumGray;
       case 'refund_requested':
       case 'refunded':
+      case 'delivery_failed':
         return AppColors.errorRed;
       case 'auto_released':
         return AppColors.escrowBlue;
@@ -645,6 +675,7 @@ class _StatusBanner extends StatelessWidget {
         return Icons.cancel;
       case 'refund_requested':
       case 'refunded':
+      case 'delivery_failed':
         return Icons.money_off;
       case 'auto_released':
         return Icons.timer;

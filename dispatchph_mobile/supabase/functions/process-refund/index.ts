@@ -107,8 +107,8 @@ serve(async (req) => {
     // funded by the platform (no clawback) — consistent with the no-commission
     // launch model where the platform absorbs early dispute costs.
     const refundableStatuses = dispute_id
-      ? ["paid", "shipped", "refund_requested", "confirmed", "auto_released"]
-      : ["paid", "shipped", "refund_requested"];
+      ? ["paid", "shipped", "refund_requested", "confirmed", "auto_released", "delivery_failed"]
+      : ["paid", "shipped", "refund_requested", "delivery_failed"];
     if (!refundableStatuses.includes(order.status)) {
       return new Response(
         JSON.stringify({ error: `Cannot refund order with status: ${order.status}` }),
@@ -176,9 +176,23 @@ serve(async (req) => {
     // value only, not the delivery fee. Before delivery (incl. "not received"),
     // or for vendor-handled delivery, the full amount is refundable.
     const courierDelivered = order.delivery_type === "courier" && order.delivered_at != null;
+    // A courier that PICKED UP but then failed to deliver (e.g. buyer unreachable)
+    // still spent the fee + return trip — so the buyer's refund is item-value
+    // only, delivery forfeited, exactly like a delivered courier order. Checked
+    // from the delivery row so it survives the order status changing to
+    // refund_requested when the buyer reports the issue.
+    let deliveryAttempted = false;
+    if (order.delivery_type === "courier" && !courierDelivered) {
+      const { data: del } = await supabase
+        .from("deliveries")
+        .select("picked_up_at, status")
+        .eq("order_id", order_id)
+        .maybeSingle();
+      deliveryAttempted = !!del?.picked_up_at && ["failed", "cancelled"].includes(del?.status);
+    }
     const orderPaid = Number(order.total_with_delivery ?? order.total) || 0;
     const itemSubtotal = Number(order.total) || 0;
-    const refundAmount = courierDelivered
+    const refundAmount = (courierDelivered || deliveryAttempted)
       ? itemSubtotal
       : (tx ? Number(tx.amount) : orderPaid);
     // Refunds now default to the buyer's WALLET. card/bank/credit remain

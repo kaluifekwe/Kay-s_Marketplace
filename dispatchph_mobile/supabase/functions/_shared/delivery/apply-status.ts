@@ -12,6 +12,22 @@ import type { DeliveryStatus, WebhookEvent } from "./types.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const resendKey = Deno.env.get("RESEND_API_KEY") ?? "";
+const fromEmail = Deno.env.get("OTP_FROM_EMAIL") ?? "Kay's Market <onboarding@resend.dev>";
+
+// Transactional email via Resend (same setup as the OTP/password emails).
+async function sendEmail(to: string | null | undefined, subject: string, html: string) {
+  if (!to || !resendKey) return;
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: fromEmail, to: [to], subject, html }),
+    });
+  } catch (e) {
+    console.error("apply-status sendEmail failed:", e);
+  }
+}
 
 export function makeClient() {
   return createClient(supabaseUrl, supabaseServiceKey);
@@ -170,19 +186,42 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     );
     return;
   } else if (status === "cancelled" || status === "failed") {
-    // Cancelled/failed AFTER pickup — the item is already with the courier, so we
-    // do NOT auto-refund; notify both and leave it for support/dispute review.
+    // Cancelled/failed AFTER pickup — the item was already collected, so we don't
+    // auto-refund. Move the order to 'delivery_failed' (no vendor auto-payout) so
+    // the buyer's order screen shows a "Report Issue" path into the dispute/refund
+    // flow (which refunds item-only), and notify both by push AND email.
+    await supabase
+      .from("orders")
+      .update({ status: "delivery_failed", auto_release_at: null })
+      .eq("id", delivery.order_id);
+
+    const { data: parties } = await supabase
+      .from("users")
+      .select("id, email")
+      .in("id", [delivery.buyer_id, delivery.vendor_id]);
+    const emailOf = (uid: string) => (parties || []).find((u: any) => u.id === uid)?.email as string | undefined;
+
     await sendPush(
       delivery.buyer_id,
-      "⚠️ Delivery Issue",
-      "There's a problem with your delivery after pickup. Our team is looking into it — you can also report an issue from the order.",
+      "⚠️ Delivery Couldn't Be Completed",
+      "The rider couldn't deliver your order. Open the order and tap Report Issue to get your refund.",
       { type: "delivery_update", status, order_id: delivery.order_id, delivery_id: delivery.id, screen: "order_tracking" },
+    );
+    await sendEmail(
+      emailOf(delivery.buyer_id),
+      "Your Kay's Market delivery couldn't be completed",
+      "<p>Hi,</p><p>Unfortunately the rider couldn't complete the delivery of your order, and it is being returned. Please open the order in the Kay's Market app and tap <b>Report Issue</b> to request your refund.</p><p>— Kay's Market</p>",
     );
     await sendPush(
       delivery.vendor_id,
-      "⚠️ Delivery Problem After Pickup",
-      "A delivery was cancelled or failed after pickup. Kay's support is reviewing it.",
+      "⚠️ Delivery Failed — Item Returning",
+      "A delivery couldn't be completed and the item is being returned to you. The buyer's item payment will be refunded.",
       { type: "delivery_update", status, order_id: delivery.order_id, screen: "vendor_orders" },
+    );
+    await sendEmail(
+      emailOf(delivery.vendor_id),
+      "A Kay's Market delivery couldn't be completed",
+      "<p>Hi,</p><p>A courier delivery for one of your orders couldn't be completed and the item is being returned to you. The buyer will be refunded the item value (the delivery fee is not refunded).</p><p>— Kay's Market</p>",
     );
     return;
   }

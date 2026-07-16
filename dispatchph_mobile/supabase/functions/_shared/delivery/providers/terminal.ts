@@ -251,8 +251,21 @@ export const terminal: DeliveryProvider = {
       "shipment.delivered": "delivered",
       "cancelled": "cancelled",
       "shipment.cancelled": "cancelled",
+      "rejected": "cancelled",
+      "shipment.rejected": "cancelled",
+      "failed": "failed",
+      "shipment.failed": "failed",
+      "returned": "failed",
+      "shipment.returned": "failed",
+      "pickup-failed": "failed",
     };
-    const status = map[raw] ?? "in_transit";
+    // Don't fabricate an "in_transit" from an unknown status — that would wrongly
+    // advance an order (e.g. a "rejected" cancel). Skip what we don't recognise.
+    const status = map[raw];
+    if (!status) {
+      console.warn(`terminal parseWebhook: unmapped status "${raw}"`);
+      return null;
+    }
     return { providerOrderId, status, courierName: d.carrier?.name };
   },
 };

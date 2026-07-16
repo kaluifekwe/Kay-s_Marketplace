@@ -33,7 +33,16 @@ const STATUS_MAP: Record<string, DeliveryStatus> = {
   "delivered": "delivered",
   "shipment.delivered": "delivered",
   "cancelled": "cancelled",
+  "shipment.cancelled": "cancelled",
+  // Terminal uses "rejected" when a pickup is refused (e.g. vendor unavailable) —
+  // treat it as a cancellation so the buyer is refunded + everyone notified.
+  "rejected": "cancelled",
+  "shipment.rejected": "cancelled",
   "failed": "failed",
+  "shipment.failed": "failed",
+  "returned": "failed",
+  "shipment.returned": "failed",
+  "pickup-failed": "failed",
 };
 
 serve(async (req) => {
@@ -68,7 +77,12 @@ serve(async (req) => {
       }
       const raw = String(body?.data?.status ?? "").toLowerCase();
       const mapped = STATUS_MAP[raw];
-      if (!mapped) continue;          // draft / not-yet-actionable
+      if (!mapped) {
+        // Surface unknown statuses instead of silently skipping (this is exactly
+        // how the "rejected" cancel went undetected before).
+        if (raw && raw !== "draft") console.warn(`poll-terminal: unmapped Terminal status "${raw}" for delivery ${d.id}`);
+        continue;
+      }
       if (mapped === d.status) continue; // no change since last poll
 
       const ev: WebhookEvent = {

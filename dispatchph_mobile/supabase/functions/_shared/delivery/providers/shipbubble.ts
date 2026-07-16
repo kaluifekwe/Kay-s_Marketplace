@@ -199,12 +199,24 @@ export const shipbubble: DeliveryProvider = {
       picked_up: "picked_up",
       in_transit: "in_transit",
       delivered: "delivered",
+      completed: "delivered",
       failed: "failed",
       cancelled: "cancelled",
+      rejected: "cancelled",
+      returned: "failed",
+      delivery_failed: "failed",
+      pickup_failed: "failed",
     };
+    // Don't fabricate an "in_transit" from an unknown status (that would wrongly
+    // advance an order — e.g. a "rejected"/"returned" cancel). Skip + log unknowns.
+    const status = map[(p.status ?? "").toLowerCase()];
+    if (!status) {
+      console.warn(`shipbubble parseWebhook: unmapped status "${p.status}"`);
+      return null;
+    }
     return {
       providerOrderId: p.order_id,
-      status: map[p.status ?? ""] ?? "in_transit",
+      status,
       courierName: p.courier?.name,
       courierPhone: p.courier?.phone,
     };

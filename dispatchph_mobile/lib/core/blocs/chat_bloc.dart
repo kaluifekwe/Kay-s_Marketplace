@@ -180,27 +180,39 @@ class ChatCubit extends Cubit<ChatState> {
 
       if (chatData == null) {
         final chatId = _escrow.generateChatId();
-        final insertResult = await SupabaseService.client.from('chats').insert({
-          'id': chatId,
-          'order_id': orderId,
-          'buyer_id': buyerId,
-          'vendor_id': vendorId,
-        }).select('id').maybeSingle();
-
-        if (insertResult == null) {
-          print('[ChatCubit] Chat insert failed (RLS?), trying select again...');
+        try {
+          await SupabaseService.client.from('chats').insert({
+            'id': chatId,
+            'order_id': orderId,
+            'buyer_id': buyerId,
+            'vendor_id': vendorId,
+          });
+        } catch (e) {
+          // Losing a race here is normal, not fatal: the lookup above and this
+          // insert aren't atomic, so a concurrent openChat (double tap, or a push
+          // opening the chat while the list loads) can create this pair's row
+          // first. chats_buyer_vendor_uniq then makes our insert a unique
+          // violation instead of a duplicate row. Fall through and adopt theirs.
+          print('[ChatCubit] chat insert did not land (likely concurrent create): $e');
         }
 
-        chatData = await SupabaseService.client
+        // Re-read by the PAIR, never by order_id: if another call won the race,
+        // its row carries ITS order_id (e.g. 'product_x' vs a real order id), so
+        // an order_id lookup finds nothing and strands the user on a chat that
+        // never opens.
+        final rows = await SupabaseService.client
             .from('chats')
             .select('id, order_id, buyer_id, vendor_id, created_at')
-            .eq('order_id', orderId)
-            .maybeSingle();
+            .eq('buyer_id', buyerId)
+            .eq('vendor_id', vendorId)
+            .order('created_at', ascending: true)
+            .limit(1);
 
-        if (chatData == null) {
-          print('[ChatCubit] ERROR: Could not find or create chat for orderId=$orderId');
+        if ((rows as List).isEmpty) {
+          print('[ChatCubit] ERROR: Could not find or create chat for buyer=$buyerId vendor=$vendorId');
           return;
         }
+        chatData = rows.first;
       }
 
       final chat = Chat.fromJson(chatData);

@@ -192,15 +192,22 @@ serve(async (req) => {
     // Courier APIs quote only the carrier's shipping cost. The aggregator (e.g.
     // Terminal) adds its OWN service charge (~₦300) when the platform actually
     // books — that isn't in the quote, so without this the platform ate it on
-    // every delivery. Add a % buffer so the buyer's delivery fee covers it. It's
-    // a percentage (scales with shipping) and configurable via the
-    // DELIVERY_FEE_MARKUP_PCT secret (default 20). This marked-up fee is what's
+    // every delivery. Add a buffer so the buyer's delivery fee covers it:
+    //   • a PERCENT of shipping (scales with distance), and
+    //   • a fixed FLOOR, because on a cheap quote the percent alone can fall
+    //     UNDER the aggregator's roughly-flat ~₦300 charge (e.g. 20% of ₦1,000
+    //     = ₦200 < ₦300, leaving the platform to eat the gap).
+    // The buffer added = max(percent-of-fee, floor). Both configurable:
+    //   DELIVERY_FEE_MARKUP_PCT   (default 20)
+    //   DELIVERY_FEE_MARKUP_FLOOR (default 300, in naira)
+    // Set both to 0 to disable the buffer entirely. This marked-up fee is what's
     // stored, shown, paid, and later read by book-delivery as buyer_charged.
     const feeMarkupPct = Number(Deno.env.get("DELIVERY_FEE_MARKUP_PCT") ?? "20");
-    if (feeMarkupPct > 0) {
-      for (const c of couriers) {
-        c.fee = Math.ceil(Number(c.fee) * (1 + feeMarkupPct / 100));
-      }
+    const feeMarkupFloor = Number(Deno.env.get("DELIVERY_FEE_MARKUP_FLOOR") ?? "300");
+    for (const c of couriers) {
+      const base = Number(c.fee);
+      const buffer = Math.max(base * (feeMarkupPct / 100), feeMarkupFloor);
+      c.fee = Math.ceil(base + buffer);
     }
 
     const { data: quote, error: quoteError } = await supabase

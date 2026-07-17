@@ -164,8 +164,11 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     await sendPush(
       delivery.buyer_id,
       "❌ Delivery Cancelled",
+      // Don't name the destination: process-refund routes a credit-funded order
+      // back to Kay's Credit, not the wallet, so "refunded to your wallet" would
+      // be wrong for those.
       refunded
-        ? "The courier couldn't pick up your order, so you've been fully refunded to your wallet."
+        ? "The courier couldn't pick up your order, so you've been fully refunded."
         : "There was a problem picking up your order. We're sorting your refund — contact support if it isn't resolved shortly.",
       { type: "delivery_update", status, order_id: delivery.order_id, delivery_id: delivery.id, screen: "order_tracking" },
     );

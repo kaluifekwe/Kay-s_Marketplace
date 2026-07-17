@@ -195,24 +195,58 @@ serve(async (req) => {
     const refundAmount = (courierDelivered || deliveryAttempted)
       ? itemSubtotal
       : (tx ? Number(tx.amount) : orderPaid);
-    // Refunds now default to the buyer's WALLET. card/bank/credit remain
-    // available when explicitly requested (e.g. legacy card-paid orders).
-    const method = refund_method || "wallet";
+    // Refund to the SOURCE the order was funded from.
+    //
+    // A credit-funded order MUST refund to kays_credit and never to the wallet.
+    // The wallet is withdrawable to a real bank account (wallet-withdraw), while
+    // Kay's Credit is spend-only — so sending a credit-funded refund to the wallet
+    // converts platform-funded credit into cash: sign up -> ₦200 welcome credit
+    // (grant_welcome_credit) -> buy with credit (complete-credit-order funds it
+    // from our own balance) -> refund -> withdraw. Free money, and the delivery
+    // auto-refund in _shared/delivery/apply-status.ts triggers it with no human
+    // involved. complete-credit-order records the source on the payment
+    // transaction; payment_reference ('credit_…') covers rows whose tx is missing.
+    //
+    // Credit orders are all-or-nothing (complete-credit-order rejects partial
+    // credit + card), so a single source per order is sound today. Revisit if
+    // split payments land.
+    let fundingSource: string | null = null;
+    try {
+      const rawMeta = (tx as any)?.metadata;
+      const meta = typeof rawMeta === "string" ? JSON.parse(rawMeta) : rawMeta;
+      fundingSource = meta?.funding_source ?? null;
+    } catch {
+      // Malformed metadata must never block a refund — fall back to the reference.
+    }
+    const creditFunded = fundingSource === "kays_credit" ||
+      String(order.payment_reference ?? "").startsWith("credit_");
+
+    // Caller's choice is honoured only for non-credit orders.
+    const method = creditFunded ? "credit" : (refund_method || "wallet");
+    if (creditFunded && refund_method && refund_method !== "credit") {
+      console.log(`process-refund: order ${order_id} was credit-funded; forcing refund to credit (requested '${refund_method}')`);
+    }
     let refundReference = "";
 
     if (method === "credit") {
-      // Add to kays_credit instantly
-      const { data: user } = await supabase
-        .from("users")
-        .select("kays_credit")
-        .eq("id", order.buyer_id)
-        .maybeSingle();
-
-      const currentCredit = user?.kays_credit || 0;
-      await supabase
-        .from("users")
-        .update({ kays_credit: currentCredit + refundAmount })
-        .eq("id", order.buyer_id);
+      // Atomic increment, not read-then-update: a cashback grant landing between
+      // the read and the write would be silently overwritten. (Concurrent refunds
+      // of the SAME order are already prevented by the refund_processing claim
+      // above; this guards against any OTHER writer of kays_credit.)
+      const { error: creditErr } = await supabase.rpc("increment_kays_credit", {
+        p_user_id: order.buyer_id,
+        p_amount: refundAmount,
+      });
+      if (creditErr) {
+        console.error("process-refund increment_kays_credit error:", creditErr);
+        // Release the claim so the buyer can retry instead of being stuck in
+        // refund_processing with no money back.
+        await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
+        return new Response(
+          JSON.stringify({ error: "Failed to credit refund" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
 
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 90);

@@ -11,6 +11,7 @@ import '../../core/services/store_service.dart';
 import '../../core/constants/nigerian_states.dart';
 import 'home_router.dart';
 import 'email_otp_screen.dart';
+import 'forgot_password_screen.dart';
 
 class RegistrationScreen extends StatefulWidget {
   final String userType;
@@ -135,7 +136,11 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
         }
         // Genuinely taken by someone else (wrong password) or another error.
         setState(() => _isLoading = false);
-        _showError(regError);
+        if (regError.toLowerCase().contains('already registered')) {
+          _showAlreadyRegistered(regError, _emailController.text.trim());
+        } else {
+          _showError(regError);
+        }
         return;
       }
 
@@ -218,6 +223,27 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// "Already registered" + a password that doesn't work is the likeliest moment
+  /// for someone to abandon signup: we told them the account exists but gave them
+  /// no way back into it, and reaching Forgot Password meant navigating back,
+  /// finding Login, and retyping the email. Offer it right here, pre-filled.
+  void _showAlreadyRegistered(String msg, String email) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: 'Reset password',
+          textColor: Colors.white,
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => ForgotPasswordScreen(initialEmail: email)),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Route into the app after a resumed (already-registered) sign-in, using the

@@ -67,13 +67,21 @@ serve(async (req) => {
       return json({ error: left > 0 ? `Incorrect code. ${left} tr${left === 1 ? "y" : "ies"} left.` : "Incorrect code." }, 400);
     }
 
-    // Correct — consume the code and set the new password via the admin API.
-    await supabase.from("email_otps").update({ consumed_at: new Date().toISOString() }).eq("id", otp.id);
+    // Correct — set the password FIRST, and only consume the code once that
+    // succeeded. Consuming first meant a failed reset burned the code, so
+    // "please try again" was impossible advice: the retry needed a fresh code,
+    // which burned in turn. That loop is how an account became unrecoverable.
     const { error: pwErr } = await supabase.auth.admin.updateUserById(uid, { password: pwd });
     if (pwErr) {
       console.error("confirm-password-reset admin update error:", pwErr);
+      // Code is still unconsumed, so the user really can try again.
       return json({ error: "Could not update your password. Please try again." }, 500);
     }
+    // Password changed — consume immediately so the code can't be replayed
+    // within its remaining validity. Non-fatal: never fail a successful reset.
+    const { error: consumeErr } = await supabase
+      .from("email_otps").update({ consumed_at: new Date().toISOString() }).eq("id", otp.id);
+    if (consumeErr) console.error("confirm-password-reset consume error (non-fatal):", consumeErr);
 
     return json({ success: true });
   } catch (e: any) {

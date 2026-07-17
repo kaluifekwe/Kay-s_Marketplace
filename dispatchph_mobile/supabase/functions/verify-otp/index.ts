@@ -152,13 +152,22 @@ serve(async (req) => {
       return json({ error: left > 0 ? `Incorrect code. ${left} tr${left === 1 ? "y" : "ies"} left.` : "Incorrect code." }, 400);
     }
 
-    // Correct — consume the code and mark the account verified.
-    await supabase.from("email_otps").update({ consumed_at: new Date().toISOString() }).eq("id", otp.id);
+    // Correct — mark the account verified FIRST, and only consume the code once
+    // that succeeded. Consuming first meant a failed update burned the code, so
+    // "please try again" was impossible advice: the retry needed a fresh code,
+    // which burned in turn. Order matters more than it looks.
     const { error: upErr } = await supabase.from("users").update({ email_verified: true }).eq("id", uid);
     if (upErr) {
       console.error("verify-otp update error:", upErr);
+      // Code is still unconsumed, so the user really can try again.
       return json({ error: "Verification error. Please try again." }, 500);
     }
+    // Verified. If this consume fails the code stays live until it expires, but
+    // the early "already verified" return above makes reuse a no-op — so it's
+    // non-fatal and must never fail the request.
+    const { error: consumeErr } = await supabase
+      .from("email_otps").update({ consumed_at: new Date().toISOString() }).eq("id", otp.id);
+    if (consumeErr) console.error("verify-otp consume error (non-fatal):", consumeErr);
 
     // First-time verification only (idempotent success above returns early), so
     // the welcome email schedules exactly once. Non-fatal.

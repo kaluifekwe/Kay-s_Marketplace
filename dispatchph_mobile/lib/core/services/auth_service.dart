@@ -70,13 +70,21 @@ class AuthService {
         userData['lga'] = lga;
       }
 
+      // UPSERT, not insert: the on_auth_user_created trigger (atomic_signup.sql)
+      // already created this row inside signUp()'s transaction, so an insert
+      // would fail on the id and report failure for a signup that worked. The
+      // trigger guarantees the profile EXISTS (no more orphaned auth users);
+      // this call enriches it with the fields only the client knows —
+      // phone/address/state/lga/unique_id.
       try {
         userData['unique_id'] = uniqueId;
-        await SupabaseService.client.from('users').insert(userData);
+        await SupabaseService.client.from('users').upsert(userData);
       } catch (_) {
+        // unique_id collision or an address the column rejects: retry without
+        // them rather than lose the whole profile.
         userData.remove('unique_id');
         userData.remove('address');
-        await SupabaseService.client.from('users').insert(userData);
+        await SupabaseService.client.from('users').upsert(userData);
       }
 
       // ₦200 welcome credit for new buyers is granted SERVER-SIDE by the

@@ -1108,9 +1108,10 @@ class ProfileTab extends StatelessWidget {
                   tile(Icons.account_balance_wallet_outlined, 'Wallet',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()))),
                   divider,
-                  tile(Icons.card_giftcard, 'My Rewards & Credit',
-                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MyRewardsScreen()))),
-                  divider,
+                  // 'My Rewards & Credit' hidden for launch: cashback (a Play
+                  // "financial feature") is disabled server-side while we're on a
+                  // personal account, so there's nothing to show. Restore this
+                  // tile when cashback is re-enabled on an organization account.
                   tile(Icons.location_on_outlined, 'My Delivery Addresses',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BuyerAddressesScreen()))),
                   divider,

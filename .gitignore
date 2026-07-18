@@ -21,3 +21,21 @@ Thumbs.db
 # Supabase CLI local state
 **/supabase/.temp/
 **/supabase/.branches/
+
+# Documents — keep Word/PDF/office files & the docs I generate out of the repo.
+# Source docs written IN the repo (Markdown: README, AGENTS.md, *.md) stay tracked.
+# To commit one of these on purpose, force it: git add -f <file>
+testing_docs/
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.odt
+*.odp
+*.ods
+*.pages
+*.key
+*.numbers

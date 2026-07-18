@@ -1,23 +1,27 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// Admin fallback resolution for a dispute that the buyer and vendor could not
-// settle between themselves (status awaiting_admin_decision / escalated /
-// return_submitted). Two terminal decisions:
+// Admin fallback resolution for a dispute the buyer and vendor could not settle.
+// Four decisions, each gated to the states where it makes sense:
 //
-//   approve_refund → buyer is refunded (to wallet by default; process-refund
-//                    force-routes credit-funded orders to credit). Runs the
-//                    refund under the SERVICE role via process-refund, which
-//                    also claws back an already-paid vendor and releases the
-//                    payout hold — atomic + idempotent.
-//   deny_refund    → no money moves; the buyer gets a strike (auto-flag at 3),
-//                    the held vendor payout is released back to the vendor, and
-//                    the order/buyer dispute locks are cleared.
+//   approve_refund        (awaiting_admin_decision | escalated | return_submitted)
+//        → refund the buyer NOW (wallet default; process-refund force-routes
+//          credit-funded orders to credit), claw back an already-paid vendor,
+//          release the payout hold. Terminal.
+//   approve_refund_return (awaiting_admin_decision | escalated)
+//        → approve BUT require the item back first: dispute → awaiting_return
+//          with a 24h return deadline. NO money moves yet; the refund fires
+//          later when the vendor confirms receipt (vendor-confirm-return).
+//   verify_return         (return_submitted)
+//        → buyer's return photos look legit: hand off to the vendor to confirm
+//          receipt within 24h (dispute → vendor_confirming). NO money moves.
+//   deny_refund           (awaiting_admin_decision | escalated | return_submitted)
+//        → no money moves; buyer strike (auto-flag at 3), release the held
+//          vendor payout, clear locks. Terminal.
 //
 // All logic runs server-side under the service role after an admin-role check —
-// the web admin never gets write access to disputes/users/orders. Mirrors the
-// proven vendor-accept-refund pattern (atomic claim + rollback on refund
-// failure). verify_jwt stays ON: the caller must be an authenticated admin.
+// the web admin never gets write access. Atomic claim (status guard on UPDATE)
+// prevents double-resolve; the immediate refund rolls back on failure.
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -50,20 +54,19 @@ function getUserIdFromToken(authHeader: string | null): string | null {
   }
 }
 
-// Admin acts only when the parties have exhausted the negotiation-first flow and
-// the dispute has reached a state that awaits an admin decision.
-const ACTIONABLE_STATUSES = ["awaiting_admin_decision", "escalated", "return_submitted"];
+const H24 = 24 * 60 * 60 * 1000;
+const DECISIONS = ["approve_refund", "approve_refund_return", "verify_return", "deny_refund"];
 
-async function notifyBuyer(
+async function notify(
   supabase: ReturnType<typeof createClient>,
-  buyerId: string,
+  userId: string,
   orderId: string,
   title: string,
   body: string,
 ) {
   try {
     await supabase.from("notifications").insert({
-      user_id: buyerId,
+      user_id: userId,
       title,
       body,
       type: "dispute",
@@ -72,13 +75,13 @@ async function notifyBuyer(
     const { data: tok } = await supabase
       .from("device_tokens")
       .select("fcm_token")
-      .eq("user_id", buyerId)
+      .eq("user_id", userId)
       .maybeSingle();
     if (tok?.fcm_token) {
       await fetch(`${supabaseUrl}/functions/v1/send-push`, {
         method: "POST",
         headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: buyerId, title, body, data: { type: "dispute", orderId } }),
+        body: JSON.stringify({ user_id: userId, title, body, data: { type: "dispute", orderId } }),
       });
     }
   } catch (_) {
@@ -96,18 +99,15 @@ serve(async (req) => {
 
     const { dispute_id, decision, notes } = await req.json();
     if (!dispute_id) return json({ error: "Missing dispute_id" }, 400);
-    if (decision !== "approve_refund" && decision !== "deny_refund") {
-      return json({ error: "decision must be 'approve_refund' or 'deny_refund'" }, 400);
+    if (!DECISIONS.includes(decision)) {
+      return json({ error: `decision must be one of: ${DECISIONS.join(", ")}` }, 400);
     }
-    // A denial must carry a reason (it strikes the buyer); an approval note is optional.
     if (decision === "deny_refund" && !(notes && String(notes).trim())) {
       return json({ error: "A reason (notes) is required to deny a refund" }, 400);
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // AuthZ: caller must be an admin. Checked server-side against users.role, never
-    // trusted from the client.
     const { data: caller } = await supabase.from("users").select("role").eq("id", callerId).maybeSingle();
     if (caller?.role !== "admin") return json({ error: "Admin only" }, 403);
 
@@ -120,10 +120,8 @@ serve(async (req) => {
 
     const nowIso = new Date().toISOString();
 
-    // ── APPROVE REFUND ──────────────────────────────────────────────────────
+    // ── APPROVE REFUND (immediate) ──────────────────────────────────────────
     if (decision === "approve_refund") {
-      // Atomically claim the resolution from an actionable state so two admins
-      // can't both act. Refund runs afterwards; rolled back if it fails.
       const { data: claimed } = await supabase
         .from("disputes")
         .update({
@@ -138,11 +136,11 @@ serve(async (req) => {
           resolved_at: nowIso,
         })
         .eq("id", dispute_id)
-        .in("status", ACTIONABLE_STATUSES)
+        .in("status", ["awaiting_admin_decision", "escalated", "return_submitted"])
         .select("id");
 
       if (!claimed || claimed.length === 0) {
-        return json({ success: true, message: "This dispute has already been resolved." });
+        return json({ success: true, message: "This dispute is not awaiting an admin decision." });
       }
 
       const refundRes = await fetch(`${supabaseUrl}/functions/v1/process-refund`, {
@@ -158,9 +156,6 @@ serve(async (req) => {
       const refundData = await refundRes.json().catch(() => ({}));
 
       if (!refundRes.ok) {
-        // Roll the dispute back so it stays actionable rather than showing
-        // "resolved" with no refund actually paid.
-        console.error("admin-resolve-dispute approve: refund failed:", JSON.stringify(refundData));
         await supabase
           .from("disputes")
           .update({
@@ -177,25 +172,93 @@ serve(async (req) => {
         );
       }
 
-      // Clear the order + buyer dispute locks (process-refund does not).
       await supabase.from("orders").update({ has_dispute: false }).eq("id", dispute.order_id);
       try {
         await supabase.from("users").update({ active_dispute_id: null }).eq("id", dispute.buyer_id);
-      } catch (_) { /* guarded column on some setups — non-fatal */ }
+      } catch (_) { /* guarded column — non-fatal */ }
 
-      await notifyBuyer(
+      await notify(
         supabase,
         dispute.buyer_id,
         dispute.order_id,
         "Refund approved",
         "Admin reviewed your dispute and approved your refund. Your money is on the way back.",
       );
-
       return json({ success: true, decision, refund: refundData });
     }
 
+    // ── APPROVE WITH RETURN ─────────────────────────────────────────────────
+    // No money now: the buyer must ship the item back within 24h; the refund
+    // fires later when the vendor confirms receipt (vendor-confirm-return).
+    if (decision === "approve_refund_return") {
+      const { data: claimed } = await supabase
+        .from("disputes")
+        .update({
+          admin_decision: "refund_approved",
+          admin_decided_by: callerId,
+          admin_decided_at: nowIso,
+          admin_notes: notes ?? null,
+          return_required: true,
+          return_deadline: new Date(Date.now() + H24).toISOString(),
+          refund_method: "wallet",
+          status: "awaiting_return",
+        })
+        .eq("id", dispute_id)
+        .in("status", ["awaiting_admin_decision", "escalated"])
+        .select("id");
+
+      if (!claimed || claimed.length === 0) {
+        return json({ success: true, message: "This dispute is not awaiting an admin decision." });
+      }
+
+      // Mirror the mobile flow: clear the buyer's active-dispute lock at approval
+      // (vendor-confirm-return, which finalises later, does not clear it).
+      try {
+        await supabase.from("users").update({ active_dispute_id: null }).eq("id", dispute.buyer_id);
+      } catch (_) { /* guarded column — non-fatal */ }
+
+      await notify(
+        supabase,
+        dispute.buyer_id,
+        dispute.order_id,
+        "Refund approved — return required",
+        "Admin approved your refund. Return the item within 24 hours to receive payment.",
+      );
+      return json({ success: true, decision, status: "awaiting_return" });
+    }
+
+    // ── VERIFY RETURN ───────────────────────────────────────────────────────
+    // Buyer's return photos look legitimate → hand off to the vendor to confirm
+    // receipt within 24h. Still no money; vendor-confirm-return does the refund.
+    if (decision === "verify_return") {
+      const { data: claimed } = await supabase
+        .from("disputes")
+        .update({
+          return_verified: true,
+          return_verified_at: nowIso,
+          status: "vendor_confirming",
+          vendor_confirm_deadline: new Date(Date.now() + H24).toISOString(),
+          ...(notes ? { admin_notes: notes } : {}),
+        })
+        .eq("id", dispute_id)
+        .eq("status", "return_submitted")
+        .select("id");
+
+      if (!claimed || claimed.length === 0) {
+        return json({ success: true, message: "This dispute has no submitted return to verify." });
+      }
+
+      await notify(
+        supabase,
+        dispute.vendor_id,
+        dispute.order_id,
+        "Confirm return receipt",
+        "The buyer has returned the item. Confirm receipt within 24 hours, or the refund is processed automatically.",
+      );
+      return json({ success: true, decision, status: "vendor_confirming" });
+    }
+
     // ── DENY REFUND ─────────────────────────────────────────────────────────
-    // No money moves. Atomically claim from an actionable state.
     const { data: claimed } = await supabase
       .from("disputes")
       .update({
@@ -208,11 +271,11 @@ serve(async (req) => {
         resolved_at: nowIso,
       })
       .eq("id", dispute_id)
-      .in("status", ACTIONABLE_STATUSES)
+      .in("status", ["awaiting_admin_decision", "escalated", "return_submitted"])
       .select("id");
 
     if (!claimed || claimed.length === 0) {
-      return json({ success: true, message: "This dispute has already been resolved." });
+      return json({ success: true, message: "This dispute is not awaiting an admin decision." });
     }
 
     // Buyer strike; auto-flag at 3 (mirrors the mobile _addStrike). Non-fatal.
@@ -235,24 +298,21 @@ serve(async (req) => {
       console.error("admin-resolve-dispute deny: strike failed (non-fatal):", e);
     }
 
-    // Clear the buyer + order dispute locks.
     try {
       await supabase.from("users").update({ active_dispute_id: null }).eq("id", dispute.buyer_id);
     } catch (_) { /* guarded column — non-fatal */ }
     await supabase.from("orders").update({ has_dispute: false }).eq("id", dispute.order_id);
 
-    // Release the held vendor payout back to the vendor (atomic + idempotent).
     const { error: relErr } = await supabase.rpc("release_dispute_payout_hold", { p_dispute_id: dispute_id });
     if (relErr) console.error("admin-resolve-dispute deny: release_dispute_payout_hold error:", relErr);
 
-    await notifyBuyer(
+    await notify(
       supabase,
       dispute.buyer_id,
       dispute.order_id,
       "Dispute denied",
       `Admin reviewed your dispute and denied the refund. Reason: ${notes}`,
     );
-
     return json({ success: true, decision });
   } catch (error: any) {
     console.error("admin-resolve-dispute error:", error);

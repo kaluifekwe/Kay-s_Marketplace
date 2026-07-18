@@ -1,9 +1,30 @@
+import { useState } from "react";
 import { Show } from "@refinedev/antd";
 import { useShow } from "@refinedev/core";
-import { Typography, Tag, Descriptions, Table } from "antd";
+import {
+  Typography,
+  Tag,
+  Descriptions,
+  Table,
+  Card,
+  Button,
+  Space,
+  Popconfirm,
+  Input,
+  Alert,
+  App,
+} from "antd";
+import { DollarOutlined, RollbackOutlined } from "@ant-design/icons";
 import { naira, statusColor } from "../../format";
+import { supabaseClient } from "../../supabaseClient";
 
-const { Title } = Typography;
+const { Title, Paragraph } = Typography;
+
+// process-refund accepts these order statuses when there is NO dispute attached.
+// (confirmed / auto_released are refundable only through the dispute flow.)
+const REFUNDABLE_STATUSES = ["paid", "shipped", "refund_requested", "delivery_failed"];
+// release-escrow only releases a buyer-confirmed (or auto-released) order.
+const RELEASABLE_STATUSES = ["confirmed", "auto_released"];
 
 const ORDER_SHOW_SELECT =
   "*, buyer:users!orders_buyer_id_fkey(name,email,phone), " +
@@ -31,9 +52,39 @@ function parseItems(raw: unknown): LineItem[] {
 }
 
 export const OrderShow = () => {
+  const { message } = App.useApp();
   const { queryResult } = useShow({ meta: { select: ORDER_SHOW_SELECT } });
-  const record = queryResult?.data?.data;
+  const record = queryResult?.data?.data as Record<string, any> | undefined;
   const items = parseItems(record?.items);
+
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState<null | "refund" | "release">(null);
+
+  const status = record?.status as string | undefined;
+  const canRefund = !!status && REFUNDABLE_STATUSES.includes(status);
+  const canRelease =
+    !!status && RELEASABLE_STATUSES.includes(status) && record?.payment_released !== true;
+
+  const run = async (
+    action: "refund" | "release",
+    fn: string,
+    body: Record<string, unknown>,
+    okMsg: string,
+  ) => {
+    setBusy(action);
+    try {
+      const { data, error } = await supabaseClient.functions.invoke(fn, { body });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).message || (data as any).error);
+      message.success((data as any)?.message || okMsg);
+      setReason("");
+      queryResult?.refetch();
+    } catch (e: any) {
+      message.error(String(e?.context?.error || e?.message || "Action failed."));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <Show isLoading={queryResult?.isLoading} title="Order">
@@ -109,6 +160,98 @@ export const OrderShow = () => {
           }
         />
       </Table>
+
+      <Card style={{ marginTop: 24, borderTop: "3px solid #1b8a3a" }} title="Admin actions">
+        {record?.has_dispute && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="This order has an active dispute"
+            description="Escrow release is blocked until it's resolved. Use the Disputes page to approve or deny the refund."
+          />
+        )}
+
+        {canRefund && (
+          <>
+            <Paragraph type="secondary" style={{ marginTop: 0 }}>
+              <b>Refund order</b> returns the buyer's money to their wallet (credit-funded orders
+              refund to credit), claws back the vendor if already paid, and marks the order refunded.
+            </Paragraph>
+            <Input.TextArea
+              rows={2}
+              placeholder="Reason for the refund (optional, stored on the transaction)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              style={{ marginBottom: 16 }}
+            />
+          </>
+        )}
+
+        <Space wrap>
+          {canRelease && (
+            <Popconfirm
+              title="Release escrow to the vendor?"
+              description="Pays the vendor now. This cannot be undone."
+              okText="Release"
+              onConfirm={() =>
+                run("release", "release-escrow", { order_id: record?.id }, "Escrow released to vendor.")
+              }
+            >
+              <Button
+                type="primary"
+                icon={<DollarOutlined />}
+                loading={busy === "release"}
+                disabled={busy !== null}
+              >
+                Release escrow to vendor
+              </Button>
+            </Popconfirm>
+          )}
+          {canRefund && (
+            <Popconfirm
+              title="Refund this order?"
+              description="The buyer is refunded immediately. This cannot be undone."
+              okText="Refund"
+              okButtonProps={{ danger: true }}
+              onConfirm={() =>
+                run(
+                  "refund",
+                  "process-refund",
+                  {
+                    order_id: record?.id,
+                    reason: reason.trim() || "Refunded by admin",
+                    refund_method: "wallet",
+                  },
+                  "Order refunded to the buyer's wallet.",
+                )
+              }
+            >
+              <Button
+                danger
+                icon={<RollbackOutlined />}
+                loading={busy === "refund"}
+                disabled={busy !== null}
+              >
+                Refund order
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
+
+        {!canRefund && !canRelease && (
+          <Alert
+            type="info"
+            showIcon
+            message="No admin actions available"
+            description={
+              record?.payment_released
+                ? `Escrow is already released to the vendor and this order is "${status}".`
+                : `Nothing to do for an order in "${status}". Refunds apply to ${REFUNDABLE_STATUSES.join(", ")}; escrow release applies to ${RELEASABLE_STATUSES.join(", ")}. A delivered-and-confirmed order is refunded through the dispute flow.`
+            }
+          />
+        )}
+      </Card>
     </Show>
   );
 };

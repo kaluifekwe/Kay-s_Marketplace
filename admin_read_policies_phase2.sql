@@ -26,6 +26,13 @@ drop policy if exists admin_read_transactions on public.transactions;
 create policy admin_read_transactions on public.transactions
   for select to authenticated using (public.is_admin());
 
+-- Wallet ledger (append-only) so the admin can see per-user wallet activity in
+-- the user detail view. Read-only; balance still moves only via the DEFINER RPCs.
+alter table public.wallet_transactions enable row level security;
+drop policy if exists admin_read_wallet_transactions on public.wallet_transactions;
+create policy admin_read_wallet_transactions on public.wallet_transactions
+  for select to authenticated using (public.is_admin());
+
 -- ----------------------------------------------------------------------------
 -- Dashboard KPIs computed server-side in one round-trip. SECURITY DEFINER so
 -- it can aggregate across every row, but it hard-gates on is_admin() first so

@@ -221,10 +221,35 @@ serve(async (req) => {
     const creditFunded = fundingSource === "kays_credit" ||
       String(order.payment_reference ?? "").startsWith("credit_");
 
-    // Caller's choice is honoured only for non-credit orders.
-    const method = creditFunded ? "credit" : (refund_method || "wallet");
-    if (creditFunded && refund_method && refund_method !== "credit") {
-      console.log(`process-refund: order ${order_id} was credit-funded; forcing refund to credit (requested '${refund_method}')`);
+    // The destination is decided by the FUNDING SOURCE, never by the caller.
+    //
+    // Callers historically hardcoded "credit" (buyer cancel in order_bloc, the
+    // dispute auto-timeout in auto-release-escrow, expire-unbooked-pickups, …).
+    // That sent WALLET- and CARD-funded money into spend-only Kay's Credit: the
+    // buyer paid real money, cancelled, and could no longer get it back out.
+    // Deciding here — rather than trusting each caller — fixes every path at
+    // once and can't regress when a new caller is added.
+    //
+    //   credit-funded -> credit  (must NEVER reach the withdrawable wallet, or
+    //                             platform-granted credit becomes cash)
+    //   wallet-funded -> wallet  (it came from there; caller cannot override)
+    //   otherwise     -> wallet, unless an admin deliberately asks for a
+    //                    bank/card payout (support cases keep that escape hatch)
+    let method: string;
+    if (creditFunded) {
+      method = "credit";
+    } else if (fundingSource === "wallet") {
+      method = "wallet";
+    } else if (refund_method === "bank" || refund_method === "card") {
+      method = refund_method;
+    } else {
+      method = "wallet";
+    }
+    if (refund_method && refund_method !== method) {
+      console.log(
+        `process-refund: order ${order_id} funding_source='${fundingSource ?? "unknown"}' ` +
+        `-> refunding to '${method}' (caller requested '${refund_method}')`,
+      );
     }
     let refundReference = "";
 

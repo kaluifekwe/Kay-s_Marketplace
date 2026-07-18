@@ -339,7 +339,10 @@ class OrderCubit extends Cubit<OrderState> {
   /// has requested a rider the order can no longer be cancelled (the courier fee
   /// is committed and the rider is on the way); the buyer waits for delivery or
   /// reports a problem. The refund is issued by the `process-refund` edge
-  /// function (idempotent, server-authorised) to Kay's Credit (instant).
+  /// function (idempotent, server-authorised), which routes it back to the
+  /// SOURCE the order was funded from — wallet-paid returns to the wallet,
+  /// credit-paid returns to Kay's Credit. Deliberately does NOT send a
+  /// refund_method: the server owns that decision.
   Future<String?> cancelOrder(String orderId, String buyerId) async {
     try {
       final orderData = await SupabaseService.client
@@ -364,7 +367,6 @@ class OrderCubit extends Cubit<OrderState> {
         },
         body: {
           'order_id': orderId,
-          'refund_method': 'credit',
           'reason': 'buyer_cancelled',
         },
       );

@@ -152,9 +152,23 @@ export const shipbubble: DeliveryProvider = {
     const meta = (input.option.meta ?? {}) as any;
 
     // Platform pays Shipbubble from its prepaid wallet — gate on balance.
+    //
+    // Distinguish "couldn't READ the balance" from "the balance is genuinely
+    // short". This previously did `Number(data?.data?.balance ?? 0)`, so a 401
+    // (rejected API key) or any 5xx collapsed to 0 and was reported as
+    // wallet_low — which fired the "Courier wallet low" admin alert and sent
+    // someone to top up a wallet that was fine, while the real cause (bad key)
+    // stayed invisible. Fail with a distinct code instead.
     const balRes = await fetch(`${BASE}/billing/wallet`, { headers: headers() });
     const balData = await balRes.json().catch(() => ({}));
-    const balance = Number(balData?.data?.balance ?? 0);
+    const balance = Number(balData?.data?.balance);
+    if (!balRes.ok || !Number.isFinite(balance)) {
+      const detail = balRes.status === 401 || balRes.status === 403
+        ? "Shipbubble rejected the API key — check SHIPBUBBLE_API_KEY"
+        : `Shipbubble balance check failed (HTTP ${balRes.status})`;
+      console.error(`shipbubble balance check: ${detail}; body=${JSON.stringify(balData).slice(0, 200)}`);
+      return { ok: false, errorCode: "failed", message: `${detail}. Booking not attempted.` };
+    }
     if (balance < input.option.fee) {
       return { ok: false, errorCode: "wallet_low", message: `balance ${balance} < fee ${input.option.fee}` };
     }

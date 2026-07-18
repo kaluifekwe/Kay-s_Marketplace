@@ -81,7 +81,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   /// single "Buy Now" product's line when scoped.
   Future<void> _clearCheckedOut() async {
     if (widget.onlyProductId == null) {
-      await _clearCheckedOut();
+      // NB: must be clearCart — calling _clearCheckedOut() here recursed
+      // forever, so the await never completed: after a successful wallet/credit
+      // payment the success dialog never showed and the button spun for ever
+      // (the order HAD gone through). Card checkout was unaffected — it doesn't
+      // route through here.
+      await context.read<CartCubit>().clearCart(_buyerId);
     } else {
       final ids = context
           .read<CartCubit>()

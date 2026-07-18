@@ -12,22 +12,35 @@ export interface MergedQuote {
 
 // Provider ETAs are free-text and differ by provider (Terminal: "Same day
 // delivery", "Within 1 business day"; Shipbubble: "1 - 2 days", "3 days", …).
-// Normalize to an estimated number of days so options can be ranked by speed.
-// Unparseable strings return a large sentinel so they sink below anything with a
-// known ETA (and then order by price among themselves).
-const ETA_UNKNOWN = 999;
-export function etaDays(eta?: string): number {
+// Normalize to an estimated number of HOURS so options can be ranked by speed
+// and filtered against a max-delivery ceiling. Ranges use the LOWER bound
+// ("1 - 2 days" -> 24h). Unparseable strings return a large sentinel so they
+// sink below anything with a known ETA (and then order by price among themselves).
+const ETA_UNKNOWN = 1e9;
+export function etaHours(eta?: string): number {
   if (!eta) return ETA_UNKNOWN;
   const s = eta.toLowerCase();
-  // Same-day / instant / hours-based delivery ranks fastest.
-  if (/same[\s-]?day|instant|today|within\s+hours?|\bhours?\b/.test(s)) return 0;
-  if (/next[\s-]?day|tomorrow/.test(s)) return 1;
+  // Same-day / instant delivery is the fastest tier.
+  if (/same[\s-]?day|instant|today/.test(s)) return 0;
+  // Explicit hour quotes: "5 hours", "10 hrs", "10hr", "within 24 hours".
+  // Take the number attached to an hour unit (hour/hours/hr/hrs) so a large
+  // value like "30 hours" is measured as 30h — NOT flattened to "fast" the way
+  // a bare same-day match would be. This is what lets the 24h ceiling exclude it.
+  const hm = s.match(/(\d+)\s*(?:hours?|hrs?)\b/);
+  if (hm) {
+    const n = Number(hm[1]);
+    if (Number.isFinite(n)) return n;
+  }
+  // "within hours" with no number → treat as same-day-fast.
+  if (/\b(?:hours?|hrs?)\b/.test(s)) return 0;
+  // Day-based quotes → convert to hours.
+  if (/next[\s-]?day|tomorrow/.test(s)) return 24;
   // First number in the string is the (lower bound of the) day estimate,
-  // e.g. "1 - 2 days" -> 1, "Within 3 business days" -> 3.
-  const m = s.match(/\d+/);
-  if (m) {
-    const n = Number(m[0]);
-    if (Number.isFinite(n)) return /week/.test(s) ? n * 7 : n;
+  // e.g. "1 - 2 days" -> 1 -> 24h, "Within 3 business days" -> 3 -> 72h.
+  const dm = s.match(/\d+/);
+  if (dm) {
+    const n = Number(dm[0]);
+    if (Number.isFinite(n)) return (/week/.test(s) ? n * 7 : n) * 24;
   }
   return ETA_UNKNOWN;
 }
@@ -51,10 +64,26 @@ export async function quoteAll(input: QuoteInput): Promise<MergedQuote> {
     else if (r.value.reason) reasons.push(`${pid}:${r.value.reason}`);
   });
 
-  // Fastest-first: rank by estimated delivery days, then cheapest as tiebreaker.
+  // Speed filter — the marketplace promises QUICK delivery, so only offer options
+  // that arrive within MAX_DELIVERY_HOURS (default 24 = same-day / hour-quotes up
+  // to 24h / next-day / "within 1 business day" / the lower bound of "1 - 2 days").
+  // "2 - 3 days" (48h), "3 days" (72h), "30 hours" and unparseable ETAs are all
+  // dropped. When this empties an otherwise non-empty list, push a NON-transient
+  // reason: the client treats an empty + transient reason as retryable, but "all
+  // too slow" is a genuine no-fast-courier result that should drop straight to
+  // the vendor-arranged fallback.
+  const maxHours = Number(Deno.env.get("MAX_DELIVERY_HOURS") ?? "24");
+  const fast = couriers.filter((c) => etaHours(c.eta) <= maxHours);
+  if (couriers.length > 0 && fast.length === 0) {
+    reasons.push(`all_options_too_slow (max=${maxHours}h)`);
+  }
+  couriers.length = 0;
+  couriers.push(...fast);
+
+  // Fastest-first: rank by estimated delivery hours, then cheapest as tiebreaker.
   // Buyers care about timing first; among equally fast options the cheaper wins.
   couriers.sort((a, b) => {
-    const d = etaDays(a.eta) - etaDays(b.eta);
+    const d = etaHours(a.eta) - etaHours(b.eta);
     return d !== 0 ? d : a.fee - b.fee;
   });
   return { couriers, providerData, reason: reasons.join(" | ") || "no_rates" };

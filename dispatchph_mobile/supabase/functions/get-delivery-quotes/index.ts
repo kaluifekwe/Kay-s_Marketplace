@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { quoteAll } from "../_shared/delivery/orchestrate.ts";
+import { getNumber } from "../_shared/settings.ts";
 import type { Address, PackageItem } from "../_shared/delivery/types.ts";
 
 // Fetch live courier rates at CHECKOUT across every enabled provider
@@ -202,8 +203,8 @@ serve(async (req) => {
     //   DELIVERY_FEE_MARKUP_FLOOR (default 300, in naira)
     // Set both to 0 to disable the buffer entirely. This marked-up fee is what's
     // stored, shown, paid, and later read by book-delivery as buyer_charged.
-    const feeMarkupPct = Number(Deno.env.get("DELIVERY_FEE_MARKUP_PCT") ?? "20");
-    const feeMarkupFloor = Number(Deno.env.get("DELIVERY_FEE_MARKUP_FLOOR") ?? "300");
+    const feeMarkupPct = await getNumber("delivery_fee_markup_pct", "DELIVERY_FEE_MARKUP_PCT", 20);
+    const feeMarkupFloor = await getNumber("delivery_fee_markup_floor", "DELIVERY_FEE_MARKUP_FLOOR", 300);
     for (const c of couriers) {
       const base = Number(c.fee);
       const buffer = Math.max(base * (feeMarkupPct / 100), feeMarkupFloor);

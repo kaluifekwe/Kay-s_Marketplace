@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getNumber } from "../_shared/settings.ts";
 
 // Prepare a Flutterwave buyer checkout. Verifies the order SERVER-SIDE (item
 // prices + delivery fees re-derived from the DB — never the client, no NIN/BVN
@@ -17,7 +18,8 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 // A chat-negotiated delivery fee is valid for this long (from the vendor's offer)
 // before checkout must use a freshly re-quoted fee.
-const DELIVERY_FEE_VALID_MS = 60 * 60 * 1000; // 60 minutes
+// Tunable in the admin console (app_settings); literal stays as the fallback.
+const DELIVERY_FEE_VALID_MINUTES_DEFAULT = 60;
 // Public key (FLWPUBK-…) for the inline checkout SDK — safe to expose to the app.
 const flwPublicKey = Deno.env.get("FLUTTERWAVE_PUBLIC_KEY") || "";
 // Where Flutterwave redirects after payment. The webview only needs to RECOGNISE
@@ -168,7 +170,9 @@ serve(async (req) => {
         }
         // Reject a stale negotiated fee (old order leftover, or accepted but left
         // unpaid) so checkout never runs on an out-of-date price.
-        if (Date.now() - new Date(accepted.created_at).getTime() > DELIVERY_FEE_VALID_MS) {
+        const feeValidMs =
+          (await getNumber("delivery_fee_valid_minutes", "DELIVERY_FEE_VALID_MINUTES", DELIVERY_FEE_VALID_MINUTES_DEFAULT)) * 60_000;
+        if (Date.now() - new Date(accepted.created_at).getTime() > feeValidMs) {
           return json({ error: "delivery_fee_expired", message: "The delivery fee you agreed has expired. Please ask the vendor for a fresh delivery fee in chat.", vendor_id: vendorId }, 400);
         }
         deliveryFee = Number(accepted.buyer_fee_amount) || 0;

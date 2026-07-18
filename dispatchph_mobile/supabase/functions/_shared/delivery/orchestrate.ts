@@ -2,6 +2,7 @@
 // providers. Used by get-delivery-quotes (checkout) and request-pickup
 // (vendor-ready re-quote) so the merge logic lives in exactly one place.
 import { enabledProviders } from "./registry.ts";
+import { getNumber } from "../settings.ts";
 import type { CourierOption, QuoteInput } from "./types.ts";
 
 export interface MergedQuote {
@@ -72,7 +73,7 @@ export async function quoteAll(input: QuoteInput): Promise<MergedQuote> {
   // reason: the client treats an empty + transient reason as retryable, but "all
   // too slow" is a genuine no-fast-courier result that should drop straight to
   // the vendor-arranged fallback.
-  const maxHours = Number(Deno.env.get("MAX_DELIVERY_HOURS") ?? "24");
+  const maxHours = await getNumber("max_delivery_hours", "MAX_DELIVERY_HOURS", 24);
   const fast = couriers.filter((c) => etaHours(c.eta) <= maxHours);
   if (couriers.length > 0 && fast.length === 0) {
     reasons.push(`all_options_too_slow (max=${maxHours}h)`);

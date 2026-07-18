@@ -2,9 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { flwTransfer } from "../_shared/flutterwave.ts";
 import { hashPin, verifyPin } from "../_shared/pin.ts";
-
-const PIN_MAX_ATTEMPTS = 5;
-const PIN_LOCK_MINUTES = 15;
+import { getNumber } from "../_shared/settings.ts";
 
 // Withdraw wallet balance to the user's bank via a Flutterwave v4 direct
 // transfer. Vendors can withdraw their whole balance; buyers can only withdraw
@@ -16,7 +14,11 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-const MIN_WITHDRAWAL = 100;
+// Tunable in the admin console (app_settings); these literals stay as the final
+// fallback so behaviour is unchanged if the table is unavailable.
+const MIN_WITHDRAWAL_DEFAULT = 100;
+const PIN_MAX_ATTEMPTS_DEFAULT = 5;
+const PIN_LOCK_MINUTES_DEFAULT = 15;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -55,8 +57,13 @@ serve(async (req) => {
 
     const { amount, pin } = await req.json();
     const amt = Number(amount);
-    if (!amt || amt < MIN_WITHDRAWAL) {
-      return json({ error: `Minimum withdrawal is ₦${MIN_WITHDRAWAL}.` }, 400);
+    const [minWithdrawal, pinMaxAttempts, pinLockMinutes] = await Promise.all([
+      getNumber("min_withdrawal", "MIN_WITHDRAWAL", MIN_WITHDRAWAL_DEFAULT),
+      getNumber("pin_max_attempts", "PIN_MAX_ATTEMPTS", PIN_MAX_ATTEMPTS_DEFAULT),
+      getNumber("pin_lock_minutes", "PIN_LOCK_MINUTES", PIN_LOCK_MINUTES_DEFAULT),
+    ]);
+    if (!amt || amt < minWithdrawal) {
+      return json({ error: `Minimum withdrawal is ₦${minWithdrawal}.` }, 400);
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -98,16 +105,16 @@ serve(async (req) => {
     const { ok: pinOk, needsRehash } = await verifyPin(callerId, String(pin), pinRow.pin_hash);
     if (!pinOk) {
       const attempts = (pinRow.failed_attempts ?? 0) + 1;
-      const lock = attempts >= PIN_MAX_ATTEMPTS;
+      const lock = attempts >= pinMaxAttempts;
       await supabase.from("withdrawal_pins").update({
         failed_attempts: lock ? 0 : attempts,
-        locked_until: lock ? new Date(Date.now() + PIN_LOCK_MINUTES * 60_000).toISOString() : null,
+        locked_until: lock ? new Date(Date.now() + pinLockMinutes * 60_000).toISOString() : null,
         updated_at: new Date().toISOString(),
       }).eq("user_id", callerId);
       return json({
         error: "pin_wrong",
         message: lock
-          ? `Too many wrong attempts. Withdrawals locked for ${PIN_LOCK_MINUTES} minutes.`
+          ? `Too many wrong attempts. Withdrawals locked for ${pinLockMinutes} minutes.`
           : "Incorrect PIN.",
       }, 403);
     }

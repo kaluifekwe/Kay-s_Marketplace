@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getNumber } from "../_shared/settings.ts";
 
 // Scheduled (pg_cron, see pickup_sla.sql): courier orders the vendor hasn't
 // booked. Reminds the vendor REMINDER_BEFORE_HOURS before the deadline, then at
@@ -13,7 +14,8 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 // Auto-cancel refunds go to Kay's Credit (instant). Change to "card"/"bank" to
 // refund the original method instead.
 const REFUND_METHOD = Deno.env.get("PICKUP_REFUND_METHOD") ?? "credit";
-const REMINDER_BEFORE_HOURS = 12;
+// Tunable in the admin console (app_settings); literals stay as fallbacks.
+const REMINDER_BEFORE_HOURS_DEFAULT = 12;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -59,7 +61,8 @@ serve(async (req) => {
 
     for (const o of orders || []) {
       const deadline = new Date(o.pickup_deadline).getTime();
-      const remindAt = deadline - REMINDER_BEFORE_HOURS * 60 * 60 * 1000;
+      const remindAt = deadline -
+        (await getNumber("pickup_reminder_before_hours", "PICKUP_REMINDER_BEFORE_HOURS", REMINDER_BEFORE_HOURS_DEFAULT)) * 60 * 60 * 1000;
 
       if (now >= deadline) {
         // Deadline passed — refund the buyer (idempotent) and notify both sides.

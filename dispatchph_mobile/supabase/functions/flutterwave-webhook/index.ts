@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getNumber } from "../_shared/settings.ts";
 
 // Receives Flutterwave v4 webhooks. Phase 2 handles virtual-account funding:
 // when a buyer transfers into their permanent VA, Flutterwave sends
@@ -156,7 +157,8 @@ async function finalizeWithdrawal(supabase: any, data: any) {
 }
 
 const SUCCESS_STATUSES = ["successful", "succeeded", "success", "completed", "complete", "paid"];
-const PICKUP_WINDOW_HOURS = 24;
+// Tunable in the admin console (app_settings); literal stays as the fallback.
+const PICKUP_WINDOW_HOURS_DEFAULT = 24;
 
 // A Flutterwave checkout payment (tx_ref = chk...) succeeded. Create the per-
 // vendor orders + escrow from the VERIFIED intent that prepare-checkout stored.
@@ -204,7 +206,7 @@ async function createOrdersFromCheckout(supabase: any, txRef: string, data: any)
     const orderId = crypto.randomUUID();
     const reference = `flw_${orderId}`;
     const pickupDeadline = vo.delivery_type === "courier"
-      ? new Date(Date.now() + PICKUP_WINDOW_HOURS * 3600 * 1000).toISOString() : null;
+      ? new Date(Date.now() + (await getNumber("pickup_window_hours", "PICKUP_WINDOW_HOURS", PICKUP_WINDOW_HOURS_DEFAULT)) * 3600 * 1000).toISOString() : null;
 
     const { error: orderErr } = await supabase.from("orders").insert({
       id: orderId, buyer_id, vendor_id: vo.vendor_id, store_id: vo.store_id,

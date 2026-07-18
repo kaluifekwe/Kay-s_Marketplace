@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { quoteAll } from "../_shared/delivery/orchestrate.ts";
+import { getNumber } from "../_shared/settings.ts";
 
 // Vendor-triggered courier booking ("Request Pickup"). Courier orders are NOT
 // booked at payment anymore — the vendor packages the item, taps Ready, and we
@@ -19,7 +20,8 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 // Block absurd re-quote spikes (platform absorbs normal drift, not 50%+ jumps).
-const PRICE_SPIKE_TOLERANCE = 1.5;
+// Tunable in the admin console (app_settings); literal stays as the fallback.
+const PRICE_SPIKE_TOLERANCE_DEFAULT = 1.5;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -108,7 +110,12 @@ serve(async (req) => {
       couriers[0];
 
     // Guard against absurd price spikes; platform absorbs normal drift.
-    if (paidFee > 0 && chosen.fee > paidFee * PRICE_SPIKE_TOLERANCE) {
+    const priceSpikeTolerance = await getNumber(
+      "price_spike_tolerance",
+      "PRICE_SPIKE_TOLERANCE",
+      PRICE_SPIKE_TOLERANCE_DEFAULT,
+    );
+    if (paidFee > 0 && chosen.fee > paidFee * priceSpikeTolerance) {
       return json({
         booked: false,
         reason: "price_spike",

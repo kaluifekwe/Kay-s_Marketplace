@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getNumber } from "../_shared/settings.ts";
 
 // Pay for a checkout entirely from the buyer's WALLET balance. This is the
 // provider-agnostic core of the wallet system: it never talks to any payment
@@ -17,7 +18,8 @@ const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 // A chat-negotiated delivery fee is only valid for this long (from when the
 // vendor sent the offer) before checkout must use a freshly re-quoted fee.
-const DELIVERY_FEE_VALID_MS = 60 * 60 * 1000; // 60 minutes
+// Tunable in the admin console (app_settings); literal stays as the fallback.
+const DELIVERY_FEE_VALID_MINUTES_DEFAULT = 60;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -170,7 +172,9 @@ serve(async (req) => {
         // A negotiated fee is only good for a short window. A stale one — a leftover
         // from a previous order, or accepted but left unpaid — must be re-quoted so
         // the buyer never checks out on an out-of-date price.
-        if (Date.now() - new Date(accepted.created_at).getTime() > DELIVERY_FEE_VALID_MS) {
+        const feeValidMs =
+          (await getNumber("delivery_fee_valid_minutes", "DELIVERY_FEE_VALID_MINUTES", DELIVERY_FEE_VALID_MINUTES_DEFAULT)) * 60_000;
+        if (Date.now() - new Date(accepted.created_at).getTime() > feeValidMs) {
           return json({ error: "delivery_fee_expired", message: "The delivery fee you agreed has expired. Please ask the vendor for a fresh delivery fee in chat.", vendor_id: vendorId }, 400);
         }
         deliveryFee = Number(accepted.buyer_fee_amount) || 0;

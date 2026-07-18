@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getBool } from "../_shared/settings.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -51,7 +52,7 @@ serve(async (req) => {
     // developer account is an organization. Returns success so callers
     // (auto-release-escrow / release-escrow) treat it as a no-op, never a
     // failure — with no cashback_amount, so no "cashback earned" push fires.
-    if ((Deno.env.get("CASHBACK_ENABLED") ?? "false").toLowerCase() !== "true") {
+    if (!(await getBool("cashback_enabled", "CASHBACK_ENABLED", false))) {
       return new Response(
         JSON.stringify({ success: true, disabled: true, cashback_amount: 0 }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

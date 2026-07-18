@@ -1,5 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAdminAction } from "../_shared/audit.ts";
+import { getNumber } from "../_shared/settings.ts";
 
 // Admin fallback resolution for a dispute the buyer and vendor could not settle.
 // Four decisions, each gated to the states where it makes sense:
@@ -54,7 +56,10 @@ function getUserIdFromToken(authHeader: string | null): string | null {
   }
 }
 
-const H24 = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+// Tunable in the admin console (app_settings); literals stay as fallbacks.
+const RETURN_HOURS_DEFAULT = 24;
+const VENDOR_CONFIRM_HOURS_DEFAULT = 24;
 const DECISIONS = ["approve_refund", "approve_refund_return", "verify_return", "deny_refund"];
 
 async function notify(
@@ -184,6 +189,11 @@ serve(async (req) => {
         "Refund approved",
         "Admin reviewed your dispute and approved your refund. Your money is on the way back.",
       );
+      await logAdminAction({
+        adminId: callerId, action: "dispute.approve_refund", targetType: "dispute", targetId: dispute_id,
+        summary: "Approved a refund and paid the buyer immediately",
+        metadata: { order_id: dispute.order_id, buyer_id: dispute.buyer_id, vendor_id: dispute.vendor_id, notes: notes ?? null, refund: refundData },
+      });
       return json({ success: true, decision, refund: refundData });
     }
 
@@ -199,7 +209,7 @@ serve(async (req) => {
           admin_decided_at: nowIso,
           admin_notes: notes ?? null,
           return_required: true,
-          return_deadline: new Date(Date.now() + H24).toISOString(),
+          return_deadline: new Date(Date.now() + (await getNumber("dispute_return_hours", "DISPUTE_RETURN_HOURS", RETURN_HOURS_DEFAULT)) * HOUR_MS).toISOString(),
           refund_method: "wallet",
           status: "awaiting_return",
         })
@@ -224,6 +234,11 @@ serve(async (req) => {
         "Refund approved — return required",
         "Admin approved your refund. Return the item within 24 hours to receive payment.",
       );
+      await logAdminAction({
+        adminId: callerId, action: "dispute.approve_refund_return", targetType: "dispute", targetId: dispute_id,
+        summary: "Approved a refund requiring the item to be returned first",
+        metadata: { order_id: dispute.order_id, buyer_id: dispute.buyer_id, vendor_id: dispute.vendor_id, notes: notes ?? null },
+      });
       return json({ success: true, decision, status: "awaiting_return" });
     }
 
@@ -237,7 +252,7 @@ serve(async (req) => {
           return_verified: true,
           return_verified_at: nowIso,
           status: "vendor_confirming",
-          vendor_confirm_deadline: new Date(Date.now() + H24).toISOString(),
+          vendor_confirm_deadline: new Date(Date.now() + (await getNumber("dispute_vendor_confirm_hours", "DISPUTE_VENDOR_CONFIRM_HOURS", VENDOR_CONFIRM_HOURS_DEFAULT)) * HOUR_MS).toISOString(),
           ...(notes ? { admin_notes: notes } : {}),
         })
         .eq("id", dispute_id)
@@ -255,6 +270,11 @@ serve(async (req) => {
         "Confirm return receipt",
         "The buyer has returned the item. Confirm receipt within 24 hours, or the refund is processed automatically.",
       );
+      await logAdminAction({
+        adminId: callerId, action: "dispute.verify_return", targetType: "dispute", targetId: dispute_id,
+        summary: "Verified the buyer return; vendor asked to confirm receipt",
+        metadata: { order_id: dispute.order_id, buyer_id: dispute.buyer_id, vendor_id: dispute.vendor_id, notes: notes ?? null },
+      });
       return json({ success: true, decision, status: "vendor_confirming" });
     }
 
@@ -313,6 +333,11 @@ serve(async (req) => {
       "Dispute denied",
       `Admin reviewed your dispute and denied the refund. Reason: ${notes}`,
     );
+    await logAdminAction({
+      adminId: callerId, action: "dispute.deny_refund", targetType: "dispute", targetId: dispute_id,
+      summary: `Denied the refund — ${notes}`,
+      metadata: { order_id: dispute.order_id, buyer_id: dispute.buyer_id, vendor_id: dispute.vendor_id, notes: notes ?? null },
+    });
     return json({ success: true, decision });
   } catch (error: any) {
     console.error("admin-resolve-dispute error:", error);

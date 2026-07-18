@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAdminAction } from "../_shared/audit.ts";
 
 // Admin manual wallet adjustment — a goodwill credit or a correction debit on a
 // buyer/vendor wallet. Routes through the service-role-only wallet_credit /
@@ -85,6 +86,14 @@ serve(async (req) => {
         console.error("admin-wallet-adjust credit error:", error);
         return json({ error: error.message || "Credit failed" }, 500);
       }
+      await logAdminAction({
+        adminId: callerId,
+        action: "wallet.credit",
+        targetType: "user",
+        targetId: user_id,
+        summary: `Credited ₦${amt.toLocaleString()} to a wallet — ${String(reason).trim()}`,
+        metadata: { amount: amt, reason: String(reason).trim(), new_balance: Number(balance), reference },
+      });
       return json({ success: true, direction, amount: amt, balance: Number(balance) });
     }
 
@@ -105,6 +114,14 @@ serve(async (req) => {
     if (balance === null || balance === undefined) {
       return json({ error: "insufficient_balance", message: "The wallet balance is too low for this debit." }, 400);
     }
+    await logAdminAction({
+      adminId: callerId,
+      action: "wallet.debit",
+      targetType: "user",
+      targetId: user_id,
+      summary: `Debited ₦${amt.toLocaleString()} from a wallet — ${String(reason).trim()}`,
+      metadata: { amount: amt, reason: String(reason).trim(), new_balance: Number(balance), reference },
+    });
     return json({ success: true, direction, amount: amt, balance: Number(balance) });
   } catch (error: any) {
     console.error("admin-wallet-adjust error:", error);

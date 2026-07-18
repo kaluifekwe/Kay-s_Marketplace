@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAdminAction } from "../_shared/audit.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -71,6 +72,8 @@ serve(async (req) => {
     // Only the order's own buyer can trigger release (on delivery confirmation),
     // the server itself (service role, used by the scheduled auto-release job),
     // or an admin manually approving early release from the order-review queue.
+    // Hoisted so the audit log below can attribute an admin-triggered release.
+    let adminCallerId: string | null = null;
     if (!isServiceRoleCall(req.headers.get("Authorization"))) {
       const callerId = getUserIdFromToken(req.headers.get("Authorization"));
       let isAdminCaller = false;
@@ -81,6 +84,7 @@ serve(async (req) => {
           .eq("id", callerId)
           .maybeSingle();
         isAdminCaller = callerUser?.role === "admin";
+        if (isAdminCaller) adminCallerId = callerId;
       }
       if (!callerId || (callerId !== order.buyer_id && !isAdminCaller)) {
         return new Response(
@@ -282,6 +286,16 @@ serve(async (req) => {
     });
 
     console.log(`Escrow released to wallet: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct})`);
+
+    // Only when an admin forced the release — buyer confirmations and the
+    // scheduled auto-release job are ordinary flow, not admin actions.
+    if (adminCallerId) {
+      await logAdminAction({
+        adminId: adminCallerId, action: "order.release_escrow", targetType: "order", targetId: order_id,
+        summary: `Released ₦${netPayout.toLocaleString()} escrow to the vendor`,
+        metadata: { vendor_id, net: netPayout, gross: vendorPayout, charges: chargeDeduct },
+      });
+    }
 
     return new Response(
       JSON.stringify({ success: true, amount_released: netPayout, credited_to: "wallet" }),

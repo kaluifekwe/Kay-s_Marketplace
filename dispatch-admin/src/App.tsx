@@ -22,6 +22,8 @@ import {
   TeamOutlined,
   WarningOutlined,
   BankOutlined,
+  SettingOutlined,
+  FileSearchOutlined,
 } from "@ant-design/icons";
 
 import { supabaseClient } from "./supabaseClient";
@@ -31,6 +33,8 @@ import { UserList, UserShow } from "./pages/users";
 import { OrderList, OrderShow } from "./pages/orders";
 import { DisputeList, DisputeShow } from "./pages/disputes";
 import { WithdrawalList } from "./pages/withdrawals";
+import { SettingsList } from "./pages/settings";
+import { AuditList } from "./pages/audit";
 
 const BRAND = "#1b8a3a"; // Kays Market green
 
@@ -74,6 +78,16 @@ function App() {
                 show: "/users/show/:id",
                 meta: { label: "Users", icon: <TeamOutlined /> },
               },
+              {
+                name: "admin_audit_log",
+                list: "/audit",
+                meta: { label: "Audit log", icon: <FileSearchOutlined /> },
+              },
+              {
+                name: "settings",
+                list: "/settings",
+                meta: { label: "Settings", icon: <SettingOutlined /> },
+              },
             ]}
             options={{
               syncWithLocation: true,
@@ -116,6 +130,12 @@ function App() {
                 <Route path="/users">
                   <Route index element={<UserList />} />
                   <Route path="show/:id" element={<UserShow />} />
+                </Route>
+                <Route path="/audit">
+                  <Route index element={<AuditList />} />
+                </Route>
+                <Route path="/settings">
+                  <Route index element={<SettingsList />} />
                 </Route>
                 <Route path="*" element={<ErrorComponent />} />
               </Route>

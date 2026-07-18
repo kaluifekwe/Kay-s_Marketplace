@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAdminAction } from "../_shared/audit.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -445,6 +446,16 @@ serve(async (req) => {
     }
 
     console.log(`Refund processed: order=${order_id}, amount=${refundAmount}, method=${method}`);
+
+    // Attribute refunds an admin triggered from the console. Buyer-initiated
+    // cancels and service-role automation are ordinary flow, not admin actions.
+    if (isAdminCaller && callerId) {
+      await logAdminAction({
+        adminId: callerId, action: "order.refund", targetType: "order", targetId: order_id,
+        summary: `Refunded ₦${refundAmount.toLocaleString()} to the buyer via ${method}`,
+        metadata: { amount: refundAmount, method, dispute_id: dispute_id ?? null, reason: reason ?? null },
+      });
+    }
 
     return new Response(
       JSON.stringify({

@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAdminAction } from "../_shared/audit.ts";
 import { flwGet } from "../_shared/flutterwave.ts";
 
 // Admin reconciliation for a withdrawal stuck in `processing` — i.e. the payout
@@ -128,6 +129,11 @@ serve(async (req) => {
     if (SUCCESS.includes(flwStatus)) {
       await supabase.from("withdrawals").update({ status: "success" }).eq("id", wd.id);
       await notify(supabase, wd.user_id, "Withdrawal sent", `₦${amount.toLocaleString()} was sent to your bank.`);
+      await logAdminAction({
+        adminId: callerId, action: "withdrawal.reconcile", targetType: "withdrawal", targetId: wd.id,
+        summary: `Reconciled a ₦${amount.toLocaleString()} withdrawal — confirmed sent`,
+        metadata: { outcome: "success", amount, flw_status: flwStatus, user_id: wd.user_id },
+      });
       return json({ success: true, state: "success", flw_status: flwStatus });
     }
 
@@ -156,6 +162,11 @@ serve(async (req) => {
         "Withdrawal failed",
         `Your ₦${amount.toLocaleString()} withdrawal failed and was returned to your wallet.`,
       );
+      await logAdminAction({
+        adminId: callerId, action: "withdrawal.reconcile", targetType: "withdrawal", targetId: wd.id,
+        summary: `Reconciled a ₦${amount.toLocaleString()} withdrawal — transfer failed, money returned to wallet`,
+        metadata: { outcome: "failed", amount, flw_status: flwStatus, user_id: wd.user_id },
+      });
       return json({ success: true, state: "failed", flw_status: flwStatus });
     }
 

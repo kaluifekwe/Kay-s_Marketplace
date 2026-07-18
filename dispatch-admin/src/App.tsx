@@ -21,6 +21,7 @@ import {
   ShoppingOutlined,
   TeamOutlined,
   WarningOutlined,
+  BankOutlined,
 } from "@ant-design/icons";
 
 import { supabaseClient } from "./supabaseClient";
@@ -29,6 +30,7 @@ import { Dashboard } from "./pages/dashboard";
 import { UserList, UserShow } from "./pages/users";
 import { OrderList, OrderShow } from "./pages/orders";
 import { DisputeList, DisputeShow } from "./pages/disputes";
+import { WithdrawalList } from "./pages/withdrawals";
 
 const BRAND = "#1b8a3a"; // Kays Market green
 
@@ -60,6 +62,11 @@ function App() {
                 list: "/disputes",
                 show: "/disputes/show/:id",
                 meta: { label: "Disputes", icon: <WarningOutlined /> },
+              },
+              {
+                name: "withdrawals",
+                list: "/withdrawals",
+                meta: { label: "Withdrawals", icon: <BankOutlined /> },
               },
               {
                 name: "users",
@@ -102,6 +109,9 @@ function App() {
                 <Route path="/disputes">
                   <Route index element={<DisputeList />} />
                   <Route path="show/:id" element={<DisputeShow />} />
+                </Route>
+                <Route path="/withdrawals">
+                  <Route index element={<WithdrawalList />} />
                 </Route>
                 <Route path="/users">
                   <Route index element={<UserList />} />

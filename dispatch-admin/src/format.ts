@@ -18,6 +18,7 @@ export const statusColor = (status?: string): string => {
     case "confirmed":
     case "delivered":
     case "resolved":
+    case "success":
       return "green";
     case "shipped":
     case "processing":

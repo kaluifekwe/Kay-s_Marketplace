@@ -59,25 +59,37 @@ const server = http.createServer((req, res) => {
       res.writeHead(400);
       return res.end("bad json");
     }
-    const { path, token, body, idempotency_key, trace_id } = parsed;
+    const { path, token, body, idempotency_key, trace_id, method } = parsed;
     if (!path || !token) {
       res.writeHead(400);
       return res.end("missing path or token");
     }
 
-    const payload = JSON.stringify(body || {});
+    // Default POST (payouts); GET is used to RECONCILE a withdrawal by querying
+    // the transfer's real status when a webhook was missed. Only these two.
+    const httpMethod = String(method || "POST").toUpperCase();
+    if (httpMethod !== "POST" && httpMethod !== "GET") {
+      res.writeHead(400);
+      return res.end("unsupported method");
+    }
+
+    const isPost = httpMethod === "POST";
+    const payload = isPost ? JSON.stringify(body || {}) : "";
     const url = new URL(FLW_BASE + path);
+    const headers = {
+      Authorization: "Bearer " + token,
+      "X-Idempotency-Key": idempotency_key || "",
+      "X-Trace-Id": trace_id || idempotency_key || "",
+    };
+    if (isPost) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = Buffer.byteLength(payload);
+    }
     const options = {
-      method: "POST",
+      method: httpMethod,
       hostname: url.hostname,
       path: url.pathname + url.search,
-      headers: {
-        Authorization: "Bearer " + token,
-        "Content-Type": "application/json",
-        "X-Idempotency-Key": idempotency_key || "",
-        "X-Trace-Id": trace_id || idempotency_key || "",
-        "Content-Length": Buffer.byteLength(payload),
-      },
+      headers,
     };
 
     const fReq = https.request(options, (fRes) => {
@@ -92,7 +104,7 @@ const server = http.createServer((req, res) => {
       res.writeHead(502, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: String(e) }));
     });
-    fReq.write(payload);
+    if (isPost) fReq.write(payload);
     fReq.end();
   });
 });

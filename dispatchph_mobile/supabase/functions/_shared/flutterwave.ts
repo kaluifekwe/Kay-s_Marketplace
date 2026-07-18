@@ -80,6 +80,26 @@ export async function flwTransfer(
   return flwPost("/direct-transfers", body, key);
 }
 
+/// Authenticated GET, routed through the static-IP relay when configured (used
+/// to RECONCILE a withdrawal by reading a transfer's real status when its
+/// webhook was missed — the same endpoints are IP-gated as the payout itself).
+/// Falls back to a direct call when no relay is set. Returns { ok, status, data }.
+export async function flwGet(path: string): Promise<{ ok: boolean; status: number; data: any }> {
+  const token = await getFlwToken();
+  if (RELAY_URL) {
+    const res = await fetch(RELAY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-relay-secret": RELAY_SECRET },
+      body: JSON.stringify({ path, token, method: "GET", trace_id: `get-${crypto.randomUUID()}` }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  }
+  const res = await fetch(flwUrl(path), { headers: { Authorization: `Bearer ${token}` } });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
 /// Authenticated POST with v4's required idempotency + trace headers (both must
 /// be 12-255 chars). Returns { ok, status, data }.
 export async function flwPost(

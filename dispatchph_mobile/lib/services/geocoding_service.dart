@@ -70,7 +70,13 @@ class GeocodingService {
     );
   }
 
-  static Future<String> reverseGeocode(double lat, double lng) async {
+  /// Coordinates -> formatted address, or null if the lookup failed.
+  ///
+  /// Returns null rather than a "4.8156, 7.0498" string: raw coordinates are
+  /// not an address a courier can deliver to, and showing them makes a broken
+  /// lookup look like a successful one. Callers should keep whatever address
+  /// they already have instead.
+  static Future<String?> reverseGeocode(double lat, double lng) async {
     try {
       final res = await SupabaseService.client.functions.invoke('places-proxy', body: {
         'action': 'reverse',
@@ -78,10 +84,14 @@ class GeocodingService {
         'lng': lng,
       });
       final data = res.data;
-      if (data is Map && data['address'] is String) return data['address'] as String;
+      if (data is Map && data['address'] is String) {
+        final address = data['address'] as String;
+        if (address.trim().isNotEmpty) return address;
+      }
     } catch (_) {
-      // fall through to raw coords
+      // Most often the Geocoding API is not enabled on the server key — it is a
+      // separate API from Places, so search can work while this does not.
     }
-    return '$lat, $lng';
+    return null;
   }
 }

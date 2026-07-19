@@ -5,12 +5,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
 import '../kyc/kyc_screen.dart';
-import 'add_money_screen.dart';
 import 'withdraw_screen.dart';
 
-/// Shared wallet screen for both buyers and vendors. Buyers fund their wallet
-/// and pay from it; vendors receive sale proceeds and withdraw to bank. The
-/// primary action is role-aware.
+/// Shared wallet screen for both buyers and vendors. Vendors receive sale
+/// proceeds here and withdraw to bank. Buyers see only money owed back to
+/// them — a refund that had nowhere else to go — which they withdraw. Neither
+/// role can load money in.
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
 
@@ -20,7 +20,6 @@ class WalletScreen extends StatefulWidget {
 
 class _WalletScreenState extends State<WalletScreen> {
   String _userId = '';
-  String _role = 'buyer';
   bool _balanceHidden = false;
 
   @override
@@ -32,7 +31,6 @@ class _WalletScreenState extends State<WalletScreen> {
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     _userId = prefs.getString('auth_user_id') ?? '';
-    _role = prefs.getString('auth_role') ?? 'buyer';
     final hidden = prefs.getBool('wallet_balance_hidden') ?? false;
     if (mounted) setState(() => _balanceHidden = hidden);
     if (_userId.isNotEmpty && mounted) {
@@ -63,7 +61,6 @@ class _WalletScreenState extends State<WalletScreen> {
   @override
   Widget build(BuildContext context) {
     final format = NumberFormat('#,##0.00');
-    final isVendor = _role == 'vendor';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Wallet')),
@@ -128,39 +125,20 @@ class _WalletScreenState extends State<WalletScreen> {
                 const SizedBox(height: 16),
 
                 // Role-aware primary action
+                // Withdraw only, for both roles. Buyers cannot add money: orders
+                // are paid for individually at checkout, so a funded balance
+                // would be money they could not spend — and holding customer
+                // float is the stored-value exposure we deliberately do not take.
+                // A buyer's balance here is refund money on its way out.
                 Row(
                   children: [
-                    if (!isVendor) ...[
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: () async {
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(builder: (_) => const AddMoneyScreen()),
-                            );
-                            _load();
-                          },
-                          icon: const Icon(Icons.add),
-                          label: const Text('Add money'),
-                        ),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: () => _openWithdraw(),
+                        icon: const Icon(Icons.account_balance),
+                        label: const Text('Withdraw'),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => _openWithdraw(),
-                          icon: const Icon(Icons.account_balance),
-                          label: const Text('Withdraw'),
-                        ),
-                      ),
-                    ],
-                    if (isVendor)
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: () => _openWithdraw(),
-                          icon: const Icon(Icons.account_balance),
-                          label: const Text('Withdraw'),
-                        ),
-                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 24),

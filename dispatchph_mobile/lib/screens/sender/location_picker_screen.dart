@@ -54,6 +54,16 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   // details lookup, then regenerated. Lets Google bill the search as one unit.
   String _sessionToken = const Uuid().v4();
 
+  // Set when we move the camera ourselves (a search pick, or the locate
+  // button). The resulting onCameraIdle must not reverse-geocode over an
+  // address the user deliberately chose — a rooftop coordinate often reverses
+  // to a Plus Code or an unnamed road, which is worse than what they picked.
+  bool _programmaticMove = false;
+
+  // Guards against a slow reverse-geocode landing after a newer one and
+  // putting a stale address on screen.
+  int _addressRequest = 0;
+
   @override
   void initState() {
     super.initState();
@@ -76,8 +86,19 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   }
 
   Future<void> _moveCamera(LatLng target, double zoom) async {
+    _programmaticMove = true;
     final controller = await _mapController.future;
     await controller.animateCamera(CameraUpdate.newLatLngZoom(target, zoom));
+  }
+
+  // The map settled. If we drove it there we already know the address; only a
+  // drag by the user means "tell me what is under the pin now".
+  void _onCameraIdle() {
+    if (_programmaticMove) {
+      _programmaticMove = false;
+      return;
+    }
+    _updateAddress(_center);
   }
 
   Future<void> _getCurrentLocation() async {
@@ -99,12 +120,13 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   }
 
   Future<void> _updateAddress(LatLng point) async {
+    final request = ++_addressRequest;
     final address = await GeocodingService.reverseGeocode(point.latitude, point.longitude);
-    if (!mounted) return;
-    setState(() {
-      _address = address;
-      _center = point;
-    });
+    if (!mounted || request != _addressRequest) return;
+    // A failed lookup leaves the previous address in place. Blanking it, or
+    // replacing it with coordinates, would lose an address that was fine.
+    if (address == null || address.isEmpty) return;
+    setState(() => _address = address);
   }
 
   void _onSearchChanged(String query) {
@@ -249,7 +271,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
                           if (!_mapController.isCompleted) _mapController.complete(controller);
                         },
                         onCameraMove: (pos) => _center = pos.target,
-                        onCameraIdle: () => _updateAddress(_center),
+                        onCameraIdle: _onCameraIdle,
                         myLocationEnabled: true,
                         myLocationButtonEnabled: false,
                         zoomControlsEnabled: false,
@@ -275,7 +297,9 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
                             children: [
                               Expanded(
                                 child: Text(
-                                  _address.isNotEmpty ? _address : 'Move map to select location',
+                                  _address.isNotEmpty
+                                      ? _address
+                                      : 'Search above, or move the map to pick a spot',
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(

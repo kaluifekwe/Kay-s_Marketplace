@@ -17,6 +17,8 @@ const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 // Tunable in the admin console (app_settings); these literals stay as the final
 // fallback so behaviour is unchanged if the table is unavailable.
 const MIN_WITHDRAWAL_DEFAULT = 100;
+// Payouts at or above this need a second administrator to approve them.
+const APPROVAL_THRESHOLD_DEFAULT = 100000;
 const PIN_MAX_ATTEMPTS_DEFAULT = 5;
 const PIN_LOCK_MINUTES_DEFAULT = 15;
 
@@ -230,6 +232,43 @@ serve(async (req) => {
         .update({ status: "failed", failure_reason: revErr ? `reversal_failed:${reason}` : reason })
         .eq("id", withdrawalId);
     };
+
+    // 2b) Maker-checker: payouts at or above the approval threshold stop here for
+    // a second pair of eyes. The wallet debit above STAYS in place — it reserves
+    // the funds so the balance can't be spent twice while the payout is queued —
+    // but no transfer is initiated until an administrator approves it
+    // (admin-approve-withdrawal), which reverses the hold on rejection.
+    //
+    // Set withdrawal_approval_threshold to 0 in the admin console to require
+    // approval for every payout, or very high to effectively disable the gate.
+    const approvalThreshold = await getNumber(
+      "withdrawal_approval_threshold",
+      "WITHDRAWAL_APPROVAL_THRESHOLD",
+      APPROVAL_THRESHOLD_DEFAULT,
+    );
+    if (amt >= approvalThreshold) {
+      await supabase.from("withdrawals").update({ status: "pending_approval" }).eq("id", withdrawalId);
+      try {
+        const { data: admins } = await supabase.from("users").select("id").eq("role", "admin");
+        for (const a of admins ?? []) {
+          await supabase.from("notifications").insert({
+            user_id: (a as any).id,
+            title: "Withdrawal needs approval",
+            body: `A ₦${amt.toLocaleString()} payout is waiting for approval in the admin console.`,
+            type: "general",
+            reference_id: withdrawalId,
+          });
+        }
+      } catch (_) { /* best-effort */ }
+      return json({
+        success: true,
+        status: "pending_approval",
+        withdrawal_id: withdrawalId,
+        amount: amt,
+        balance: newBalance,
+        message: "Your withdrawal is awaiting approval. The amount is held until it's reviewed.",
+      });
+    }
 
     // 3) Initiate the Flutterwave v4 bank transfer (routed through the static-IP
     // relay so Flutterwave sees a whitelisted IP). A THROWN error here (auth

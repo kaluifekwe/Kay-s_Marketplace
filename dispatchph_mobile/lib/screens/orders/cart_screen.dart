@@ -380,12 +380,31 @@ class _CartScreenState extends State<CartScreen> {
               style: TextButton.styleFrom(foregroundColor: AppColors.charcoal),
             ),
             const Spacer(),
-            ElevatedButton.icon(
+            // Selection used to drive deletion only, so a buyer who wanted just
+            // a few of their items had no way to check out anything but the
+            // whole cart. Pay for exactly what's ticked.
+            IconButton(
               onPressed: _selected.isEmpty ? null : _deleteSelected,
               icon: const Icon(Icons.delete_outline),
-              label: Text('Delete (${_selected.length})'),
+              color: AppColors.errorRed,
+              tooltip: 'Delete selected',
+            ),
+            const SizedBox(width: 4),
+            ElevatedButton.icon(
+              onPressed: _selected.isEmpty
+                  ? null
+                  : () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => CheckoutScreen(onlyItemIds: Set<String>.from(_selected)),
+                        ),
+                      );
+                    },
+              icon: const Icon(Icons.shopping_cart_checkout),
+              label: Text('Checkout (${_selected.length})'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.errorRed,
+                backgroundColor: AppColors.primaryGreen,
                 foregroundColor: Colors.white,
               ),
             ),

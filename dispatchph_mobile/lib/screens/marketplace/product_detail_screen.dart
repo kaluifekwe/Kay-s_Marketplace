@@ -453,16 +453,31 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final prefs = await SharedPreferences.getInstance();
     final buyerId = prefs.getString('auth_user_id') ?? '';
     if (buyerId.isEmpty) return;
-    await context.read<CartCubit>().addItem(
-          buyerId,
-          widget.product.id,
-          variantLabel: _selectedVariant?.label,
-          variantPrice: _selectedVariant?.price,
-        );
+
+    // Only add when the product isn't already in the cart. addItem() does
+    // quantity+1, so an abandoned Buy Now used to leave a line behind and the
+    // next Buy Now on the same product silently made it 2, then 3…
+    // If it WAS already there, check out the line as the buyer configured it
+    // and leave it alone afterwards — we didn't create it.
+    final cart = context.read<CartCubit>();
+    final alreadyInCart = cart.state.items.any((i) => i.productId == widget.product.id);
+    if (!alreadyInCart) {
+      await cart.addItem(
+        buyerId,
+        widget.product.id,
+        variantLabel: _selectedVariant?.label,
+        variantPrice: _selectedVariant?.price,
+      );
+    }
     if (!context.mounted) return;
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => CheckoutScreen(onlyProductId: widget.product.id)),
+      MaterialPageRoute(
+        builder: (_) => CheckoutScreen(
+          onlyProductId: widget.product.id,
+          removeIfUnpaid: !alreadyInCart,
+        ),
+      ),
     );
   }
 

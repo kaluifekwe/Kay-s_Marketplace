@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../core/models/delivery_models.dart';
 import '../../core/services/delivery_service.dart';
+import '../../core/services/supabase_service.dart';
 import 'delivery_address_form.dart';
 
 /// Buyer-facing delivery address book. When [selectMode] is true the screen
@@ -30,9 +31,17 @@ class _BuyerAddressesScreenState extends State<BuyerAddressesScreen> {
 
   Future<void> _init() async {
     var id = widget.buyerId ?? '';
-    if (id.isEmpty) {
-      final prefs = await SharedPreferences.getInstance();
-      id = prefs.getString('auth_user_id') ?? '';
+    // The LIVE session is the source of truth, not the cached pref. Supabase
+    // persists its own session, so after a restore (reinstall, cleared app data)
+    // the user is signed in while 'auth_user_id' is missing — which left this
+    // screen with an empty id: the list silently showed "No saved addresses"
+    // and saving sent buyer_id:"" straight into a uuid column (22P02).
+    if (id.isEmpty) id = SupabaseService.auth.currentUser?.id ?? '';
+    final prefs = await SharedPreferences.getInstance();
+    if (id.isEmpty) id = prefs.getString('auth_user_id') ?? '';
+    // Heal the cache for the ~20 other screens that read this pref.
+    if (id.isNotEmpty && (prefs.getString('auth_user_id') ?? '').isEmpty) {
+      await prefs.setString('auth_user_id', id);
     }
     _buyerId = id;
     await _load();
@@ -65,6 +74,13 @@ class _BuyerAddressesScreenState extends State<BuyerAddressesScreen> {
   }
 
   Future<void> _addAddress() async {
+    // Belt and braces: never send an empty id into a uuid column. Without this
+    // the failure surfaced as a raw PostgrestException about "invalid input
+    // syntax for type uuid" instead of telling the user to sign in again.
+    if (_buyerId.isEmpty) {
+      _snack('Could not identify your account. Please sign out and back in.', isError: true);
+      return;
+    }
     final result = await showModalBottomSheet<DeliveryAddressResult>(
       context: context,
       isScrollControlled: true,

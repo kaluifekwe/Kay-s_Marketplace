@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../core/models/delivery_models.dart';
 import '../../core/services/delivery_service.dart';
+import '../../core/services/supabase_service.dart';
 import 'delivery_address_form.dart';
 
 /// Vendor-facing screen to manage the pickup locations couriers collect from.
@@ -29,9 +30,14 @@ class _VendorLocationsScreenState extends State<VendorLocationsScreen> {
 
   Future<void> _init() async {
     var id = widget.vendorId ?? '';
-    if (id.isEmpty) {
-      final prefs = await SharedPreferences.getInstance();
-      id = prefs.getString('auth_user_id') ?? '';
+    // Live session first — see buyer_addresses_screen: a restored Supabase
+    // session with a missing 'auth_user_id' pref left this empty, which showed
+    // an empty list and pushed vendor_id:"" into a uuid column on save.
+    if (id.isEmpty) id = SupabaseService.auth.currentUser?.id ?? '';
+    final prefs = await SharedPreferences.getInstance();
+    if (id.isEmpty) id = prefs.getString('auth_user_id') ?? '';
+    if (id.isNotEmpty && (prefs.getString('auth_user_id') ?? '').isEmpty) {
+      await prefs.setString('auth_user_id', id);
     }
     _vendorId = id;
     await _load();

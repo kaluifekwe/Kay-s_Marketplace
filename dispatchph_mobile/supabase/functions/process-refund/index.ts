@@ -1,11 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logAdminAction } from "../_shared/audit.ts";
+import { flwTransfer } from "../_shared/flutterwave.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-const paystackSecretKey = Deno.env.get("PAYSTACK_SECRET_KEY")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -233,18 +233,30 @@ serve(async (req) => {
     //
     //   credit-funded -> credit  (must NEVER reach the withdrawable wallet, or
     //                             platform-granted credit becomes cash)
-    //   wallet-funded -> wallet  (it came from there; caller cannot override)
-    //   otherwise     -> wallet, unless an admin deliberately asks for a
-    //                    bank/card payout (support cases keep that escape hatch)
+    //   otherwise     -> the buyer's VERIFIED BANK ACCOUNT, paid by Flutterwave
+    //                    transfer. Money returns to the customer's own bank
+    //                    rather than sitting on the platform as a balance.
+    //   no bank on file -> wallet, purely as a safety net. Buyer-requested
+    //                    refunds require an account up front, but automated ones
+    //                    (delivery failure, expired pickup, dispute timeout) can
+    //                    fire for a buyer who never added one — and a refund must
+    //                    never strand. Refund-typed wallet money stays
+    //                    withdrawable, so the buyer can still take it out.
+    const { data: buyerBank } = await supabase
+      .from("buyer_bank_accounts")
+      .select("bank_code, account_number, account_name, is_verified")
+      .eq("buyer_id", order.buyer_id)
+      .maybeSingle();
+    const bankOnFile = !!(buyerBank?.is_verified && buyerBank?.bank_code && buyerBank?.account_number);
+
     let method: string;
     if (creditFunded) {
       method = "credit";
-    } else if (fundingSource === "wallet") {
-      method = "wallet";
-    } else if (refund_method === "bank" || refund_method === "card") {
-      method = refund_method;
+    } else if (bankOnFile) {
+      method = "bank";
     } else {
       method = "wallet";
+      console.log(`process-refund: order ${order_id} has no verified bank account — refunding to wallet instead`);
     }
     if (refund_method && refund_method !== method) {
       console.log(
@@ -310,77 +322,51 @@ serve(async (req) => {
       refundReference = `refund_${order_id}`;
 
     } else if (method === "bank") {
-      // Paystack transfer to buyer bank account
-      const { data: buyerBank } = await supabase
-        .from("buyer_bank_accounts")
-        .select("paystack_recipient_code, bank_name, account_number")
-        .eq("buyer_id", order.buyer_id)
-        .maybeSingle();
-
-      if (!buyerBank || !buyerBank.paystack_recipient_code) {
+      // Flutterwave transfer to the buyer's verified bank account. Same shape and
+      // relay path as wallet-withdraw, so payouts and refunds share one proven
+      // route. Idempotent on refund_<order_id>: a retried refund cannot pay twice.
+      const ref = `refund_${order_id}`;
+      let transfer: { ok: boolean; status: number; data: any };
+      try {
+        transfer = await flwTransfer(
+          {
+            action: "instant",
+            type: "bank",
+            reference: ref,
+            narration: "Kays Market refund",
+            payment_instruction: {
+              source_currency: "NGN",
+              destination_currency: "NGN",
+              amount: { applies_to: "destination_currency", value: refundAmount },
+              recipient: {
+                bank: { account_number: buyerBank!.account_number, code: buyerBank!.bank_code },
+              },
+            },
+          },
+          ref,
+        );
+      } catch (e) {
+        // Never leave the order stuck in refund_processing when the transfer
+        // never left — release the claim so it can be retried.
+        console.error(`refund transfer threw for ${ref}:`, e);
         await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
         return new Response(
-          JSON.stringify({ error: "No bank account on file. Please add one in Profile first." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          JSON.stringify({ error: "Could not reach the transfer service. Please try again." }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      const transferResponse = await fetch("https://api.paystack.co/transfer", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${paystackSecretKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          source: "balance",
-          amount: Math.round(refundAmount * 100),
-          recipient: buyerBank.paystack_recipient_code,
-          reason: `Refund for order ${order_id.substring(0, 8)} - Kays Market`,
-          reference: `refund_${order_id}`,
-        }),
-      });
-
-      const transferData = await transferResponse.json();
-
-      if (!transferData.status) {
-        console.error("Bank transfer refund error:", transferData);
+      const tData = transfer.data?.data ?? transfer.data;
+      if (!transfer.ok) {
+        console.error(`refund transfer failed status=${transfer.status} body=${JSON.stringify(transfer.data).slice(0, 300)}`);
         await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
         return new Response(
-          JSON.stringify({ error: transferData.message || "Bank transfer failed" }),
+          JSON.stringify({ error: tData?.message || "Bank refund could not be initiated" }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+      refundReference = ref;
 
-      refundReference = transferData.data.reference;
-
-    } else {
-      // Card refund via Paystack
-      const refundResponse = await fetch("https://api.paystack.co/refund", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${paystackSecretKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          transaction: order.payment_reference || tx?.paystack_reference,
-          amount: Math.round(refundAmount * 100),
-          reason: reason || "Dispute resolved in buyer's favor",
-          merchant_note: `Refund for order ${order_id.substring(0, 8)}${dispute_id ? `, dispute: ${dispute_id}` : ""}`,
-        }),
-      });
-
-      const refundData = await refundResponse.json();
-
-      if (!refundData.status) {
-        console.error("Paystack refund error:", refundData);
-        await supabase.from("orders").update({ status: originalStatus }).eq("id", order_id);
-        return new Response(
-          JSON.stringify({ error: refundData.message || "Refund failed" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      refundReference = refundData.data.reference || `ref_${order_id}`;
     }
 
     // Record refund transaction

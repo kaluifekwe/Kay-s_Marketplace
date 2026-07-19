@@ -24,6 +24,7 @@ import {
   BankOutlined,
   SettingOutlined,
   FileSearchOutlined,
+  UndoOutlined,
 } from "@ant-design/icons";
 
 import { supabaseClient } from "./supabaseClient";
@@ -35,6 +36,7 @@ import { DisputeList, DisputeShow } from "./pages/disputes";
 import { WithdrawalList } from "./pages/withdrawals";
 import { SettingsList } from "./pages/settings";
 import { AuditList } from "./pages/audit";
+import { RefundList } from "./pages/refunds";
 
 const BRAND = "#1b8a3a"; // Kays Market green
 
@@ -66,6 +68,11 @@ function App() {
                 list: "/disputes",
                 show: "/disputes/show/:id",
                 meta: { label: "Disputes", icon: <WarningOutlined /> },
+              },
+              {
+                name: "refund_requests",
+                list: "/refunds",
+                meta: { label: "Refunds", icon: <UndoOutlined /> },
               },
               {
                 name: "withdrawals",
@@ -123,6 +130,9 @@ function App() {
                 <Route path="/disputes">
                   <Route index element={<DisputeList />} />
                   <Route path="show/:id" element={<DisputeShow />} />
+                </Route>
+                <Route path="/refunds">
+                  <Route index element={<RefundList />} />
                 </Route>
                 <Route path="/withdrawals">
                   <Route index element={<WithdrawalList />} />

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../../core/services/error_text.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
-import 'package:uuid/uuid.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
@@ -10,13 +9,11 @@ import '../../core/models/models.dart';
 import '../../core/models/delivery_models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/credit_service.dart';
-import '../../core/services/wallet_service.dart';
 import '../../core/services/payment_service.dart';
 import '../../core/services/delivery_service.dart';
 import '../../widgets/rider_searching_indicator.dart';
 import '../delivery/buyer_addresses_screen.dart';
 import '../chat/chat_screen.dart';
-import '../wallet/add_money_screen.dart';
 import 'flutterwave_checkout_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
@@ -24,7 +21,21 @@ class CheckoutScreen extends StatefulWidget {
   /// leaving the buyer's other cart items untouched. Null = whole-cart checkout.
   final String? onlyProductId;
 
-  const CheckoutScreen({super.key, this.onlyProductId});
+  /// Cart-item ids to check out when the buyer ticked a subset in the cart.
+  /// Null = not a subset checkout. Takes precedence over [onlyProductId].
+  final Set<String>? onlyItemIds;
+
+  /// True when "Buy Now" created the cart line purely to drive this checkout.
+  /// If the buyer leaves without paying we remove it again, so an abandoned
+  /// Buy Now doesn't silently leave (and then accumulate) items in the cart.
+  final bool removeIfUnpaid;
+
+  const CheckoutScreen({
+    super.key,
+    this.onlyProductId,
+    this.onlyItemIds,
+    this.removeIfUnpaid = false,
+  });
 
   @override
   State<CheckoutScreen> createState() => _CheckoutScreenState();
@@ -45,7 +56,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   final Map<String, bool> _storeQuoteLoading = {};
   // Stable key for this checkout session so a timeout-then-retry of wallet
   // payment reuses the same reference and can't double-charge (server dedupes).
-  final String _walletCheckoutKey = const Uuid().v4();
   // Whether each store's courier-quote search has definitively finished — found
   // couriers, genuine zero-coverage, or errored after all retries. Lets us tell
   // "still searching / not yet tried" apart from "searched, none available", so
@@ -57,18 +67,49 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   double _creditBalance = 0;
   String _buyerId = '';
 
+  /// Set once a payment has been taken (or handed to the card provider), so the
+  /// abandonment cleanup below never removes something the buyer paid for.
+  bool _paid = false;
+  /// Captured for dispose(), where reading `context` is no longer safe.
+  CartCubit? _cartRef;
+
+  @override
+  void dispose() {
+    // "Buy Now" creates a cart line just to drive this checkout. If the buyer
+    // leaves without paying, take it back out — otherwise it lingers in the
+    // cart and every further Buy Now on that product stacks another unit.
+    // Fire-and-forget: dispose can't await, and CartCubit swallows its own
+    // errors. Skipped entirely once _paid is set.
+    final cart = _cartRef;
+    if (widget.removeIfUnpaid && !_paid && _buyerId.isNotEmpty && cart != null) {
+      final ids = _scopedItems(cart.state).map((i) => i.id).toList();
+      if (ids.isNotEmpty) cart.removeItems(ids, _buyerId);
+    }
+    super.dispose();
+  }
+
   bool get _hasCourierDelivery => _storeCourier.values.any((c) => c != null);
 
   // When onlyProductId is set (single-product "Buy Now"), the whole checkout —
   // display, totals, delivery quotes, orders, and the post-payment cart clear —
   // works on just that product's cart line, so the rest of the cart is left
   // intact. Null = normal whole-cart checkout.
-  List<CartItem> _scopedItems(CartState s) => widget.onlyProductId == null
-      ? s.items
-      : s.items.where((i) => i.productId == widget.onlyProductId).toList();
+  /// True when this checkout covers only part of the cart (Buy Now, or a
+  /// subset the buyer ticked) rather than everything.
+  bool get _isScoped => widget.onlyItemIds != null || widget.onlyProductId != null;
+
+  List<CartItem> _scopedItems(CartState s) {
+    if (widget.onlyItemIds != null) {
+      return s.items.where((i) => widget.onlyItemIds!.contains(i.id)).toList();
+    }
+    if (widget.onlyProductId != null) {
+      return s.items.where((i) => i.productId == widget.onlyProductId).toList();
+    }
+    return s.items;
+  }
 
   double _scopedTotal(CartState s) {
-    if (widget.onlyProductId == null) return s.total;
+    if (!_isScoped) return s.total;
     double t = 0;
     for (final i in _scopedItems(s)) {
       final unit = i.variantPrice ?? s.productMap[i.productId]?.price ?? 0;
@@ -80,7 +121,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   /// Clear only what was checked out: the whole cart normally, or just the
   /// single "Buy Now" product's line when scoped.
   Future<void> _clearCheckedOut() async {
-    if (widget.onlyProductId == null) {
+    // Clear EXACTLY what was paid for. A scoped checkout (Buy Now, or a subset
+    // the buyer ticked) must leave the rest of the cart alone.
+    if (widget.onlyItemIds != null) {
+      await context.read<CartCubit>().removeItems(widget.onlyItemIds!.toList(), _buyerId);
+    } else if (widget.onlyProductId == null) {
       // NB: must be clearCart — calling _clearCheckedOut() here recursed
       // forever, so the await never completed: after a successful wallet/credit
       // payment the success dialog never showed and the button spun for ever
@@ -102,6 +147,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Captured here because dispose() can no longer read `context`.
+    _cartRef ??= context.read<CartCubit>();
     if (!_loaded) {
       _loaded = true;
       _loadData();
@@ -693,63 +740,45 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 ),
               ),
               const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: (_isPayingWithCredit || _isPayingWithWallet)
-                      ? null
-                      : () {
-                          if (deliveryUnagreed) {
-                            _showDeliveryBlockedSnack();
-                            return;
-                          }
-                          if (creditCoversFull) {
-                            _completeWithCredit(totalWithDelivery);
-                          } else {
-                            _completeWithWallet(totalWithDelivery);
-                          }
-                        },
-                  icon: (_isPayingWithCredit || _isPayingWithWallet)
-                      ? const SizedBox(
-                          width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : Icon(creditCoversFull ? Icons.check_circle : Icons.account_balance_wallet),
-                  label: Text(creditCoversFull
-                      ? 'Complete with Credit'
-                      : 'Pay \u20A6${format.format(amountToPay)} from Wallet'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primaryGreen,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                creditCoversFull
-                    ? 'Full order covered by Kay\'s Credit'
-                    : 'Paid from your wallet • held in escrow until delivery',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: AppColors.mediumGray, fontSize: 12),
-              ),
-              // Card / bank transfer (Flutterwave). Only shown when Kay's Credit
-              // doesn't already cover the full order — otherwise the button above
-              // completes for free. No NIN needed: money flows FROM the buyer.
-              if (!creditCoversFull) ...[
-                const SizedBox(height: 12),
-                Row(
-                  children: const [
-                    Expanded(child: Divider()),
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 12),
-                      child: Text('or', style: TextStyle(color: AppColors.mediumGray)),
-                    ),
-                    Expanded(child: Divider()),
-                  ],
-                ),
-                const SizedBox(height: 12),
+              // Paying from a stored wallet balance was removed: buyers pay per
+              // order online (card / transfer / USSD) so no customer value is
+              // held on the platform. Kay's Credit is promotional, spend-only
+              // and non-withdrawable, so it stays.
+              if (creditCoversFull) ...[
                 SizedBox(
                   width: double.infinity,
-                  child: OutlinedButton.icon(
+                  child: ElevatedButton.icon(
+                    onPressed: _isPayingWithCredit
+                        ? null
+                        : () {
+                            if (deliveryUnagreed) {
+                              _showDeliveryBlockedSnack();
+                              return;
+                            }
+                            _completeWithCredit(totalWithDelivery);
+                          },
+                    icon: _isPayingWithCredit
+                        ? const SizedBox(
+                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.check_circle),
+                    label: const Text('Complete with Credit'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryGreen,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  "Full order covered by Kay's Credit",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.mediumGray, fontSize: 12),
+                ),
+              ] else ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
                     onPressed: _isPayingWithCard
                         ? null
                         : () {
@@ -761,19 +790,19 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                           },
                     icon: _isPayingWithCard
                         ? const SizedBox(
-                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primaryGreen))
+                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                         : const Icon(Icons.credit_card),
-                    label: Text('Pay ₦${format.format(totalWithDelivery)} online'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.primaryGreen,
-                      side: const BorderSide(color: AppColors.primaryGreen),
+                    label: Text('Pay ₦${format.format(amountToPay)} online'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryGreen,
+                      foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 18),
                     ),
                   ),
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "Opens on card — tap “Change payment method” for transfer, USSD or eNaira • held in escrow",
+                  "Card, bank transfer, USSD or eNaira — tap “Change payment method” at checkout • held in escrow",
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppColors.mediumGray, fontSize: 12),
                 ),
@@ -1083,13 +1112,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 
   bool _isPayingWithCredit = false;
-  bool _isPayingWithWallet = false;
   bool _isPayingWithCard = false;
 
   /// Any payment method currently in flight. Handlers check this to block a
   /// second payment starting, so we don't need to visually disable every button
   /// when one is tapped (which looked like both buttons were being pressed).
-  bool get _paymentInFlight => _isPayingWithCredit || _isPayingWithWallet || _isPayingWithCard;
+  bool get _paymentInFlight => _isPayingWithCredit || _isPayingWithCard;
 
   Future<void> _completeWithCredit(double total) async {
     if (_buyerId.isEmpty || _paymentInFlight) return;
@@ -1158,6 +1186,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       await CreditService.completeCreditOrder(buyerId: _buyerId, vendorOrders: vendorOrders);
 
       if (!mounted) return;
+      _paid = true; // payment taken — don't undo the Buy Now line
       await _clearCheckedOut();
 
       showDialog(
@@ -1315,79 +1344,4 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
-  /// Pay the whole order from the buyer's wallet. Builds one vendor order per
-  /// store (mirroring the credit + card paths) with any courier selection
-  /// attached, then calls wallet-checkout. If the balance is short, offers to
-  /// top up.
-  Future<void> _completeWithWallet(double total) async {
-    if (_buyerId.isEmpty || _paymentInFlight) return;
-    setState(() => _isPayingWithWallet = true);
-
-    try {
-      final vendorOrders = await _buildVendorOrders();
-      if (vendorOrders == null) {
-        if (mounted) setState(() => _isPayingWithWallet = false);
-        return;
-      }
-
-      await WalletService.checkout(
-        buyerId: _buyerId,
-        vendorOrders: vendorOrders,
-        idempotencyKey: _walletCheckoutKey,
-      );
-
-      if (!mounted) return;
-      await _clearCheckedOut();
-
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => AlertDialog(
-          icon: const Icon(Icons.check_circle, color: AppColors.successGreen, size: 64),
-          title: const Text('Order Complete'),
-          content: Text('Paid from your wallet.\nTotal: ₦${NumberFormat('#,##0').format(total)}'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.pop(context);
-              },
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
-    } on WalletInsufficient catch (e) {
-      if (!mounted) return;
-      final fmt = NumberFormat('#,##0');
-      showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Not enough wallet balance'),
-          content: Text(
-            'Your wallet has ₦${fmt.format(e.balance)} but this order is ₦${fmt.format(e.required)}.\n'
-            'Add ₦${fmt.format(e.shortfall)} to continue.',
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const AddMoneyScreen()));
-              },
-              child: const Text('Add money'),
-            ),
-          ],
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isPayingWithWallet = false);
-    }
-  }
 }

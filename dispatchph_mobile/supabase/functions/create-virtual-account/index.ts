@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { flwPost } from "../_shared/flutterwave.ts";
+import { getBool } from "../_shared/settings.ts";
 
 // Creates (or returns) a buyer's PERMANENT (static) Flutterwave v4 virtual
 // account. In v4 you first create a customer, then create a static virtual
@@ -47,6 +48,25 @@ serve(async (req) => {
   try {
     const callerId = getUserIdFromToken(req.headers.get("Authorization"));
     if (!callerId) return json({ error: "Unauthorized" }, 401);
+
+    // Buyer wallet funding is switched OFF: buyers pay per order (card, transfer,
+    // USSD) and refunds are paid out to their bank, so the platform holds no
+    // customer value. A virtual account is the only way money can enter a wallet,
+    // so refusing to create one is the actual control — enforced here rather than
+    // in the app, since a modified client could still call this endpoint.
+    //
+    // Spending an existing balance is deliberately NOT blocked: if a refund ever
+    // lands in a wallet (the no-bank-account fallback in process-refund), that
+    // money must stay usable rather than being trapped.
+    //
+    // Flip `buyer_wallet_funding_enabled` in the admin console to re-enable,
+    // e.g. if the licensed partner confirms the model in writing.
+    if (!(await getBool("buyer_wallet_funding_enabled", "BUYER_WALLET_FUNDING_ENABLED", false))) {
+      return json({
+        error: "wallet_funding_disabled",
+        message: "Wallet funding isn't available. You can pay for orders directly by card, bank transfer or USSD.",
+      }, 403);
+    }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 

@@ -11,6 +11,12 @@ import '../services/credit_service.dart';
 import '../models/models.dart';
 import 'notification_bloc.dart';
 
+/// Returned by [OrderCubit.cancelOrder] when the buyer has no verified bank
+/// account. Refunds are paid out to the buyer's bank, so the UI should offer to
+/// add one rather than just showing this as a failure.
+const String kNoBankAccountError =
+    'Add and verify your bank account first — that is where your refund is paid.';
+
 class OrderCubit extends Cubit<OrderState> {
   final EscrowService _escrow;
   RealtimeChannel? _ordersChannel;
@@ -333,16 +339,16 @@ class OrderCubit extends Cubit<OrderState> {
     }
   }
 
-  /// Buyer cancels order BEFORE vendor ships — full refund
   /// Buyer-initiated cancellation. Returns null on success, or an error message
   /// to show the buyer. Only allowed BEFORE a rider is booked — once the vendor
-  /// has requested a rider the order can no longer be cancelled (the courier fee
-  /// is committed and the rider is on the way); the buyer waits for delivery or
-  /// reports a problem. The refund is issued by the `process-refund` edge
-  /// function (idempotent, server-authorised), which routes it back to the
-  /// SOURCE the order was funded from — wallet-paid returns to the wallet,
-  /// credit-paid returns to Kay's Credit. Deliberately does NOT send a
-  /// refund_method: the server owns that decision.
+  /// has requested a rider the courier fee is committed, so the buyer waits for
+  /// delivery or reports a problem instead.
+  ///
+  /// This no longer refunds directly. It SUBMITS A REFUND REQUEST that an
+  /// administrator approves, and an approved refund is paid out to the buyer's
+  /// verified bank account. A verified account is therefore required up front —
+  /// `no_bank_account` comes back when one is missing so the caller can send the
+  /// buyer to add theirs.
   Future<String?> cancelOrder(String orderId, String buyerId) async {
     try {
       final orderData = await SupabaseService.client
@@ -360,34 +366,38 @@ class OrderCubit extends Cubit<OrderState> {
 
       final session = SupabaseService.client.auth.currentSession;
       final response = await SupabaseService.client.functions.invoke(
-        'process-refund',
+        'request-refund',
         headers: {
           'Content-Type': 'application/json',
           if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
         },
         body: {
           'order_id': orderId,
-          'reason': 'buyer_cancelled',
+          'reason': 'Buyer cancelled the order',
         },
       );
 
       if (response.status != 200) {
-        final msg = (response.data is Map) ? response.data['error'] as String? : null;
-        return msg ?? 'Could not cancel the order. Please try again.';
+        final data = response.data is Map ? response.data as Map : const {};
+        // Surface the missing-bank-account case verbatim so the UI can offer to
+        // add one — a refund has nowhere to go without it.
+        if (data['error'] == 'no_bank_account') return kNoBankAccountError;
+        final msg = data['message'] as String? ?? data['error'] as String?;
+        return msg ?? 'Could not submit your refund request. Please try again.';
       }
 
       final vendorId = orderData['vendor_id'] as String;
       PushService.sendPush(
         userId: vendorId,
         title: 'Order Cancelled',
-        body: 'A buyer cancelled their order (refund issued).',
+        body: 'A buyer cancelled their order (refund pending review).',
         data: {'type': 'order', 'orderId': orderId},
       );
 
       await NotificationCubit.create(
         userId: vendorId,
         title: 'Order Cancelled',
-        body: 'A buyer cancelled their order (refund issued).',
+        body: 'A buyer cancelled their order (refund pending review).',
         type: 'vendor_order',
         referenceId: orderId,
       );

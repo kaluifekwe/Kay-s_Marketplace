@@ -324,8 +324,17 @@ serve(async (req) => {
     } else if (method === "bank") {
       // Flutterwave transfer to the buyer's verified bank account. Same shape and
       // relay path as wallet-withdraw, so payouts and refunds share one proven
-      // route. Idempotent on refund_<order_id>: a retried refund cannot pay twice.
-      const ref = `refund_${order_id}`;
+      // route. Idempotent on the reference: a retried refund cannot pay twice.
+      //
+      // Flutterwave requires the reference to be ALPHANUMERIC and 6 to 42
+      // characters. `refund_<uuid>` satisfied neither: the underscore and the
+      // uuid's hyphens are not alphanumeric, and 7 + 36 = 43 characters is one
+      // over the limit. Every bank refund was rejected with REQUEST_NOT_VALID
+      // before any money moved. Stripping the hyphens gives 6 + 32 = 38
+      // alphanumeric characters, and it stays derived from the order id so the
+      // idempotency guarantee is unchanged. wallet-withdraw already builds its
+      // reference this way; this path simply did not.
+      const ref = `refund${String(order_id).replace(/-/g, "")}`;
       let transfer: { ok: boolean; status: number; data: any };
       try {
         transfer = await flwTransfer(

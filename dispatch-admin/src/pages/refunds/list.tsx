@@ -5,6 +5,7 @@ import { CheckOutlined, CloseOutlined } from "@ant-design/icons";
 import type { CrudFilters } from "@refinedev/core";
 import { naira } from "../../format";
 import { supabaseClient } from "../../supabaseClient";
+import { fnError } from "../../fnError";
 
 const { Text, Paragraph } = Typography;
 
@@ -55,7 +56,7 @@ export const RefundList = () => {
       setNotes((n) => ({ ...n, [id]: "" }));
       tableQueryResult?.refetch();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Could not complete that."));
+      message.error(await fnError(e, "Could not complete that."));
     } finally {
       setBusy(null);
     }

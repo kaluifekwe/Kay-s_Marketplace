@@ -21,6 +21,7 @@ import {
 } from "@ant-design/icons";
 import { statusColor } from "../../format";
 import { supabaseClient } from "../../supabaseClient";
+import { fnError } from "../../fnError";
 
 const { Text, Paragraph } = Typography;
 
@@ -80,7 +81,7 @@ export const DisputeShow = () => {
       setNotes("");
       queryResult?.refetch();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Could not resolve the dispute."));
+      message.error(await fnError(e, "Could not resolve the dispute."));
     } finally {
       setBusy(null);
     }

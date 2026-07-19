@@ -14,6 +14,7 @@ import {
 } from "antd";
 import { SaveOutlined } from "@ant-design/icons";
 import { supabaseClient } from "../../supabaseClient";
+import { fnError } from "../../fnError";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -75,7 +76,7 @@ export const SettingsList = () => {
       message.success(`Saved "${s.key}". Live within a minute.`);
       load();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Could not save."));
+      message.error(await fnError(e, "Could not save."));
     } finally {
       setSaving(null);
     }

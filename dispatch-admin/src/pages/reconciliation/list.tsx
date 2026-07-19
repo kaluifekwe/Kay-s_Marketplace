@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { CrudFilters } from "@refinedev/core";
 import { naira } from "../../format";
 import { supabaseClient } from "../../supabaseClient";
+import { fnError } from "../../fnError";
 
 const { Text, Paragraph } = Typography;
 
@@ -76,7 +77,7 @@ export const ReconciliationList = () => {
       message.success(parts.join(" · "));
       tableQueryResult?.refetch();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Reconciliation failed."));
+      message.error(await fnError(e, "Reconciliation failed."));
     } finally {
       setRunning(false);
     }

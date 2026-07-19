@@ -17,6 +17,7 @@ import {
 import { DollarOutlined, RollbackOutlined } from "@ant-design/icons";
 import { naira, statusColor } from "../../format";
 import { supabaseClient } from "../../supabaseClient";
+import { fnError } from "../../fnError";
 
 const { Title, Paragraph } = Typography;
 
@@ -83,7 +84,7 @@ export const OrderShow = () => {
       setReason("");
       queryResult?.refetch();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Action failed."));
+      message.error(await fnError(e, "Action failed."));
     } finally {
       setBusy(null);
     }

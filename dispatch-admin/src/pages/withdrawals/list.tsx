@@ -5,6 +5,7 @@ import { SyncOutlined } from "@ant-design/icons";
 import type { CrudFilters } from "@refinedev/core";
 import { naira, statusColor } from "../../format";
 import { supabaseClient } from "../../supabaseClient";
+import { fnError } from "../../fnError";
 
 const { Text } = Typography;
 
@@ -50,7 +51,7 @@ export const WithdrawalList = () => {
       setApprovalNote((n) => ({ ...n, [id]: "" }));
       tableQueryResult?.refetch();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Could not complete that."));
+      message.error(await fnError(e, "Could not complete that."));
     } finally {
       setReconciling(null);
     }
@@ -70,7 +71,7 @@ export const WithdrawalList = () => {
       else message.info((data as any)?.message ?? "Still processing at Flutterwave.");
       tableQueryResult?.refetch();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Reconcile failed."));
+      message.error(await fnError(e, "Reconcile failed."));
     } finally {
       setReconciling(null);
     }

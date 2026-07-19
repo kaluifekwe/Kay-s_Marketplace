@@ -20,6 +20,7 @@ import {
 import { WalletOutlined, PlusOutlined, MinusOutlined } from "@ant-design/icons";
 import { naira } from "../../format";
 import { supabaseClient } from "../../supabaseClient";
+import { fnError } from "../../fnError";
 
 const { Title, Text } = Typography;
 
@@ -95,7 +96,7 @@ export const UserShow = () => {
       form.resetFields();
       loadWallet();
     } catch (e: any) {
-      message.error(String(e?.context?.error || e?.message || "Adjustment failed."));
+      message.error(await fnError(e, "Adjustment failed."));
     } finally {
       setSubmitting(false);
     }

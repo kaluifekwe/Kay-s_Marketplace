@@ -211,18 +211,23 @@ class OrderCubit extends Cubit<OrderState> {
   Future<bool> confirmDelivery({
     required String orderId,
     required String buyerId,
-    required String deliveryPhotoPath,
+    String? deliveryPhotoPath,
   }) async {
     emit(state.copyWith(isSubmitting: true));
     try {
-      final deliveryPhotoUrl = await StorageService.uploadDeliveryConfirmation(
-        orderId: orderId,
-        filePath: deliveryPhotoPath,
-      );
-
-      if (deliveryPhotoUrl == null) {
-        emit(state.copyWith(isSubmitting: false));
-        return false;
+      // The photo is EVIDENCE, not a gate. Requiring it meant a buyer holding
+      // the goods had to photograph them before they could say so, and the ones
+      // who wouldn't bother fell silent instead — which pushed the order down
+      // the 24h escalation path and made "no confirmation" look like a delivery
+      // problem when it was really an upload problem. A failed upload no longer
+      // blocks the confirmation either; losing the photo is better than
+      // stranding an order whose buyer has told us it arrived.
+      String? deliveryPhotoUrl;
+      if (deliveryPhotoPath != null) {
+        deliveryPhotoUrl = await StorageService.uploadDeliveryConfirmation(
+          orderId: orderId,
+          filePath: deliveryPhotoPath,
+        );
       }
 
       _escrow.cancelAutoRelease(orderId);

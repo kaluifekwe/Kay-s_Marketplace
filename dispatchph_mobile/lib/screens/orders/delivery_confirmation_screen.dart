@@ -55,15 +55,9 @@ class _DeliveryConfirmationScreenState extends State<DeliveryConfirmationScreen>
   }
 
   Future<void> _confirmDelivery() async {
-    if (_deliveryPhoto == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please upload a photo of the received item'),
-          backgroundColor: AppColors.errorRed,
-        ),
-      );
-      return;
-    }
+    // A photo is welcome but not required — see OrderCubit.confirmDelivery.
+    // Blocking on it turned "I got my order" into a chore and left orders
+    // unconfirmed, which is worse for everyone than a missing picture.
 
     // Final, explicit warning: confirmation is irreversible. This is the moment
     // the buyer waives any dispute/refund, so make the consequence unmistakable
@@ -101,7 +95,7 @@ class _DeliveryConfirmationScreenState extends State<DeliveryConfirmationScreen>
     final success = await context.read<OrderCubit>().confirmDelivery(
       orderId: widget.order.id,
       buyerId: buyerId,
-      deliveryPhotoPath: _deliveryPhoto!.path,
+      deliveryPhotoPath: _deliveryPhoto?.path,
     );
 
     setState(() => _isSubmitting = false);
@@ -156,7 +150,7 @@ class _DeliveryConfirmationScreenState extends State<DeliveryConfirmationScreen>
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Photo evidence is required to confirm delivery. This protects both you and the vendor.',
+                      'Adding a photo is optional, but it protects you if anything is disputed later.',
                       style: TextStyle(color: AppColors.warningOrange, fontSize: 13),
                     ),
                   ),
@@ -212,10 +206,10 @@ class _DeliveryConfirmationScreenState extends State<DeliveryConfirmationScreen>
             ],
 
             // Delivery photo upload
-            const Text('Upload Photo Evidence', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const Text('Add a Photo (optional)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             const Text(
-              'Take a clear photo of the item you received. This serves as proof of delivery.',
+              'A photo of what you received is useful evidence if you later report a problem. You can confirm without one.',
               style: TextStyle(color: AppColors.mediumGray, fontSize: 13),
             ),
             const SizedBox(height: 12),
@@ -242,7 +236,7 @@ class _DeliveryConfirmationScreenState extends State<DeliveryConfirmationScreen>
                           const SizedBox(height: 8),
                           const Text('Tap to add photo', style: TextStyle(color: AppColors.mediumGray)),
                           const SizedBox(height: 4),
-                          const Text('(Required)', style: TextStyle(color: AppColors.errorRed, fontSize: 12)),
+                          const Text('(Optional)', style: TextStyle(color: AppColors.mediumGray, fontSize: 12)),
                         ],
                       ),
               ),

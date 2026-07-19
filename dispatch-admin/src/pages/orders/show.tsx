@@ -58,15 +58,18 @@ export const OrderShow = () => {
   const items = parseItems(record?.items);
 
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState<null | "refund" | "release">(null);
+  const [busy, setBusy] = useState<null | "refund" | "release" | "held">(null);
 
   const status = record?.status as string | undefined;
   const canRefund = !!status && REFUNDABLE_STATUSES.includes(status);
   const canRelease =
     !!status && RELEASABLE_STATUSES.includes(status) && record?.payment_released !== true;
+  // Vendor-arranged delivery, buyer never confirmed: auto-release deliberately
+  // stopped rather than paying on a timer. It waits here for a person.
+  const isHeld = record?.payout_held === true && record?.payment_released !== true;
 
   const run = async (
-    action: "refund" | "release",
+    action: "refund" | "release" | "held",
     fn: string,
     body: Record<string, unknown>,
     okMsg: string,
@@ -172,7 +175,26 @@ export const OrderShow = () => {
           />
         )}
 
-        {canRefund && (
+        {isHeld && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Payout held — your decision is needed"
+            description={
+              <>
+                This was a <b>vendor-arranged delivery</b> and the buyer never confirmed receipt. No
+                courier confirmed it independently either, so nothing was released on the timer — the
+                vendor is unpaid and the money is still held. Check the vendor's shipping photo and
+                the chat before deciding. <b>Releasing pays the vendor on their own word</b>, so your
+                reason is recorded against your name in the audit log.
+                {record?.payout_held_at ? ` Held since ${new Date(record.payout_held_at).toLocaleString()}.` : ""}
+              </>
+            }
+          />
+        )}
+
+        {(canRefund || isHeld) && (
           <>
             <Paragraph type="secondary" style={{ marginTop: 0 }}>
               <b>Refund order</b> returns the buyer's money to their wallet (credit-funded orders
@@ -189,6 +211,30 @@ export const OrderShow = () => {
         )}
 
         <Space wrap>
+          {isHeld && (
+            <Popconfirm
+              title="Pay the vendor for this order?"
+              description="The buyer never confirmed receipt. Pays the vendor now; this cannot be undone."
+              okText="Pay vendor"
+              onConfirm={() =>
+                run(
+                  "held",
+                  "admin-release-held-payout",
+                  { order_id: record?.id, decision: "release", reason },
+                  "Payout released to the vendor.",
+                )
+              }
+            >
+              <Button
+                type="primary"
+                icon={<DollarOutlined />}
+                loading={busy === "held"}
+                disabled={busy !== null || reason.trim().length < 5}
+              >
+                Release held payout
+              </Button>
+            </Popconfirm>
+          )}
           {canRelease && (
             <Popconfirm
               title="Release escrow to the vendor?"

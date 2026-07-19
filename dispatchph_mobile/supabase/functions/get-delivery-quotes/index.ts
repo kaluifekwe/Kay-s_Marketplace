@@ -187,6 +187,15 @@ serve(async (req) => {
     const { couriers, providerData, reason } = await quoteAll({ sender, receiver, items: packageItems });
 
     if (couriers.length === 0) {
+      // Log the per-provider reasons. The client only decides whether to retry
+      // from this string, so when a buyer reports "no riders" this is the only
+      // record of WHY — and the difference between a route no courier covers and
+      // a provider that fell over on the first call is invisible without it.
+      console.log(
+        `no-couriers vendor=${vendor_id} city=${delivery_city ?? "?"} ` +
+        `state=${receiver.state || "?"} coords=${delivery_latitude ?? "-"},${delivery_longitude ?? "-"} ` +
+        `reason=${reason}`,
+      );
       return json({ quote_id: null, couriers: [], reason });
     }
 

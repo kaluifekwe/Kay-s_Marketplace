@@ -33,6 +33,8 @@ serve(async (req) => {
   const releaseErrors: Record<string, string> = {};
 
   const flaggedForReview: string[] = [];
+  // Vendor-arranged orders parked for an administrator instead of auto-released.
+  const heldForDecision: string[] = [];
 
   try {
     // ---- 1a. At the 24h mark, a still-silent buyer (no confirm, no dispute)
@@ -83,12 +85,25 @@ serve(async (req) => {
 
     // ---- 1b. Release escrow for flagged orders whose 12h grace period has
     // also passed, as long as no dispute has since been opened.
+    //
+    // COURIER ORDERS ONLY. On a courier delivery the "delivered" state was
+    // written by the courier company's own system through a server-to-server
+    // webhook, so an independent third party has attested that the parcel
+    // arrived. Releasing on a silent buyer is reasonable: we have evidence.
+    //
+    // On a VENDOR-ARRANGED delivery there is no such attestation. The vendor
+    // marked their own order shipped and supplied the only photograph, so
+    // releasing on silence would pay the vendor on their own word, with the
+    // 12h admin notification serving as the sole check — and a notification
+    // nobody opens is not a check. Those orders stay held, in the admin
+    // queue, until a person decides. See the query below.
     const { data: dueOrders } = await supabase
       .from("orders")
       .select("id, buyer_id")
       .eq("status", "shipped")
       .eq("admin_review_flagged", true)
       .eq("has_dispute", false)
+      .eq("delivery_type", "courier")
       .not("extended_release_at", "is", null)
       .lt("extended_release_at", now);
 
@@ -157,6 +172,59 @@ serve(async (req) => {
         }
       } catch (e: any) {
         releaseErrors[order.id] = e.message;
+      }
+    }
+
+    // ---- 1b-ii. Vendor-arranged deliveries whose grace has also expired.
+    // These are NOT released (see 1b). They are marked held so they surface in
+    // the admin queue as an outstanding decision rather than sitting in
+    // `shipped` looking like any other in-flight order — an invisible hold is
+    // just a different way to lose the money. Admins are told once, when the
+    // hold starts; the flag then persists until someone acts on it.
+    const { data: toHold } = await supabase
+      .from("orders")
+      .select("id, vendor_id, total")
+      .eq("status", "shipped")
+      .eq("admin_review_flagged", true)
+      .eq("has_dispute", false)
+      .eq("payout_held", false)
+      .neq("delivery_type", "courier")
+      .not("extended_release_at", "is", null)
+      .lt("extended_release_at", now);
+
+    for (const order of toHold || []) {
+      const { error: holdErr } = await supabase
+        .from("orders")
+        .update({
+          payout_held: true,
+          payout_held_at: now,
+          payout_hold_reason:
+            "Vendor-arranged delivery: buyer never confirmed receipt and no courier confirmed delivery independently.",
+        })
+        .eq("id", order.id)
+        .eq("status", "shipped")
+        .eq("payout_held", false); // claim, so two runs cannot both notify
+
+      if (holdErr) {
+        releaseErrors[order.id] = holdErr.message;
+        continue;
+      }
+      heldForDecision.push(order.id);
+
+      const { data: admins } = await supabase.from("users").select("id").eq("role", "admin");
+      for (const admin of admins || []) {
+        await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: admin.id,
+            title: "Payout held — decision needed",
+            body:
+              `Order #${String(order.id).substring(0, 8)} was delivered by the vendor, not a courier, ` +
+              `and the buyer never confirmed. Nothing has been paid. Review it.`,
+            data: { type: "payout_held", orderId: order.id },
+          }),
+        }).catch((e) => console.error("payout-hold push failed:", e));
       }
     }
 
@@ -383,6 +451,7 @@ serve(async (req) => {
         success: true,
         orders_released: released,
         orders_flagged_for_review: flaggedForReview,
+        payouts_held_for_decision: heldForDecision,
         buyer_confirm_reminders: buyerReminders,
         order_errors: releaseErrors,
         disputes_escalated: (escalated?.length || 0) + (legacyEscalated?.length || 0),

@@ -291,6 +291,23 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   bool _isTransientQuoteFailure(String? reason) {
     if (reason == null || reason.isEmpty) return true;
     final r = reason.toLowerCase();
+
+    // Setup steps that run BEFORE any courier is asked for a price: validating
+    // the two addresses, creating the parcel, resolving the package category or
+    // packaging. None of these say "error"/"timeout", so they used to be read as
+    // a genuine "no courier covers this route" and shown as "no riders
+    // available" without a single retry — while retrying the identical request
+    // by hand worked, which is what proved they were transient. A cold function
+    // instance also has to do the category/packaging lookups the warm one has
+    // cached, so the first quote after a gap is the one that trips.
+    if (r.contains('address_validation_failed') ||
+        r.contains('address_failed') ||
+        r.contains('parcel_failed') ||
+        r.contains('no_packaging') ||
+        r.contains('package category')) {
+      return true;
+    }
+
     return r.contains('error') ||
         r.contains('timeout') ||
         r.contains('timed out') ||

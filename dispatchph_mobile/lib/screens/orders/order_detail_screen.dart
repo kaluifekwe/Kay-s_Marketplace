@@ -13,6 +13,7 @@ import '../../core/services/auth_service.dart';
 import '../chat/chat_screen.dart';
 import '../delivery/courier_track_tile.dart';
 import '../marketplace/vendor_store_screen.dart';
+import '../marketplace/buyer_bank_account_screen.dart';
 import 'buyer_dispute_screen.dart';
 import 'delivery_confirmation_screen.dart';
 import 'refund_request_screen.dart';
@@ -511,28 +512,73 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   }
 
   void _cancelOrder(BuildContext context, Order order) {
-    // Cancellation is only offered before a rider is booked, so this is always a
-    // full refund. Once a rider is booked the button is hidden (and the server
-    // rejects it) — the buyer waits for delivery or reports a problem.
+    // Cancellation is only offered before a rider is booked. It no longer
+    // refunds on the spot: it raises a request an administrator reviews, and an
+    // approved refund is paid to the buyer's verified bank account.
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Cancel Order'),
-        content: const Text('Are you sure? This will cancel the order and issue a full refund.'),
+        content: const Text(
+          'This submits a refund request for review. Once approved, your refund is '
+          'paid to your verified bank account.',
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Keep Order')),
           ElevatedButton(
             onPressed: () async {
               final messenger = ScaffoldMessenger.of(context);
+              final navigator = Navigator.of(context);
               final cubit = context.read<OrderCubit>();
               Navigator.pop(context);
               final error = await cubit.cancelOrder(order.id, order.buyerId);
+              if (!mounted) return;
+
+              // A refund has nowhere to go without a bank account, so offer to
+              // add one instead of leaving the buyer at a dead end.
+              if (error == kNoBankAccountError) {
+                _promptAddBankAccount(navigator);
+                return;
+              }
               messenger.showSnackBar(SnackBar(
-                content: Text(error ?? 'Order cancelled and refunded to Kay\'s Credit.'),
+                content: Text(
+                  error ?? 'Refund request submitted. We\'ll let you know once it has been reviewed.',
+                ),
               ));
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.mediumGray, foregroundColor: Colors.white),
             child: const Text('Yes, Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Offers to take the buyer straight to the bank-account screen when a refund
+  /// can't be requested because they have no verified account on file.
+  void _promptAddBankAccount(NavigatorState navigator) {
+    showDialog(
+      context: navigator.context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('Add your bank account'),
+        content: const Text(
+          'Refunds are paid to your bank account. Add and verify yours, then request '
+          'the refund again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Not now')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(dctx);
+              navigator.push(
+                MaterialPageRoute(builder: (_) => const BuyerBankAccountScreen()),
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryGreen,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Add bank account'),
           ),
         ],
       ),

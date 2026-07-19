@@ -25,6 +25,7 @@ import {
   SettingOutlined,
   FileSearchOutlined,
   UndoOutlined,
+  DiffOutlined,
 } from "@ant-design/icons";
 
 import { supabaseClient } from "./supabaseClient";
@@ -37,6 +38,7 @@ import { WithdrawalList } from "./pages/withdrawals";
 import { SettingsList } from "./pages/settings";
 import { AuditList } from "./pages/audit";
 import { RefundList } from "./pages/refunds";
+import { ReconciliationList } from "./pages/reconciliation";
 
 const BRAND = "#1b8a3a"; // Kays Market green
 
@@ -78,6 +80,11 @@ function App() {
                 name: "withdrawals",
                 list: "/withdrawals",
                 meta: { label: "Withdrawals", icon: <BankOutlined /> },
+              },
+              {
+                name: "reconciliation_exceptions",
+                list: "/reconciliation",
+                meta: { label: "Reconciliation", icon: <DiffOutlined /> },
               },
               {
                 name: "users",
@@ -136,6 +143,9 @@ function App() {
                 </Route>
                 <Route path="/withdrawals">
                   <Route index element={<WithdrawalList />} />
+                </Route>
+                <Route path="/reconciliation">
+                  <Route index element={<ReconciliationList />} />
                 </Route>
                 <Route path="/users">
                   <Route index element={<UserList />} />

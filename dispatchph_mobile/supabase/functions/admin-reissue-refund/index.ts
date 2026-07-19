@@ -125,11 +125,17 @@ serve(async (req) => {
 
     let transfer: { ok: boolean; status: number; data: any };
     try {
+      // Shape must match wallet-withdraw and process-refund exactly:
+      // `payment_instruction`, with source_currency. Sending `payload` instead
+      // gets a 400 "payment_instruction must not be null".
       transfer = await flwTransfer(
         {
           action: "instant",
           type: "bank",
-          payload: {
+          reference: ref,
+          narration: "Kays Market refund",
+          payment_instruction: {
+            source_currency: "NGN",
             destination_currency: "NGN",
             amount: { applies_to: "destination_currency", value: amount },
             recipient: {

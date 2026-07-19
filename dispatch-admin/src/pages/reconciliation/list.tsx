@@ -21,14 +21,22 @@ const ageOf = (iso?: string) => {
 
 const KIND_LABEL: Record<string, string> = {
   payout_stuck: "Payout stuck in flight",
-  payout_reversal_failed: "Reversal failed — money owed back",
+  payout_reversal_failed: "Reversal failed, money owed back",
   payout_no_reference: "Payout has no provider reference",
   collection_not_fulfilled: "Paid but no order created",
   collection_unknown_reference: "Payment with no matching intent",
+  refund_transfer_failed: "Refund never reached the buyer's bank",
 };
 
-// A customer who paid and received nothing outranks everything else here.
-const CRITICAL = new Set(["collection_not_fulfilled", "payout_reversal_failed"]);
+// A customer who paid and received nothing outranks everything else here. A
+// failed refund belongs in the same tier: the order already reads as refunded,
+// so nothing else will ever chase it, and the person waiting has had a bad
+// experience once already.
+const CRITICAL = new Set([
+  "collection_not_fulfilled",
+  "payout_reversal_failed",
+  "refund_transfer_failed",
+]);
 
 export const ReconciliationList = () => {
   const { message } = App.useApp();

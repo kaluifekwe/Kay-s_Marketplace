@@ -156,6 +156,93 @@ async function finalizeWithdrawal(supabase: any, data: any) {
   return { ignored: true, reason: "unhandled_status" };
 }
 
+// Finalize a BUYER REFUND paid out by transfer.
+//
+// Refunds do not create a `withdrawals` row, so finalizeWithdrawal answered
+// "withdrawal_not_found" and dropped the event. A refund transfer that
+// Flutterwave later reported as FAILED was therefore ignored completely: the
+// transaction stayed 'success', the order stayed 'refunded', and a customer who
+// had already had a bad experience was never paid, with nothing anywhere
+// showing it. Vendor payouts had this safety net; refunds did not.
+//
+// Success needs no action (the records already say refunded). Failure has to be
+// recorded and put in front of a person, because only a human can decide
+// whether to retry, correct the bank details, or contact the customer.
+async function finalizeRefund(supabase: any, data: any) {
+  const reference = data?.reference;
+  if (!reference || !String(reference).startsWith("refund")) {
+    return { ignored: true, reason: "not_a_refund_reference" };
+  }
+
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("id, order_id, buyer_id, amount, status")
+    .eq("paystack_reference", reference)
+    .eq("type", "refund")
+    .maybeSingle();
+  if (!txn) return { ignored: true, reason: "refund_txn_not_found" };
+
+  const status = String(data?.status ?? "").toUpperCase();
+  const amount = Number(txn.amount) || 0;
+
+  if (status === "SUCCESSFUL") {
+    return { alreadyProcessed: true, state: "success" };
+  }
+
+  if (status === "FAILED") {
+    if (txn.status === "failed") return { alreadyProcessed: true };
+
+    await supabase.from("transactions").update({ status: "failed" }).eq("id", txn.id);
+
+    // Raise it on the reconciliation queue, where it ages visibly until
+    // resolved, rather than relying on someone reading a log.
+    try {
+      await supabase.from("reconciliation_exceptions").insert({
+        kind: "refund_transfer_failed",
+        reference,
+        target_type: "order",
+        target_id: String(txn.order_id),
+        amount,
+        our_state: "order marked refunded",
+        provider_state: "transfer failed",
+        details:
+          `Flutterwave could not pay the ₦${amount.toLocaleString()} refund for order ` +
+          `${String(txn.order_id).slice(0, 8)}. The buyer has NOT been paid. Check the bank ` +
+          `details on file and re-issue the refund; do not assume it will retry itself.`,
+      });
+    } catch (e) {
+      console.error("refund exception insert failed:", e);
+    }
+
+    const { data: admins } = await supabase.from("users").select("id").eq("role", "admin");
+    for (const a of admins ?? []) {
+      try {
+        await supabase.from("notifications").insert({
+          user_id: a.id,
+          title: "Refund payment failed",
+          body: `A ₦${amount.toLocaleString()} refund did not reach the buyer's bank. Needs attention.`,
+          type: "general",
+        });
+      } catch (_) { /* non-fatal */ }
+    }
+
+    if (txn.buyer_id) {
+      try {
+        await supabase.from("notifications").insert({
+          user_id: txn.buyer_id,
+          title: "Refund delayed",
+          body: "Your refund could not reach your bank account. We are looking into it and will be in touch.",
+          type: "general",
+        });
+      } catch (_) { /* non-fatal */ }
+    }
+
+    return { success: true, state: "failed" };
+  }
+
+  return { ignored: true, reason: "unhandled_status" };
+}
+
 const SUCCESS_STATUSES = ["successful", "succeeded", "success", "completed", "complete", "paid"];
 // Tunable in the admin console (app_settings); literal stays as the fallback.
 const PICKUP_WINDOW_HOURS_DEFAULT = 24;
@@ -312,8 +399,16 @@ serve(async (req) => {
         console.log("funding result:", JSON.stringify(result));
       }
     } else if (eventName === "transfer.disburse" || eventName === "transfer.completed") {
+      // A transfer is either a withdrawal or a buyer refund. Try the withdrawal
+      // table first, and only if no row matches treat it as a refund, so the
+      // existing path is untouched and nothing is claimed by both.
       const result = await finalizeWithdrawal(supabase, data);
-      console.log("withdrawal result:", JSON.stringify(result));
+      if ((result as any)?.ignored && (result as any)?.reason === "withdrawal_not_found") {
+        const refundResult = await finalizeRefund(supabase, data);
+        console.log("refund transfer result:", JSON.stringify(refundResult));
+      } else {
+        console.log("withdrawal result:", JSON.stringify(result));
+      }
     } else {
       // Ack anything else so Flutterwave stops retrying.
       console.log(`Unhandled Flutterwave event: ${eventName}`);

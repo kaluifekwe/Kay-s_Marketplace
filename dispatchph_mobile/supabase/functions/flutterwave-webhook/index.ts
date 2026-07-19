@@ -186,7 +186,21 @@ async function finalizeRefund(supabase: any, data: any) {
   const amount = Number(txn.amount) || 0;
 
   if (status === "SUCCESSFUL") {
-    return { alreadyProcessed: true, state: "success" };
+    if (txn.status === "success") return { alreadyProcessed: true };
+    // The transfer was recorded as 'processing' at acceptance. This is the
+    // first point at which the buyer has actually been paid.
+    await supabase.from("transactions").update({ status: "success" }).eq("id", txn.id);
+    if (txn.buyer_id) {
+      try {
+        await supabase.from("notifications").insert({
+          user_id: txn.buyer_id,
+          title: "Refund sent",
+          body: `₦${amount.toLocaleString()} has been sent to your bank account.`,
+          type: "general",
+        });
+      } catch (_) { /* non-fatal */ }
+    }
+    return { success: true, state: "success" };
   }
 
   if (status === "FAILED") {

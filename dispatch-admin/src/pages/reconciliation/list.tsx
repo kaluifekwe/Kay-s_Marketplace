@@ -1,5 +1,5 @@
 import { List, useTable, DateField } from "@refinedev/antd";
-import { Table, Tag, Radio, Space, Typography, Alert, Button, App } from "antd";
+import { Table, Tag, Radio, Space, Typography, Alert, Button, App, Input, Popconfirm } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { useState } from "react";
 import type { CrudFilters } from "@refinedev/core";
@@ -41,6 +41,8 @@ const CRITICAL = new Set([
 export const ReconciliationList = () => {
   const { message } = App.useApp();
   const [running, setRunning] = useState(false);
+  const [reissuing, setReissuing] = useState<string | null>(null);
+  const [notes, setNotes] = useState<Record<string, string>>({});
 
   const { tableProps, setFilters, filters, tableQueryResult } = useTable({
     syncWithLocation: true,
@@ -53,6 +55,32 @@ export const ReconciliationList = () => {
   const applyFilter = (key: string) => {
     const next: CrudFilters = key === "all" ? [] : [{ field: "status", operator: "eq", value: key }];
     setFilters(next, "replace");
+  };
+
+  // Re-send a refund Flutterwave failed to pay. The buyer is owed money the
+  // rest of the system already believes was sent, so this is the only route
+  // back to paying them.
+  const reissue = async (orderId: string, exceptionId: string) => {
+    const reason = (notes[exceptionId] ?? "").trim();
+    if (reason.length < 5) {
+      message.warning("Enter a reason first. It is recorded against your name.");
+      return;
+    }
+    setReissuing(exceptionId);
+    try {
+      const { data, error } = await supabaseClient.functions.invoke("admin-reissue-refund", {
+        body: { order_id: orderId, reason },
+      });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      message.success((data as any)?.message || "Refund re-sent.");
+      setNotes((n) => ({ ...n, [exceptionId]: "" }));
+      tableQueryResult?.refetch();
+    } catch (e: any) {
+      message.error(await fnError(e, "Could not re-send the refund."));
+    } finally {
+      setReissuing(null);
+    }
   };
 
   const runNow = async () => {
@@ -178,6 +206,39 @@ export const ReconciliationList = () => {
           dataIndex="status"
           title="Status"
           render={(v: string) => <Tag color={v === "open" ? "orange" : "green"}>{v}</Tag>}
+        />
+        <Table.Column
+          title="Action"
+          width={230}
+          render={(_, r: { id: string; kind: string; status: string; target_id?: string }) =>
+            r.kind === "refund_transfer_failed" && r.status === "open" && r.target_id ? (
+              <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                <Input
+                  size="small"
+                  placeholder="Reason (required)"
+                  value={notes[r.id] ?? ""}
+                  onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))}
+                />
+                <Popconfirm
+                  title="Re-send this refund?"
+                  description="Pays the buyer's verified bank account again. Refused if any earlier attempt succeeded."
+                  okText="Re-send"
+                  onConfirm={() => reissue(r.target_id!, r.id)}
+                >
+                  <Button
+                    type="primary"
+                    size="small"
+                    loading={reissuing === r.id}
+                    disabled={reissuing !== null || (notes[r.id] ?? "").trim().length < 5}
+                  >
+                    Re-send refund
+                  </Button>
+                </Popconfirm>
+              </Space>
+            ) : (
+              "—"
+            )
+          }
         />
       </Table>
     </List>

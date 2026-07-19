@@ -378,14 +378,24 @@ serve(async (req) => {
 
     }
 
-    // Record refund transaction
+    // Record refund transaction.
+    //
+    // A bank refund is 'processing', NOT 'success'. Flutterwave accepting the
+    // transfer is not the bank settling it: a transfer accepted with a 200 can
+    // still fail afterwards, for example when the payout balance cannot cover
+    // it. Recording success at acceptance made our records claim a buyer had
+    // been paid when the money never left. The transfer.disburse webhook moves
+    // it to 'success' or 'failed' once the outcome is actually known.
+    //
+    // Wallet and credit refunds really are final at this point, so they stay
+    // 'success'.
     await supabase.from("transactions").insert({
       order_id,
       buyer_id: order.buyer_id,
       vendor_id: order.vendor_id,
       store_id: order.store_id,
       amount: refundAmount,
-      status: "success",
+      status: method === "bank" ? "processing" : "success",
       type: "refund",
       paystack_reference: refundReference,
       metadata: JSON.stringify({

@@ -370,22 +370,25 @@ class OrderCubit extends Cubit<OrderState> {
       }
 
       final session = SupabaseService.client.auth.currentSession;
-      final response = await SupabaseService.client.functions.invoke(
-        'request-refund',
-        headers: {
-          'Content-Type': 'application/json',
-          if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
-        },
-        body: {
-          'order_id': orderId,
-          'reason': 'Buyer cancelled the order',
-        },
-      );
-
-      if (response.status != 200) {
-        final data = response.data is Map ? response.data as Map : const {};
-        // Surface the missing-bank-account case verbatim so the UI can offer to
-        // add one — a refund has nowhere to go without it.
+      try {
+        await SupabaseService.client.functions.invoke(
+          'request-refund',
+          headers: {
+            'Content-Type': 'application/json',
+            if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
+          },
+          body: {
+            'order_id': orderId,
+            'reason': 'Buyer cancelled the order',
+          },
+        );
+      } on FunctionException catch (e) {
+        // invoke() THROWS on any non-2xx rather than returning it, so a status
+        // check here would never run. Reading the body off the exception is the
+        // only way to see why the server refused; without this every refusal,
+        // including the one we built an "add your bank account" prompt for,
+        // arrived as a bare "please try again".
+        final data = e.details is Map ? e.details as Map : const {};
         if (data['error'] == 'no_bank_account') return kNoBankAccountError;
         final msg = data['message'] as String? ?? data['error'] as String?;
         return msg ?? 'Could not submit your refund request. Please try again.';
@@ -407,10 +410,14 @@ class OrderCubit extends Cubit<OrderState> {
         referenceId: orderId,
       );
 
+      // Refunds are reviewed before any money moves and are paid to the buyer's
+      // bank, so do not tell them it is already back. The old copy promised an
+      // instant credit to a wallet that no longer exists.
       await NotificationCubit.create(
         userId: buyerId,
-        title: 'Order Cancelled',
-        body: 'Your order was cancelled and fully refunded to Kay\'s Credit.',
+        title: 'Refund requested',
+        body: 'We received your cancellation. Your refund is being reviewed and '
+            'will be paid to your bank account.',
         type: 'order',
         referenceId: orderId,
       );

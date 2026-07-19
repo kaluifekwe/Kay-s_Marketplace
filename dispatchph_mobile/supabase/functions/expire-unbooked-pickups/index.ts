@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getNumber } from "../_shared/settings.ts";
+import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
 
 // Scheduled (pg_cron, see pickup_sla.sql): courier orders the vendor hasn't
 // booked. Reminds the vendor REMINDER_BEFORE_HOURS before the deadline, then at
@@ -39,8 +40,9 @@ async function sendPush(userId: string, title: string, body: string, data: Recor
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
-  // Only the service role (pg_cron / internal) may trigger this.
-  if ((req.headers.get("Authorization") || "").replace("Bearer ", "") !== supabaseServiceKey) {
+  // Scheduler, or an operator holding the service key.
+  if (!isScheduledCaller(req)) {
+    console.error(`expire-unbooked-pickups: refused caller — ${refusalReason(req)}`);
     return json({ error: "Forbidden" }, 403);
   }
 

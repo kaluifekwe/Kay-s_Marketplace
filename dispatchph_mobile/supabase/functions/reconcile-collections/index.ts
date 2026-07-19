@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { flwGet } from "../_shared/flutterwave.ts";
+import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
 
 // Scheduled reconciliation of COLLECTIONS — the other direction from
 // reconcile-payouts, and the more serious one.
@@ -38,8 +39,10 @@ const corsHeaders = {
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-function isServiceRoleCall(a: string | null) {
-  return !!a?.startsWith("Bearer ") && a.replace("Bearer ", "") === supabaseServiceKey;
+// Scheduler or operator. See _shared/cron-auth.ts for why this is no longer a
+// direct comparison against SUPABASE_SERVICE_ROLE_KEY.
+function isServiceRoleCall(request: Request) {
+  return isScheduledCaller(request);
 }
 function getUserIdFromToken(a: string | null): string | null {
   if (!a?.startsWith("Bearer ")) return null;
@@ -95,9 +98,12 @@ serve(async (req) => {
   try {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    if (!isServiceRoleCall(req.headers.get("Authorization"))) {
+    if (!isServiceRoleCall(req)) {
       const callerId = getUserIdFromToken(req.headers.get("Authorization"));
-      if (!callerId) return json({ error: "Unauthorized" }, 401);
+      if (!callerId) {
+        console.error(`reconcile-collections: refused caller — ${refusalReason(req)}`);
+        return json({ error: "Unauthorized" }, 401);
+      }
       const { data: caller } = await supabase.from("users").select("role").eq("id", callerId).maybeSingle();
       if (caller?.role !== "admin") return json({ error: "Admin only" }, 403);
     }

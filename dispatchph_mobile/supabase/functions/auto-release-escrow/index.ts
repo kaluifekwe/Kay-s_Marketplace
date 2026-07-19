@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
 
 // Runs on a schedule (pg_cron, see auto_release_cron.sql) instead of relying
 // on a Dart Timer inside the app — escrow release and dispute escalation
@@ -18,9 +19,12 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  // Only the service role (pg_cron / internal calls) may trigger this.
-  const authHeader = req.headers.get("Authorization") || "";
-  if (authHeader.replace("Bearer ", "") !== supabaseServiceKey) {
+  // Only the scheduler or an operator holding the service key may trigger this.
+  if (!isScheduledCaller(req)) {
+    // Log the reason. A scheduler that cannot authenticate is an operational
+    // fault, and the previous silence is exactly why this ran unnoticed for
+    // weeks: pg_cron reports "succeeded" on a 403, so nothing surfaced it.
+    console.error(`auto-release-escrow: refused caller — ${refusalReason(req)}`);
     return new Response(JSON.stringify({ error: "Forbidden" }), {
       status: 403,
       headers: { ...corsHeaders, "Content-Type": "application/json" },

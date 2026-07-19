@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { flwGet } from "../_shared/flutterwave.ts";
+import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
 
 // Scheduled reconciliation of payouts (see reconciliation.sql + recon_cron.sql).
 //
@@ -38,9 +39,10 @@ const corsHeaders = {
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-function isServiceRoleCall(authHeader: string | null): boolean {
-  if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
-  return authHeader.replace("Bearer ", "") === supabaseServiceKey;
+// Scheduler or operator. Kept as a named wrapper so the call site below reads
+// the same as it did before the shared helper existed.
+function isServiceRoleCall(request: Request): boolean {
+  return isScheduledCaller(request);
 }
 
 function getUserIdFromToken(authHeader: string | null): string | null {
@@ -105,9 +107,15 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Cron calls with the service key; an admin may also run it manually.
-    if (!isServiceRoleCall(req.headers.get("Authorization"))) {
+    if (!isServiceRoleCall(req)) {
       const callerId = getUserIdFromToken(req.headers.get("Authorization"));
-      if (!callerId) return json({ error: "Unauthorized" }, 401);
+      if (!callerId) {
+        // A service-role token has no `sub`, so a scheduler whose credential
+        // was not recognised lands here rather than in the branch above. Say so
+        // in the log, otherwise it looks like an ordinary unauthenticated call.
+        console.error(`reconcile-payouts: refused caller — ${refusalReason(req)}`);
+        return json({ error: "Unauthorized" }, 401);
+      }
       const { data: caller } = await supabase.from("users").select("role").eq("id", callerId).maybeSingle();
       if (caller?.role !== "admin") return json({ error: "Admin only" }, 403);
     }

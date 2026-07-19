@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { applyDeliveryStatus, makeClient } from "../_shared/delivery/apply-status.ts";
 import type { DeliveryStatus, WebhookEvent } from "../_shared/delivery/types.ts";
+import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
 
 // Polling fallback for Shipbubble delivery status — the resilience twin of
 // poll-terminal-deliveries. Shipbubble delivers status via its webhook, but a
@@ -44,8 +45,9 @@ const STATUS_MAP: Record<string, DeliveryStatus> = {
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
-  // Service-role only (pg_cron / internal).
-  if ((req.headers.get("Authorization") || "").replace("Bearer ", "") !== supabaseServiceKey) {
+  // Scheduler, or an operator holding the service key.
+  if (!isScheduledCaller(req)) {
+    console.error(`poll-shipbubble-deliveries: refused caller — ${refusalReason(req)}`);
     return json({ error: "Forbidden" }, 403);
   }
   if (!SHIPBUBBLE_KEY) return json({ error: "no_shipbubble_key" }, 400);

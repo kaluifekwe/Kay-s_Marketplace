@@ -77,11 +77,14 @@ serve(async (req) => {
   const CHUNK = 50;
   for (let i = 0; i < active.length; i += CHUNK) {
     const batch = active.slice(i, i + CHUNK);
-    const ids = batch.map((d) => d.provider_order_id).join(",");
+    // Encode each id but join with LITERAL commas: the separator is part of the
+    // path syntax, so percent-encoding it (encodeURIComponent over the whole
+    // joined string) makes Shipbubble read one malformed id instead of a list.
+    const ids = batch.map((d) => encodeURIComponent(String(d.provider_order_id))).join(",");
 
     let results: any[] = [];
     try {
-      const res = await fetch(`${SHIPBUBBLE_BASE}/shipping/labels/list/${encodeURIComponent(ids)}`, {
+      const res = await fetch(`${SHIPBUBBLE_BASE}/shipping/labels/list/${ids}`, {
         headers: { Authorization: `Bearer ${SHIPBUBBLE_KEY}` },
       });
       const body = await res.json().catch(() => ({}));
@@ -90,7 +93,13 @@ serve(async (req) => {
         // so a failure is visible per delivery rather than hidden in a total.
         const reason = `lookup ${res.status}: ${String(body?.message ?? "").slice(0, 80)}`;
         for (const d of batch) errors[d.id] = reason;
-        console.error(`poll-shipbubble: batch of ${batch.length} failed — ${reason}`);
+        // Log the ids we asked about. A 400 here is usually one unrecognised
+        // order id poisoning the whole batch, and without seeing them there is
+        // no way to tell that from a malformed request.
+        console.error(
+          `poll-shipbubble: batch of ${batch.length} failed — ${reason}; ids=${ids}; ` +
+          `body=${JSON.stringify(body).slice(0, 300)}`,
+        );
         continue;
       }
       results = Array.isArray(body?.data?.results) ? body.data.results : [];

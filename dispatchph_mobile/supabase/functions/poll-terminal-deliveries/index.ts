@@ -2,6 +2,10 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { applyDeliveryStatus, makeClient } from "../_shared/delivery/apply-status.ts";
 import type { DeliveryStatus, WebhookEvent } from "../_shared/delivery/types.ts";
 import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
+// Host comes from the booker rather than being re-read here: the two used to
+// default to different hosts for the same variable, so shipments were created
+// in one environment and polled in the other. See terminal.ts.
+import { TERMINAL_BASE } from "../_shared/delivery/providers/terminal.ts";
 
 // Polling fallback for Terminal Africa delivery status, for accounts where the
 // Terminal webhook can't be registered. Runs on pg_cron: for each active Terminal
@@ -12,8 +16,6 @@ import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
 
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TERMINAL_KEY = Deno.env.get("TERMINAL_API_KEY") ?? "";
-const TERMINAL_BASE = Deno.env.get("TERMINAL_BASE_URL") ?? "https://api.terminal.africa/v1";
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",

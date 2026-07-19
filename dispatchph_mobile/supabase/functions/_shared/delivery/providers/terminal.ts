@@ -22,8 +22,21 @@ import type {
 } from "../types.ts";
 
 const KEY = Deno.env.get("TERMINAL_API_KEY") ?? "";
-// Test keys only work against the sandbox host; override for production.
-const BASE = Deno.env.get("TERMINAL_BASE_URL") ?? "https://sandbox.terminal.africa/v1";
+
+// Single source of truth for the host, exported so the status poller cannot
+// disagree with the booker.
+//
+// It used to be read separately in both places with DIFFERENT defaults: booking
+// fell back to sandbox, polling fell back to production. While TERMINAL_BASE_URL
+// was unset, shipments were therefore created in the sandbox and then looked up
+// in production, where those ids do not exist, so every poll returned 400 and
+// their status never moved again. Deliveries booked before the variable was set
+// are permanently unresolvable for that reason.
+//
+// Test keys only work against the sandbox host, so sandbox stays the default;
+// set TERMINAL_BASE_URL to https://api.terminal.africa/v1 for live keys.
+export const TERMINAL_BASE = Deno.env.get("TERMINAL_BASE_URL") ?? "https://sandbox.terminal.africa/v1";
+const BASE = TERMINAL_BASE;
 
 function headers() {
   return { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" };

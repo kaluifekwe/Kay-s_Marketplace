@@ -26,8 +26,12 @@ void main() {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
 
-    await Firebase.initializeApp();
-
+    // Only what the FIRST FRAME genuinely needs is awaited here. Everything
+    // before runApp holds the launch screen on the user's screen, so each
+    // await is time the app looks like it has not started. Supabase is
+    // unavoidable: the splash decides where to send the user from the restored
+    // session, so it has to exist before anything renders. dotenv is a local
+    // file read that Supabase depends on.
     await dotenv.load(fileName: '.env');
 
     await Supabase.initialize(
@@ -38,17 +42,28 @@ void main() {
     await SupabaseService.init();
 
     // Friendly UI for render errors + remote logging of uncaught errors.
-    ErrorReporter.install(appVersion: '1.0.4+5');
-
-    FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+    // Version is read from pubspec by hand; it had been left at 1.0.4+5 while
+    // the app shipped 1.0.8, so every reported error named the wrong build.
+    ErrorReporter.install(appVersion: '1.0.8+13');
 
     final escrow = EscrowService();
 
     runApp(DispatchPHApp(escrow: escrow));
 
-    // Non-critical for first paint: registering local-notification channels
-    // doesn't need to block the UI, so do it right after the app is on screen.
-    unawaited(NotificationService.init());
+    // Everything below is off the critical path: it does not affect what the
+    // user sees first, so it runs once the app is already on screen. Push
+    // notifications a second late are unnoticeable; a second of blank screen
+    // at launch is not.
+    unawaited(() async {
+      try {
+        await Firebase.initializeApp();
+        FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+      } catch (e, s) {
+        // Push being unavailable must never stop the app from running.
+        ErrorReporter.report(e, s, context: 'firebase_init');
+      }
+      await NotificationService.init();
+    }());
   }, (error, stack) {
     ErrorReporter.report(error, stack, context: 'zone');
   });

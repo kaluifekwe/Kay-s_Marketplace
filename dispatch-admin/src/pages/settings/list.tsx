@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Card,
+  Collapse,
   Typography,
   InputNumber,
   Switch,
@@ -107,6 +107,51 @@ export const SettingsList = () => {
     );
   }
 
+  const row = (s: Setting, i: number) => {
+    const changed = JSON.stringify(draft[s.key]) !== JSON.stringify(s.value);
+    return (
+      <div
+        key={s.key}
+        style={{
+          display: "flex",
+          gap: 16,
+          alignItems: "flex-start",
+          padding: "12px 0",
+          borderTop: i === 0 ? undefined : "1px solid #f0f0f0",
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Text strong style={{ fontFamily: "monospace" }}>
+            {s.key}
+          </Text>
+          {changed && (
+            <Tag color="orange" style={{ marginLeft: 8 }}>
+              unsaved
+            </Tag>
+          )}
+          <div>
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              {s.description ?? "—"}
+            </Text>
+          </div>
+        </div>
+        <Space>
+          {editor(s)}
+          <Button
+            type="primary"
+            icon={<SaveOutlined />}
+            size="small"
+            disabled={!changed || saving !== null}
+            loading={saving === s.key}
+            onClick={() => save(s)}
+          >
+            Save
+          </Button>
+        </Space>
+      </div>
+    );
+  };
+
   const editor = (s: Setting) => {
     const v = draft[s.key];
     if (s.value_type === "boolean") {
@@ -148,58 +193,25 @@ export const SettingsList = () => {
         in the server environment.
       </Paragraph>
 
-      {Object.entries(grouped).map(([category, rows]) => (
-        <Card
-          key={category}
-          title={CATEGORY_LABELS[category] ?? category}
-          style={{ marginBottom: 20, borderTop: "3px solid #1b8a3a" }}
-        >
-          {rows.map((s, i) => {
-            const changed = JSON.stringify(draft[s.key]) !== JSON.stringify(s.value);
-            return (
-              <div
-                key={s.key}
-                style={{
-                  display: "flex",
-                  gap: 16,
-                  alignItems: "flex-start",
-                  padding: "12px 0",
-                  borderTop: i === 0 ? undefined : "1px solid #f0f0f0",
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <Text strong style={{ fontFamily: "monospace" }}>
-                    {s.key}
-                  </Text>
-                  {changed && (
-                    <Tag color="orange" style={{ marginLeft: 8 }}>
-                      unsaved
-                    </Tag>
-                  )}
-                  <div>
-                    <Text type="secondary" style={{ fontSize: 13 }}>
-                      {s.description ?? "—"}
-                    </Text>
-                  </div>
-                </div>
-                <Space>
-                  {editor(s)}
-                  <Button
-                    type="primary"
-                    icon={<SaveOutlined />}
-                    size="small"
-                    disabled={!changed || saving !== null}
-                    loading={saving === s.key}
-                    onClick={() => save(s)}
-                  >
-                    Save
-                  </Button>
-                </Space>
-              </div>
-            );
-          })}
-        </Card>
-      ))}
+      <Collapse
+        accordion
+        items={Object.entries(grouped).map(([category, rows]) => {
+          const unsaved = rows.filter(
+            (s) => JSON.stringify(draft[s.key]) !== JSON.stringify(s.value),
+          ).length;
+          return {
+            key: category,
+            label: (
+              <Space>
+                <Text strong>{CATEGORY_LABELS[category] ?? category}</Text>
+                <Tag>{rows.length}</Tag>
+                {unsaved > 0 && <Tag color="orange">{unsaved} unsaved</Tag>}
+              </Space>
+            ),
+            children: <div>{rows.map((s, i) => row(s, i))}</div>,
+          };
+        })}
+      />
     </>
   );
 };

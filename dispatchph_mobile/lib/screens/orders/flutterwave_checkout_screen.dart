@@ -110,14 +110,13 @@ class _FlutterwaveCheckoutScreenState extends State<FlutterwaveCheckoutScreen> {
       'amount': widget.total,
       'currency': 'NGN',
       'redirect_url': widget.redirectUrl,
-      // Always pass explicit methods: with a single one the inline SDK opens that
-      // method; with the full list it shows a "Payment Methods" screen with ALL
-      // selectable. Omitting it makes the SDK default straight to the card form.
-      // Card is deliberately excluded — buyers pay by bank transfer, USSD, or
-      // bank account only.
+      // Open BANK TRANSFER directly. A single payment_option makes the inline SDK
+      // skip the "choose a method" screen and drop the buyer straight onto the
+      // account to pay to — no card, no picker. (With a list it shows a selector;
+      // omitting it defaults to the card form.)
       'payment_options': widget.paymentOption.isNotEmpty
           ? widget.paymentOption
-          : 'banktransfer,ussd,account',
+          : 'banktransfer',
       'customer': {
         'email': widget.email,
         'name': widget.name,

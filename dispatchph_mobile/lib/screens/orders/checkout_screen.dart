@@ -819,7 +819,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "Pay by bank transfer, USSD or bank account • held in escrow",
+                  "Pay by bank transfer • held in escrow",
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppColors.mediumGray, fontSize: 12),
                 ),

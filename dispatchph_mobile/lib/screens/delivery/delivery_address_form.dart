@@ -99,11 +99,11 @@ class _DeliveryAddressFormState extends State<DeliveryAddressForm> {
     super.dispose();
   }
 
-  // Require a map pin (lat/lng) too: the rider navigates by the coordinates, so
-  // a typed address with no pin isn't good enough to deliver to.
+  // Landmark is optional: neither courier (Shipbubble/Terminal) is sent it, so it
+  // was pure friction to require. A map pin (lat/lng) IS required — the rider
+  // navigates by the coordinates, so a typed address with no pin won't do.
   bool get _isValid =>
       _addressController.text.trim().isNotEmpty &&
-      _landmarkController.text.trim().isNotEmpty &&
       _city != null &&
       _lat != null &&
       _lng != null;
@@ -269,11 +269,11 @@ class _DeliveryAddressFormState extends State<DeliveryAddressForm> {
               controller: _landmarkController,
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
-                labelText: 'Nearest Landmark *',
+                labelText: 'Nearest Landmark (optional)',
                 hintText: 'e.g. Near GTBank on Awolowo Road',
-                helperText: 'Required — helps the courier find the spot',
+                helperText: 'Optional — a note to help find the exact spot',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                prefixIcon: const Icon(Icons.place, color: AppColors.warningOrange),
+                prefixIcon: const Icon(Icons.place, color: AppColors.primaryGreen),
               ),
             ),
             const SizedBox(height: 20),

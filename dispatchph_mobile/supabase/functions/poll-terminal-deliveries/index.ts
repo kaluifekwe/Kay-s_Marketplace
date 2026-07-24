@@ -102,5 +102,52 @@ serve(async (req) => {
     }
   }
 
-  return json({ success: true, checked: deliveries?.length ?? 0, updated, errors });
+  // Safety net: flag deliveries that have sat un-picked-up too long. Terminal can
+  // reject a pickup ("vendor unavailability") and never surface it on the
+  // shipment status the poll above reads, so the order freezes with no auto-
+  // refund and the buyer stranded. Alert admins ONCE per order so a human can
+  // refund/investigate even when the provider goes quiet.
+  const flagged: string[] = [];
+  try {
+    const STUCK_HOURS = 4;
+    const cutoff = new Date(Date.now() - STUCK_HOURS * 60 * 60 * 1000).toISOString();
+    const { data: stuck } = await supabase
+      .from("deliveries")
+      .select("id, order_id")
+      .eq("provider", "terminal")
+      .not("status", "in", "(delivered,cancelled,failed)")
+      .is("picked_up_at", null)
+      .lt("created_at", cutoff);
+
+    if (stuck && stuck.length) {
+      const { data: admins } = await supabase.from("users").select("id").eq("role", "admin");
+      for (const d of stuck) {
+        // Dedup: don't re-alert on an order we've already flagged.
+        const { data: already } = await supabase
+          .from("notifications")
+          .select("id")
+          .eq("reference_id", d.order_id)
+          .eq("type", "general")
+          .ilike("title", "Delivery stuck%")
+          .limit(1)
+          .maybeSingle();
+        if (already) continue;
+
+        for (const a of admins ?? []) {
+          await supabase.from("notifications").insert({
+            user_id: (a as any).id,
+            title: "Delivery stuck — no pickup",
+            body: `A Terminal delivery hasn't been picked up in over ${STUCK_HOURS}h and Terminal hasn't reported a failure. Check order ${String(d.order_id).slice(0, 8)} and refund if the rider isn't coming.`,
+            type: "general",
+            reference_id: d.order_id,
+          });
+        }
+        flagged.push(d.order_id);
+      }
+    }
+  } catch (e) {
+    console.error("poll-terminal stuck-flag error:", e);
+  }
+
+  return json({ success: true, checked: deliveries?.length ?? 0, updated, errors, flagged });
 });

@@ -110,6 +110,14 @@ serve(async (req) => {
     const refundableStatuses = dispute_id
       ? ["paid", "shipped", "refund_requested", "confirmed", "auto_released", "delivery_failed"]
       : ["paid", "shipped", "refund_requested", "delivery_failed"];
+    // Admin/service-role can also refund an order stuck mid-delivery that never
+    // arrived — e.g. a courier rejected the pickup but never reported it back,
+    // leaving the order at 'in_transit' with the buyer unable to recover their
+    // money. Buyers still cannot self-refund an in-transit order here (that stays
+    // the dispute flow); this only opens it for admin/support and automation.
+    if ((serviceRoleCall || isAdminCaller) && !refundableStatuses.includes("in_transit")) {
+      refundableStatuses.push("in_transit");
+    }
     if (!refundableStatuses.includes(order.status)) {
       return new Response(
         JSON.stringify({ error: `Cannot refund order with status: ${order.status}` }),

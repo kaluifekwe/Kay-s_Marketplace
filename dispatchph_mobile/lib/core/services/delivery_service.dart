@@ -76,6 +76,29 @@ class DeliveryService {
     await SupabaseService.client.from('vendor_locations').delete().eq('id', locationId);
   }
 
+  /// Edit an existing pickup location in place (keeps its is_default flag). Used
+  /// to fix a bad address, e.g. a Plus Code, without deleting and re-adding.
+  static Future<void> updateVendorLocation({
+    required String locationId,
+    required String label,
+    required String address,
+    required String landmark,
+    required String city,
+    required String state,
+    double? latitude,
+    double? longitude,
+  }) async {
+    await SupabaseService.client.from('vendor_locations').update({
+      'label': label,
+      'address': address,
+      'landmark': landmark,
+      'city': city,
+      'state': state,
+      'latitude': latitude,
+      'longitude': longitude,
+    }).eq('id', locationId);
+  }
+
   // ---- Buyer delivery addresses ----
 
   static Future<List<BuyerAddress>> getBuyerAddresses(String buyerId) async {
@@ -136,6 +159,29 @@ class DeliveryService {
 
   static Future<void> deleteBuyerAddress(String addressId) async {
     await SupabaseService.client.from('buyer_addresses').delete().eq('id', addressId);
+  }
+
+  /// Edit an existing delivery address in place (keeps its is_default flag). Used
+  /// to fix a bad address, e.g. a Plus Code, without deleting and re-adding.
+  static Future<void> updateBuyerAddress({
+    required String addressId,
+    required String label,
+    required String address,
+    required String landmark,
+    required String city,
+    required String state,
+    double? latitude,
+    double? longitude,
+  }) async {
+    await SupabaseService.client.from('buyer_addresses').update({
+      'label': label,
+      'address': address,
+      'landmark': landmark,
+      'city': city,
+      'state': state,
+      'latitude': latitude,
+      'longitude': longitude,
+    }).eq('id', addressId);
   }
 
   // ---- Live courier rates (checkout) ----

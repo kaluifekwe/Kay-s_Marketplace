@@ -8,9 +8,11 @@ import '../../core/services/error_text.dart';
 import '../../core/models/models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/delivery_service.dart';
+import '../../core/models/delivery_models.dart';
 import '../../widgets/app_image.dart';
 import '../chat/chat_screen.dart';
 import '../delivery/courier_track_tile.dart';
+import '../delivery/vendor_locations_screen.dart';
 import 'vendor_shipping_screen.dart';
 
 String _vendorOrderStatusLabel(String status) {
@@ -48,30 +50,116 @@ class _VendorOrderDetailScreenState extends State<VendorOrderDetailScreen> {
     _loadBuyerInfo();
   }
 
-  /// Confirm the item is actually packaged before dispatching a courier — a
-  /// premature booking means a wasted pickup (and, once enabled, a charge to
-  /// the vendor for the failed-pickup courier fee).
+  /// Confirm the item is packaged AND show the exact pickup address the courier
+  /// will be sent to, so a wrong or stale location is caught before a rider is
+  /// summoned (a mismatched address is what makes riders reject the pickup). The
+  /// server reads this same current default location at booking time, so what
+  /// the vendor confirms here is what the rider gets.
   Future<void> _confirmAndRequestPickup(Order order) async {
-    final confirmed = await showDialog<bool>(
+    VendorLocation? pickup;
+    try {
+      final locs = await DeliveryService.getVendorLocations(order.vendorId);
+      if (locs.isNotEmpty) {
+        pickup = locs.firstWhere((l) => l.isDefault, orElse: () => locs.first);
+      }
+    } catch (_) {}
+    if (!mounted) return;
+
+    final action = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Is the order packaged and ready?'),
-        content: const Text(
-          'The courier will be dispatched to your pickup address to collect it now. '
-          'Only request pickup once the item is packaged — a failed pickup wastes the '
-          'courier trip and may be charged to you.',
+        title: const Text('Confirm pickup'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'A courier will be sent to this address to collect the item now. '
+              'Check it is correct before booking — the rider goes exactly here.',
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: pickup == null ? const Color(0xFFFFF0E0) : const Color(0xFFE8F5EB),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: pickup == null ? AppColors.warningOrange : AppColors.primaryGreen,
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    pickup == null ? Icons.warning_amber_rounded : Icons.store,
+                    color: pickup == null ? AppColors.warningOrange : AppColors.primaryGreen,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: pickup == null
+                        ? const Text(
+                            'No pickup location set. Add one before a courier can be booked.',
+                            style: TextStyle(fontWeight: FontWeight.w600),
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                pickup.label,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
+                              ),
+                              const SizedBox(height: 2),
+                              Text('${pickup.address}, ${pickup.city}',
+                                  style: const TextStyle(fontSize: 13)),
+                              if (pickup.landmark.isNotEmpty)
+                                Text('📍 ${pickup.landmark}',
+                                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                            ],
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => Navigator.pop(context, 'change'),
+                icon: const Icon(Icons.edit_location_alt, size: 18),
+                label: Text(pickup == null ? 'Set pickup location' : 'Change pickup location'),
+              ),
+            ),
+          ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not yet')),
+          TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('Not yet')),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primaryGreen, foregroundColor: Colors.white),
-            child: const Text('Yes, it\'s ready'),
+            // Can't book without a pickup address to send the rider to.
+            onPressed: pickup == null ? null : () => Navigator.pop(context, 'book'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryGreen, foregroundColor: Colors.white),
+            child: const Text('Yes, book courier'),
           ),
         ],
       ),
     );
-    if (confirmed == true) await _requestPickup(order);
+
+    if (!mounted) return;
+    if (action == 'change') {
+      // Let the vendor fix/select the pickup location, then re-confirm with the
+      // updated address so they see exactly what the rider will get.
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => VendorLocationsScreen(vendorId: order.vendorId)),
+      );
+      if (!mounted) return;
+      await _confirmAndRequestPickup(order);
+      return;
+    }
+    if (action == 'book') {
+      await _requestPickup(order);
+    }
   }
 
   /// Vendor taps "Request Pickup" after packaging — the server re-quotes and

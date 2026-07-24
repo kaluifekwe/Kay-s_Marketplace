@@ -54,36 +54,56 @@ serve(async (req) => {
 
     const { data: order } = await supabase
       .from("orders")
-      .select("id, buyer_id, status, total, total_with_delivery, has_shipbubble_delivery")
+      .select("id, buyer_id, status, total, total_with_delivery, has_shipbubble_delivery, delivery_type, paid_at, created_at")
       .eq("id", order_id)
       .maybeSingle();
     if (!order) return json({ error: "Order not found" }, 404);
     if (order.buyer_id !== callerId) return json({ error: "Forbidden" }, 403);
 
-    // Same window as the old direct cancel: once a rider is booked the courier
-    // fee is committed and the item is on its way, so the buyer reports a
-    // problem through the dispute flow instead of cancelling.
-    if (order.status !== "paid") {
+    // Two paths may raise a refund request here:
+    //  1. Plain pre-rider cancel — a 'paid' order with no courier booked yet.
+    //  2. Stuck safety net — a booked courier order that never arrived and has
+    //     stalled past the grace period. A courier can reject a pickup and never
+    //     report it back (Terminal did exactly this), leaving the order frozen at
+    //     'paid'/'in_transit' with the buyer unable to recover their money any
+    //     other way. This does NOT move money — it queues a request an admin
+    //     reviews, so a genuinely in-flight delivery isn't refunded by mistake.
+    const STALL_HOURS = 3;
+    const riderBooked = order.delivery_type === "courier" && order.has_shipbubble_delivery === true;
+    const placed = order.paid_at ?? order.created_at;
+    const hoursSince = placed ? (Date.now() - new Date(placed).getTime()) / 3_600_000 : Infinity;
+    const stuckStates = ["paid", "in_transit"];
+
+    const plainCancel = order.status === "paid" && !riderBooked;
+    const stuckRequest = riderBooked && stuckStates.includes(order.status) && hoursSince >= STALL_HOURS;
+
+    if (!plainCancel && !stuckRequest) {
+      if (riderBooked && stuckStates.includes(order.status)) {
+        const wait = Math.max(1, Math.ceil(STALL_HOURS - hoursSince));
+        return json({
+          error: "too_soon",
+          message: `Your order may still be on the way. If it hasn't arrived, you can request a refund in about ${wait} hour(s).`,
+        }, 409);
+      }
       return json({ error: "not_refundable", message: "This order can no longer be refunded." }, 400);
     }
-    if (order.has_shipbubble_delivery === true) {
-      return json({
-        error: "rider_booked",
-        message: "A rider has already been booked for this order. If there's a problem, report an issue once it arrives.",
-      }, 409);
-    }
 
-    // A refund is paid to the buyer's bank — require the destination up front.
-    const { data: bank } = await supabase
-      .from("buyer_bank_accounts")
-      .select("is_verified, bank_code, account_number")
-      .eq("buyer_id", callerId)
-      .maybeSingle();
-    if (!bank?.is_verified || !bank.bank_code || !bank.account_number) {
-      return json({
-        error: "no_bank_account",
-        message: "Add and verify your bank account first — that's where the refund is paid.",
-      }, 400);
+    // A bank account is required only for a plain cancel (paid to the buyer's
+    // bank). A stuck safety-net request must NOT be blocked by a missing bank —
+    // the buyer got nothing, and admin review (process-refund) falls back to the
+    // wallet when there's no verified bank on file.
+    if (plainCancel) {
+      const { data: bank } = await supabase
+        .from("buyer_bank_accounts")
+        .select("is_verified, bank_code, account_number")
+        .eq("buyer_id", callerId)
+        .maybeSingle();
+      if (!bank?.is_verified || !bank.bank_code || !bank.account_number) {
+        return json({
+          error: "no_bank_account",
+          message: "Add and verify your bank account first — that's where the refund is paid.",
+        }, 400);
+      }
     }
 
     // Idempotent: a second tap returns the existing pending request rather than
@@ -105,7 +125,8 @@ serve(async (req) => {
         order_id,
         buyer_id: callerId,
         amount,
-        reason: (reason && String(reason).trim()) || "Buyer requested a refund",
+        reason: (reason && String(reason).trim()) ||
+          (stuckRequest ? "Order stuck — rider booked but never delivered" : "Buyer requested a refund"),
         status: "pending",
       })
       .select("id, status, amount, created_at")

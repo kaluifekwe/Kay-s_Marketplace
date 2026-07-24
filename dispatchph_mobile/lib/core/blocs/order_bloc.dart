@@ -354,6 +354,48 @@ class OrderCubit extends Cubit<OrderState> {
   /// verified bank account. A verified account is therefore required up front —
   /// `no_bank_account` comes back when one is missing so the caller can send the
   /// buyer to add theirs.
+  /// Buyer-initiated refund request for an order stuck mid-delivery (a rider was
+  /// booked but nothing has moved — e.g. a courier rejected the pickup and never
+  /// reported it). Unlike [cancelOrder] this does NOT pre-gate on status/rider:
+  /// the server (request-refund) decides eligibility (booked + stalled past the
+  /// grace period) and queues an admin-reviewed request. No money moves here.
+  Future<String?> requestStuckRefund(String orderId, String buyerId) async {
+    try {
+      final session = SupabaseService.client.auth.currentSession;
+      try {
+        await SupabaseService.client.functions.invoke(
+          'request-refund',
+          headers: {
+            'Content-Type': 'application/json',
+            if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
+          },
+          body: {
+            'order_id': orderId,
+            'reason': 'Order not moving — rider booked but never delivered',
+          },
+        );
+      } on FunctionException catch (e) {
+        final data = e.details is Map ? e.details as Map : const {};
+        final msg = data['message'] as String? ?? data['error'] as String?;
+        return msg ?? 'Could not submit your refund request. Please try again.';
+      }
+
+      await NotificationCubit.create(
+        userId: buyerId,
+        title: 'Refund requested',
+        body: 'We received your request. Our team is reviewing it and will update you shortly.',
+        type: 'order',
+        referenceId: orderId,
+      );
+
+      await loadBuyerOrders(buyerId);
+      return null;
+    } catch (e) {
+      print('[OrderCubit] requestStuckRefund error: $e');
+      return 'Could not submit your refund request. Please try again.';
+    }
+  }
+
   Future<String?> cancelOrder(String orderId, String buyerId) async {
     try {
       final orderData = await SupabaseService.client

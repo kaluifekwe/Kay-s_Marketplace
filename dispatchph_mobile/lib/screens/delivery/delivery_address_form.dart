@@ -29,8 +29,25 @@ class DeliveryAddressResult {
 class DeliveryAddressForm extends StatefulWidget {
   final String title;
   final List<String> labelOptions;
+  // Optional prefill — pass these to edit an existing address/location in place.
+  final String? initialLabel;
+  final String? initialCity;
+  final String? initialAddress;
+  final String? initialLandmark;
+  final double? initialLat;
+  final double? initialLng;
 
-  const DeliveryAddressForm({super.key, required this.title, required this.labelOptions});
+  const DeliveryAddressForm({
+    super.key,
+    required this.title,
+    required this.labelOptions,
+    this.initialLabel,
+    this.initialCity,
+    this.initialAddress,
+    this.initialLandmark,
+    this.initialLat,
+    this.initialLng,
+  });
 
   @override
   State<DeliveryAddressForm> createState() => _DeliveryAddressFormState();
@@ -44,12 +61,36 @@ class _DeliveryAddressFormState extends State<DeliveryAddressForm> {
     'Port Harcourt': 'Rivers',
   };
 
-  late String _label = widget.labelOptions.first;
+  late String _label;
   String? _city;
   final _addressController = TextEditingController();
   final _landmarkController = TextEditingController();
   double? _lat;
   double? _lng;
+
+  // Google reverse-geocodes many NG pins to a Plus Code (e.g. "QXRW+XFG") — a
+  // map code, not an address a rider can use. Detect it so we can nudge the user
+  // to type a real street address.
+  static final RegExp _plusCode = RegExp(
+    r'\b[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b',
+    caseSensitive: false,
+  );
+  bool get _addressLooksLikeCode => _plusCode.hasMatch(_addressController.text.trim());
+
+  @override
+  void initState() {
+    super.initState();
+    _label = (widget.initialLabel != null && widget.labelOptions.contains(widget.initialLabel))
+        ? widget.initialLabel!
+        : widget.labelOptions.first;
+    _city = (widget.initialCity != null && _cityToState.containsKey(widget.initialCity))
+        ? widget.initialCity
+        : null;
+    _addressController.text = widget.initialAddress ?? '';
+    _landmarkController.text = widget.initialLandmark ?? '';
+    _lat = widget.initialLat;
+    _lng = widget.initialLng;
+  }
 
   @override
   void dispose() {
@@ -58,8 +99,14 @@ class _DeliveryAddressFormState extends State<DeliveryAddressForm> {
     super.dispose();
   }
 
+  // Require a map pin (lat/lng) too: the rider navigates by the coordinates, so
+  // a typed address with no pin isn't good enough to deliver to.
   bool get _isValid =>
-      _addressController.text.trim().isNotEmpty && _landmarkController.text.trim().isNotEmpty && _city != null;
+      _addressController.text.trim().isNotEmpty &&
+      _landmarkController.text.trim().isNotEmpty &&
+      _city != null &&
+      _lat != null &&
+      _lng != null;
 
   Future<void> _pickOnMap() async {
     final result = await Navigator.push<LocationPickerResult>(
@@ -156,27 +203,66 @@ class _DeliveryAddressFormState extends State<DeliveryAddressForm> {
             ),
             const SizedBox(height: 12),
 
-            // Address — picked on the map so we always capture coordinates.
-            InkWell(
-              onTap: _pickOnMap,
-              borderRadius: BorderRadius.circular(12),
-              child: InputDecorator(
-                decoration: InputDecoration(
-                  labelText: 'Street Address',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  prefixIcon: const Icon(Icons.map, color: AppColors.primaryGreen),
-                  suffixIcon: const Icon(Icons.chevron_right),
-                ),
-                child: Text(
-                  _addressController.text.isEmpty ? 'Tap to pick on map' : _addressController.text,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: _addressController.text.isEmpty ? AppColors.mediumGray : AppColors.charcoal,
-                  ),
-                ),
+            // Street address — pin the exact spot on the map (captures the
+            // coordinates the rider navigates to), then correct the text if the
+            // auto-filled address is vague or wrong. The map often reverse-
+            // geocodes to a Plus Code or an unnamed road, so the buyer/vendor
+            // must be able to fix what a rider will actually read.
+            TextField(
+              controller: _addressController,
+              onChanged: (_) => setState(() {}),
+              minLines: 1,
+              maxLines: 2,
+              decoration: InputDecoration(
+                labelText: 'Street Address',
+                hintText: 'e.g. 12 Aba Road, Rumuola',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                prefixIcon: const Icon(Icons.home_outlined, color: AppColors.primaryGreen),
               ),
             ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickOnMap,
+                    icon: Icon(_lat == null ? Icons.map : Icons.check_circle,
+                        size: 18, color: _lat == null ? AppColors.primaryGreen : AppColors.successGreen),
+                    label: Text(_lat == null ? 'Pin exact spot on map' : 'Location pinned · Change'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      side: BorderSide(
+                          color: _lat == null ? AppColors.primaryGreen : AppColors.successGreen),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (_lat == null)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  'Pin the exact spot so the rider is sent to the right place.',
+                  style: TextStyle(fontSize: 12, color: AppColors.mediumGray),
+                ),
+              ),
+            if (_addressLooksLikeCode)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const [
+                    Icon(Icons.warning_amber_rounded, color: AppColors.warningOrange, size: 18),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'This looks like a map code, not a street address. Please type your real address (e.g. house number, street, area) so the rider can find you.',
+                        style: TextStyle(fontSize: 12, color: AppColors.warningOrange),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 12),
 
             TextField(

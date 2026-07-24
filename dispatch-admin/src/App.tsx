@@ -26,6 +26,7 @@ import {
   FileSearchOutlined,
   UndoOutlined,
   DiffOutlined,
+  EnvironmentOutlined,
 } from "@ant-design/icons";
 
 import { supabaseClient } from "./supabaseClient";
@@ -39,6 +40,7 @@ import { SettingsList } from "./pages/settings";
 import { AuditList } from "./pages/audit";
 import { RefundList } from "./pages/refunds";
 import { ReconciliationList } from "./pages/reconciliation";
+import { StateRequestList } from "./pages/state-requests";
 
 const BRAND = "#1b8a3a"; // Kays Market green
 
@@ -85,6 +87,19 @@ function App() {
                 name: "reconciliation_exceptions",
                 list: "/reconciliation",
                 meta: { label: "Reconciliation", icon: <DiffOutlined /> },
+              },
+              {
+                name: "state_change_requests",
+                list: "/state-requests",
+                meta: {
+                  // Label MUST be a plain string: Refine's access-control
+                  // (useCan/CanAccess) JSON-serializes the resource meta into a
+                  // query key, and a React element there is circular and crashes
+                  // the whole authenticated app to a blank page. A live count
+                  // badge needs a custom Sider, not a node in meta.label.
+                  label: "State requests",
+                  icon: <EnvironmentOutlined />,
+                },
               },
               {
                 name: "users",
@@ -146,6 +161,9 @@ function App() {
                 </Route>
                 <Route path="/reconciliation">
                   <Route index element={<ReconciliationList />} />
+                </Route>
+                <Route path="/state-requests">
+                  <Route index element={<StateRequestList />} />
                 </Route>
                 <Route path="/users">
                   <Route index element={<UserList />} />

@@ -169,8 +169,8 @@ class _VendorDashboardState extends State<VendorDashboard> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            const WhatsAppSupportButton(),
-            const SizedBox(height: 14),
+            // Support moved to the app-bar "Contact Support" action so it no
+            // longer floats over the product grid.
             FloatingActionButton(
               onPressed: () => Navigator.push(
                 context,
@@ -440,6 +440,11 @@ class _VendorDashboardState extends State<VendorDashboard> {
                 );
               },
             ),
+            _buildMenuItem(context, Icons.chat_outlined, 'Contact Support', () {
+              final rootContext = Navigator.of(context, rootNavigator: true).context;
+              Navigator.of(context, rootNavigator: true).pop();
+              WhatsAppSupportButton.open(rootContext);
+            }),
             const Divider(height: 24),
             ListTile(
               leading: Container(

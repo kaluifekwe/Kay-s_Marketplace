@@ -52,7 +52,7 @@ class MarketplaceHome extends StatefulWidget {
   State<MarketplaceHome> createState() => _MarketplaceHomeState();
 }
 
-class _MarketplaceHomeState extends State<MarketplaceHome> {
+class _MarketplaceHomeState extends State<MarketplaceHome> with WidgetsBindingObserver {
   late int _currentIndex = widget.initialIndex;
   Timer? _heartbeat;
   Timer? _notifPoll;
@@ -60,6 +60,7 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initMarketplace();
       _loadCart();
@@ -107,9 +108,20 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _heartbeat?.cancel();
     _notifPoll?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Returning from the background (e.g. after paying by bank transfer in
+    // another app): re-sync the cart so a purchased item — which the webhook
+    // clears server-side — stops showing behind the cart badge.
+    if (state == AppLifecycleState.resumed) {
+      _loadCart();
+    }
   }
 
   Future<void> _loadCart() async {
@@ -182,7 +194,12 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
         body: screens[_currentIndex],
         bottomNavigationBar: _CustomBottomNav(
           currentIndex: _currentIndex,
-          onTap: (i) => setState(() => _currentIndex = i),
+          onTap: (i) {
+            setState(() => _currentIndex = i);
+            // Cheap re-sync so the cart badge reflects the real server state
+            // after a checkout completes (purchased items are cleared there).
+            _loadCart();
+          },
         ),
       ),
     );
@@ -337,7 +354,8 @@ class _MarketplaceFeed extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.lightGray,
-      floatingActionButton: const WhatsAppSupportButton(),
+      // Support moved off the feed (it was floating over products) into a
+      // "Contact Support" row on the Profile tab.
       appBar: AppBar(
         backgroundColor: AppColors.primaryGreen,
         elevation: 0,
@@ -1114,6 +1132,9 @@ class ProfileTab extends StatelessWidget {
                   // tile when cashback is re-enabled on an organization account.
                   tile(Icons.location_on_outlined, 'My Delivery Addresses',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BuyerAddressesScreen()))),
+                  divider,
+                  tile(Icons.chat_outlined, 'Contact Support',
+                      () => WhatsAppSupportButton.open(context)),
                   divider,
                   tile(Icons.account_balance, 'Bank Account',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BuyerBankAccountScreen()))),

@@ -808,7 +808,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     icon: _isPayingWithCard
                         ? const SizedBox(
                             width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.credit_card),
+                        : const Icon(Icons.account_balance),
                     label: Text('Pay ₦${format.format(amountToPay)} online'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primaryGreen,
@@ -819,7 +819,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "Card, bank transfer, USSD or eNaira — tap “Change payment method” at checkout • held in escrow",
+                  "Pay by bank transfer, USSD or bank account • held in escrow",
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppColors.mediumGray, fontSize: 12),
                 ),
@@ -991,41 +991,81 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   Widget _deliveryAddressSection() {
     final addr = _selectedAddress;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFFE8F5EB),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.primaryGreen),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.location_on, color: AppColors.primaryGreen),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 2, bottom: 6),
+          child: Text(
+            'DELIVER TO',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.5,
+              color: AppColors.mediumGray,
+            ),
+          ),
+        ),
+        // Whole card is tappable to switch address, with an explicit Change
+        // button too — buyers with several saved addresses must be able to see
+        // and pick which one this order goes to, not silently get their default.
+        InkWell(
+          onTap: _changeAddress,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8F5EB),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.primaryGreen),
+            ),
+            child: Row(
               children: [
-                Text(
-                  addr == null ? 'Add a delivery address' : '${addr.label} • ${addr.city}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
+                const Icon(Icons.location_on, color: AppColors.primaryGreen),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        addr == null ? 'Add a delivery address' : '${addr.label} • ${addr.city}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        addr == null ? 'Needed to show courier delivery prices' : addr.address,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  addr == null ? 'Needed to show courier delivery prices' : addr.address,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _changeAddress,
+                  icon: Icon(addr == null ? Icons.add_location_alt : Icons.swap_horiz, size: 16),
+                  label: Text(addr == null ? 'Add' : 'Change'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primaryGreen,
+                    side: const BorderSide(color: AppColors.primaryGreen),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ),
               ],
             ),
           ),
-          TextButton(
-            onPressed: _changeAddress,
-            child: Text(addr == null ? 'Add' : 'Change'),
+        ),
+        if (addr != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 4, top: 5),
+            child: Text(
+              'Delivering somewhere else? Tap Change to pick another saved address.',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 

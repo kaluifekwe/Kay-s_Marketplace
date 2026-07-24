@@ -114,6 +114,41 @@ class _BuyerAddressesScreenState extends State<BuyerAddressesScreen> {
     }
   }
 
+  Future<void> _editAddress(BuyerAddress addr) async {
+    final result = await showModalBottomSheet<DeliveryAddressResult>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => DeliveryAddressForm(
+        title: 'Edit Delivery Address',
+        labelOptions: const ['Home', 'Office', 'Other'],
+        initialLabel: addr.label,
+        initialCity: addr.city,
+        initialAddress: addr.address,
+        initialLandmark: addr.landmark,
+        initialLat: addr.latitude,
+        initialLng: addr.longitude,
+      ),
+    );
+    if (result == null) return;
+    try {
+      await DeliveryService.updateBuyerAddress(
+        addressId: addr.id,
+        label: result.label,
+        address: result.address,
+        landmark: result.landmark,
+        city: result.city,
+        state: result.state,
+        latitude: result.latitude,
+        longitude: result.longitude,
+      );
+      await _load();
+      _snack('Address updated');
+    } catch (e) {
+      _snack('Could not update: $e', isError: true);
+    }
+  }
+
   Future<void> _delete(BuyerAddress addr) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -234,9 +269,24 @@ class _BuyerAddressesScreenState extends State<BuyerAddressesScreen> {
                           BoxDecoration(color: AppColors.primaryGreen, borderRadius: BorderRadius.circular(12)),
                       child: const Text('Default', style: TextStyle(color: Colors.white, fontSize: 11)),
                     ),
-                  IconButton(
-                    icon: Icon(Icons.delete_outline, color: Colors.red[400]),
-                    onPressed: () => _delete(addr),
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert),
+                    onSelected: (v) async {
+                      if (v == 'edit') {
+                        _editAddress(addr);
+                      } else if (v == 'default') {
+                        await DeliveryService.setDefaultBuyerAddress(_buyerId, addr.id);
+                        await _load();
+                      } else if (v == 'delete') {
+                        _delete(addr);
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                      if (!addr.isDefault)
+                        const PopupMenuItem(value: 'default', child: Text('Set as default')),
+                      const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                    ],
                   ),
                 ],
               ),

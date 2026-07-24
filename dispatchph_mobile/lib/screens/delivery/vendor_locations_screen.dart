@@ -103,6 +103,41 @@ class _VendorLocationsScreenState extends State<VendorLocationsScreen> {
     }
   }
 
+  Future<void> _editLocation(VendorLocation loc) async {
+    final result = await showModalBottomSheet<DeliveryAddressResult>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => DeliveryAddressForm(
+        title: 'Edit Pickup Location',
+        labelOptions: const ['Main Shop', 'Warehouse', 'Home', 'Other'],
+        initialLabel: loc.label,
+        initialCity: loc.city,
+        initialAddress: loc.address,
+        initialLandmark: loc.landmark,
+        initialLat: loc.latitude,
+        initialLng: loc.longitude,
+      ),
+    );
+    if (result == null) return;
+    try {
+      await DeliveryService.updateVendorLocation(
+        locationId: loc.id,
+        label: result.label,
+        address: result.address,
+        landmark: result.landmark,
+        city: result.city,
+        state: result.state,
+        latitude: result.latitude,
+        longitude: result.longitude,
+      );
+      await _load();
+      _snack('Pickup location updated');
+    } catch (e) {
+      _snack('Could not update: $e', isError: true);
+    }
+  }
+
   Future<void> _addLocation() async {
     final result = await showModalBottomSheet<DeliveryAddressResult>(
       context: context,
@@ -225,9 +260,23 @@ class _VendorLocationsScreenState extends State<VendorLocationsScreen> {
                 decoration: BoxDecoration(color: AppColors.primaryGreen, borderRadius: BorderRadius.circular(12)),
                 child: const Text('Default', style: TextStyle(color: Colors.white, fontSize: 11)),
               ),
-            IconButton(
-              icon: Icon(Icons.delete_outline, color: Colors.red[400]),
-              onPressed: () => _delete(loc),
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (v) {
+                if (v == 'edit') {
+                  _editLocation(loc);
+                } else if (v == 'default') {
+                  _setDefault(loc);
+                } else if (v == 'delete') {
+                  _delete(loc);
+                }
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                if (!loc.isDefault)
+                  const PopupMenuItem(value: 'default', child: Text('Set as default')),
+                const PopupMenuItem(value: 'delete', child: Text('Delete')),
+              ],
             ),
           ],
         ),

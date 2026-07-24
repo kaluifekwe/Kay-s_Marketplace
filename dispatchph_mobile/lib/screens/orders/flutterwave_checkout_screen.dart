@@ -113,9 +113,11 @@ class _FlutterwaveCheckoutScreenState extends State<FlutterwaveCheckoutScreen> {
       // Always pass explicit methods: with a single one the inline SDK opens that
       // method; with the full list it shows a "Payment Methods" screen with ALL
       // selectable. Omitting it makes the SDK default straight to the card form.
+      // Card is deliberately excluded — buyers pay by bank transfer, USSD, or
+      // bank account only.
       'payment_options': widget.paymentOption.isNotEmpty
           ? widget.paymentOption
-          : 'card,banktransfer,ussd,account,enaira,qr',
+          : 'banktransfer,ussd,account',
       'customer': {
         'email': widget.email,
         'name': widget.name,
@@ -266,10 +268,16 @@ class _FlutterwaveCheckoutScreenState extends State<FlutterwaveCheckoutScreen> {
   /// (rare — usually a delayed/queued webhook). We do NOT claim failure: the
   /// money is captured and the orders will be created when the webhook lands.
   /// Reassure the buyer and send them to Orders, where the orders will appear.
-  void _handleConfirmationDelayed() {
+  Future<void> _handleConfirmationDelayed() async {
     if (_handled) return;
     _handled = true;
     _pollTimer?.cancel();
+    // The buyer HAS paid (money captured) — only the webhook is lagging. Clear
+    // the cart now so the paid items don't linger behind a stale badge; the
+    // orders themselves appear in My Orders once the webhook lands.
+    try {
+      await context.read<CartCubit>().clearCart(widget.buyerId);
+    } catch (_) {}
     if (!mounted) return;
     showDialog(
       context: context,

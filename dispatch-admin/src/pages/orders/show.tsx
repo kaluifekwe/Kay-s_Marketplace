@@ -23,7 +23,11 @@ const { Title, Paragraph } = Typography;
 
 // process-refund accepts these order statuses when there is NO dispute attached.
 // (confirmed / auto_released are refundable only through the dispute flow.)
-const REFUNDABLE_STATUSES = ["paid", "shipped", "refund_requested", "delivery_failed"];
+// 'in_transit' is included so an admin can rescue an order stuck mid-delivery
+// that never arrived — e.g. a courier rejected the pickup but never reported it,
+// leaving the buyer unable to recover their money. process-refund allows this
+// only for admin/service-role callers.
+const REFUNDABLE_STATUSES = ["paid", "shipped", "refund_requested", "delivery_failed", "in_transit"];
 // release-escrow only releases a buyer-confirmed (or auto-released) order.
 const RELEASABLE_STATUSES = ["confirmed", "auto_released"];
 

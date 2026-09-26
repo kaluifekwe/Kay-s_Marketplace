@@ -1,0 +1,9 @@
+# OSV-Scanner ignore list. Empty on purpose: add an [[IgnoredVulns]] block only
+# after a specific finding has actually been triaged (confirmed unreachable,
+# build-tooling only, or no upstream fix yet), with a reason. Never bulk-ignore
+# to silence noise. Same discipline as the KaysPay repo.
+#
+# Example:
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# reason = "transitive build-tooling dep, not in the shipped bundle; no fix yet"

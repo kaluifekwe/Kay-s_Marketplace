@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs before every `git push`. Enable once per clone with:
+#   git config core.hooksPath .githooks
+exec bash scripts/security/pre-push-scan.sh

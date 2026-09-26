@@ -5,7 +5,10 @@ import { listCategories } from "@/lib/data";
 import { APP_NAME } from "@/lib/format";
 import { slugify } from "@/lib/validate";
 
-type Props = { params: { category: string }; searchParams: { page?: string } };
+type Props = {
+  params: Promise<{ category: string }>;
+  searchParams: Promise<{ page?: string }>;
+};
 
 // Resolve the URL slug against real categories only; unknown slugs 404.
 async function resolve(slug: string): Promise<string | null> {
@@ -14,7 +17,8 @@ async function resolve(slug: string): Promise<string | null> {
   return cats.find((c) => slugify(c.category) === slug)?.category ?? null;
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata(props: Props): Promise<Metadata> {
+  const params = await props.params;
   const category = await resolve(params.category);
   if (!category) return { title: `Not found — ${APP_NAME}`, robots: { index: false } };
   return {
@@ -24,7 +28,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
-export default async function CategoryPage({ params, searchParams }: Props) {
+export default async function CategoryPage(props: Props) {
+  const [params, searchParams] = await Promise.all([props.params, props.searchParams]);
   const category = await resolve(params.category);
   if (!category) notFound();
   return (

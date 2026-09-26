@@ -3,9 +3,10 @@ import { Browse } from "@/components/Browse";
 import { APP_NAME } from "@/lib/format";
 import { cleanQuery } from "@/lib/validate";
 
-type Props = { searchParams: { q?: string; page?: string } };
+type Props = { searchParams: Promise<{ q?: string; page?: string }> };
 
-export function generateMetadata({ searchParams }: Props): Metadata {
+export async function generateMetadata(props: Props): Promise<Metadata> {
+  const searchParams = await props.searchParams;
   const q = cleanQuery(searchParams.q);
   return {
     title: q ? `${q} — ${APP_NAME}` : `${APP_NAME} — shop trusted Nigerian vendors with escrow protection`,
@@ -17,7 +18,8 @@ export function generateMetadata({ searchParams }: Props): Metadata {
   };
 }
 
-export default function Home({ searchParams }: Props) {
+export default async function Home(props: Props) {
+  const searchParams = await props.searchParams;
   const q = cleanQuery(searchParams.q);
   return (
     <Browse

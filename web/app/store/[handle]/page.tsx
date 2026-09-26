@@ -4,9 +4,10 @@ import { AppCta, ProductGrid, SafetyNote, SiteHeader } from "@/components/Ui";
 import { getStore, listStoreProducts } from "@/lib/data";
 import { APP_NAME, jsonLd, safeImageUrl, siteUrl } from "@/lib/format";
 
-type Params = { params: { handle: string } };
+type Params = { params: Promise<{ handle: string }> };
 
-export async function generateMetadata({ params }: Params): Promise<Metadata> {
+export async function generateMetadata(props: Params): Promise<Metadata> {
+  const params = await props.params;
   const store = await getStore(params.handle);
   if (!store) return { title: `Store not found — ${APP_NAME}`, robots: { index: false } };
   const description =
@@ -32,7 +33,8 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   };
 }
 
-export default async function StorePage({ params }: Params) {
+export default async function StorePage(props: Params) {
+  const params = await props.params;
   const store = await getStore(params.handle);
   if (!store) notFound();
 

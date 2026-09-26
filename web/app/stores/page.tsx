@@ -11,7 +11,8 @@ export const metadata: Metadata = {
   alternates: { canonical: "/stores" },
 };
 
-export default async function StoresPage({ searchParams }: { searchParams: { page?: string } }) {
+export default async function StoresPage(props: { searchParams: Promise<{ page?: string }> }) {
+  const searchParams = await props.searchParams;
   const page = parsePage(searchParams.page);
   const { items, hasMore } = await listStores(page);
   return (

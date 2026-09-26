@@ -2,3 +2,4 @@
 # and in Git Bash ("bad interpreter: sh\r").
 *.sh        text eol=lf
 .githooks/* text eol=lf
+.gitleaksignore text eol=lf

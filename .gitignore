@@ -39,3 +39,6 @@ testing_docs/
 *.pages
 *.key
 *.numbers
+
+.vercel
+.env*

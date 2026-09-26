@@ -72,7 +72,7 @@ SELECT
   s.id,
   s.handle,
   s.name,
-  web_scrub(s.description)              AS description,
+  NULL::text                            AS description, -- vendors type street addresses here; never public
   s.logo_path,
   s.store_banner_url,
   COALESCE(s.is_verified, false)        AS is_verified,

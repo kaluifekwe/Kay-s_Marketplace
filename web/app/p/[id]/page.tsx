@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AppCta, SafetyNote, SiteHeader } from "@/components/Ui";
+import { AppCta, JsonLd, SafetyNote, SiteHeader } from "@/components/Ui";
 import { getProduct } from "@/lib/data";
-import { APP_NAME, imageList, jsonLd, naira, siteUrl } from "@/lib/format";
+import { APP_NAME, imageList, naira, siteUrl } from "@/lib/format";
 import { isUuid } from "@/lib/validate";
 
 type Params = { params: Promise<{ id: string }> };
@@ -91,10 +91,7 @@ export default async function ProductPage(props: Params) {
         </div>
         <SafetyNote />
       </main>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: jsonLd(structured) }}
-      />
+      <JsonLd data={structured} />
     </>
   );
 }

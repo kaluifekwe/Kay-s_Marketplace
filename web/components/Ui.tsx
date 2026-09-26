@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { APP_NAME, firstImage, getAppCtaHref, naira } from "@/lib/format";
+import { APP_NAME, firstImage, getAppCtaHref, jsonLd, naira } from "@/lib/format";
 import { STATES, slugify } from "@/lib/validate";
 import type { WebProduct } from "@/lib/data";
 
@@ -146,5 +146,22 @@ export function Pager({
       <span>Page {page}</span>
       {hasMore ? <Link href={href(page + 1)}>Next →</Link> : <span />}
     </nav>
+  );
+}
+
+/**
+ * The ONE place the site renders raw JSON into a <script> tag (for Google
+ * structured data). Safe because jsonLd() is JSON.stringify output with every
+ * "<" escaped as <, so the payload can never close the tag. React cannot
+ * render JSON-LD any other way (it would HTML-escape the quotes and break the
+ * JSON). Reviewed 2026-09-27; do not add other dangerouslySetInnerHTML uses.
+ */
+export function JsonLd({ data }: { data: unknown }) {
+  return (
+    <script
+      type="application/ld+json"
+      // nosemgrep: typescript.react.security.audit.react-dangerouslysetinnerhtml.react-dangerouslysetinnerhtml
+      dangerouslySetInnerHTML={{ __html: jsonLd(data) }}
+    />
   );
 }

@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { AppCta, ProductGrid, SafetyNote, SiteHeader } from "@/components/Ui";
+import { AppCta, JsonLd, ProductGrid, SafetyNote, SiteHeader } from "@/components/Ui";
 import { getStore, listStoreProducts } from "@/lib/data";
-import { APP_NAME, jsonLd, safeImageUrl, siteUrl } from "@/lib/format";
+import { APP_NAME, safeImageUrl, siteUrl } from "@/lib/format";
 
 type Params = { params: Promise<{ handle: string }> };
 
@@ -109,10 +109,7 @@ export default async function StorePage(props: Params) {
           <AppCta />
         </div>
       </div>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: jsonLd(structured) }}
-      />
+      <JsonLd data={structured} />
     </>
   );
 }

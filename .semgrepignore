@@ -1,0 +1,12 @@
+# Same convention as KaysPay: generic security rules false-positive on test
+# assertions that deliberately mention dangerous-looking strings, so tests are
+# excluded from the community-ruleset pass. Also skip generated/vendored output.
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+**/node_modules/
+**/.next/
+**/build/
+**/dist/
+.claude/

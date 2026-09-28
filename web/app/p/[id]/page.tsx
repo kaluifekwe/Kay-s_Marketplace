@@ -1,14 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AppCta, SafetyNote, SiteHeader } from "@/components/Ui";
+import { AppCta, JsonLd, SafetyNote, SiteHeader } from "@/components/Ui";
 import { getProduct } from "@/lib/data";
-import { APP_NAME, imageList, jsonLd, naira, siteUrl } from "@/lib/format";
+import { APP_NAME, imageList, naira, siteUrl } from "@/lib/format";
 import { isUuid } from "@/lib/validate";
 
-type Params = { params: { id: string } };
+type Params = { params: Promise<{ id: string }> };
 
-export async function generateMetadata({ params }: Params): Promise<Metadata> {
+export async function generateMetadata(props: Params): Promise<Metadata> {
+  const params = await props.params;
   const p = await getProduct(params.id);
   if (!p) return { title: `Product not found — ${APP_NAME}`, robots: { index: false } };
   const img = imageList(p.images)[0];
@@ -33,7 +34,8 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   };
 }
 
-export default async function ProductPage({ params }: Params) {
+export default async function ProductPage(props: Params) {
+  const params = await props.params;
   if (!isUuid(params.id)) notFound();
   const p = await getProduct(params.id);
   if (!p) notFound();
@@ -89,10 +91,7 @@ export default async function ProductPage({ params }: Params) {
         </div>
         <SafetyNote />
       </main>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: jsonLd(structured) }}
-      />
+      <JsonLd data={structured} />
     </>
   );
 }

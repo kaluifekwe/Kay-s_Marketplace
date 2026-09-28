@@ -1,0 +1,25 @@
+# OSV-Scanner ignore list. Empty on purpose: add an [[IgnoredVulns]] block only
+# after a specific finding has actually been triaged (confirmed unreachable,
+# build-tooling only, or no upstream fix yet), with a reason. Never bulk-ignore
+# to silence noise. Same discipline as the KaysPay repo.
+#
+# Example:
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# reason = "transitive build-tooling dep, not in the shipped bundle; no fix yet"
+
+# ---- Triaged 2026-09-27 ------------------------------------------------------
+# react-router 6.30.6 (dispatch-admin, single-page app). The only fix is
+# react-router 7.18, a breaking major that @refinedev/react-router-v6 does not
+# support. Revisit when Refine ships a React Router 7 adapter, or by the
+# ignoreUntil date below, whichever comes first.
+
+[[IgnoredVulns]]
+id = "GHSA-337j-9hxr-rhxg"
+ignoreUntil = 2026-12-31
+reason = "deserializeErrors() SSR hydration. The admin panel is a client-only SPA (Vite), no server-side rendering, so this code path never runs."
+
+[[IgnoredVulns]]
+id = "GHSA-wrjc-x8rr-h8h6"
+ignoreUntil = 2026-12-31
+reason = "Open redirect via backslash in <Link>/useNavigate. Needs a user-controlled URL passed to navigation. Every navigation target in dispatch-admin/src is a hard-coded constant (/, /login, dashboard resource); verified by grep 2026-09-27."

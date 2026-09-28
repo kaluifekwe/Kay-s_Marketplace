@@ -4,9 +4,13 @@ import { Browse } from "@/components/Browse";
 import { APP_NAME } from "@/lib/format";
 import { parseState, slugify } from "@/lib/validate";
 
-type Props = { params: { state: string }; searchParams: { page?: string } };
+type Props = {
+  params: Promise<{ state: string }>;
+  searchParams: Promise<{ page?: string }>;
+};
 
-export function generateMetadata({ params }: Props): Metadata {
+export async function generateMetadata(props: Props): Promise<Metadata> {
+  const params = await props.params;
   const state = parseState(params.state);
   if (!state) return { title: `Not found — ${APP_NAME}`, robots: { index: false } };
   return {
@@ -16,7 +20,8 @@ export function generateMetadata({ params }: Props): Metadata {
   };
 }
 
-export default function StatePage({ params, searchParams }: Props) {
+export default async function StatePage(props: Props) {
+  const [params, searchParams] = await Promise.all([props.params, props.searchParams]);
   const state = parseState(params.state);
   if (!state) notFound();
   return (

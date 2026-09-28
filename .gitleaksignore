@@ -1,0 +1,10 @@
+# Gitleaks fingerprints deliberately accepted. One per line, with the reason.
+# Never add a fingerprint without triaging it first.
+#
+# Firebase/GCP client API key in dispatchph_mobile/android/app/google-services.json.
+# These keys are designed to ship inside the Android app (they identify the
+# project, they do not authorize server access). The protection is restricting
+# the key to the app's package name + SHA-1 in Google Cloud Console
+# (APIs & Services > Credentials), not hiding it. Triaged 2026-09-27.
+25b99f12b9c63f7c9d3d013cb046e59f868651cd:dispatchph_mobile/android/app/google-services.json:gcp-api-key:37
+45584ae7bede91cac1735caae20aa149d743ad20:dispatchph_mobile/android/app/google-services.json:gcp-api-key:18

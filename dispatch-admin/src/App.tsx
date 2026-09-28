@@ -28,6 +28,7 @@ import {
   DiffOutlined,
   EnvironmentOutlined,
   ReadOutlined,
+  UserAddOutlined,
 } from "@ant-design/icons";
 
 import { supabaseClient } from "./supabaseClient";
@@ -43,6 +44,7 @@ import { RefundList } from "./pages/refunds";
 import { ReconciliationList } from "./pages/reconciliation";
 import { StateRequestList } from "./pages/state-requests";
 import { ContentList, ContentShow, ContentCreate } from "./pages/content";
+import { WaitlistList } from "./pages/waitlist";
 
 const BRAND = "#1b8a3a"; // Kays Market green
 
@@ -126,6 +128,11 @@ function App() {
                 show: "/content/show/:id",
                 meta: { label: "Content", icon: <ReadOutlined /> },
               },
+              {
+                name: "waitlist_signups",
+                list: "/waitlist",
+                meta: { label: "Waitlist", icon: <UserAddOutlined /> },
+              },
             ]}
             options={{
               syncWithLocation: true,
@@ -188,6 +195,9 @@ function App() {
                   <Route index element={<ContentList />} />
                   <Route path="create" element={<ContentCreate />} />
                   <Route path="show/:id" element={<ContentShow />} />
+                </Route>
+                <Route path="/waitlist">
+                  <Route index element={<WaitlistList />} />
                 </Route>
                 <Route path="*" element={<ErrorComponent />} />
               </Route>

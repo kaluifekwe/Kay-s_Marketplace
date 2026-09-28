@@ -3,8 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { AppCta, JsonLd, SafetyNote, SiteHeader } from "@/components/Ui";
+import { WaitlistForm } from "@/components/WaitlistForm";
 import { getBlogPost, relatedBlogPosts } from "@/lib/data";
-import { APP_NAME, getAppCtaHref, jsonLd, safeImageUrl, siteUrl } from "@/lib/format";
+import { APP_NAME, getAppCtaHref, jsonLd, safeBlogImageUrl, siteUrl } from "@/lib/format";
 
 type Params = { params: Promise<{ slug: string }> };
 
@@ -12,7 +13,7 @@ export async function generateMetadata(props: Params): Promise<Metadata> {
   const params = await props.params;
   const post = await getBlogPost(params.slug);
   if (!post) return { title: `Not found — ${APP_NAME}`, robots: { index: false } };
-  const img = safeImageUrl(post.hero_image_url);
+  const img = safeBlogImageUrl(post.hero_image_url);
   const description = post.meta_description || `${post.title} — ${APP_NAME}`;
   return {
     title: `${post.title} — ${APP_NAME}`,
@@ -40,10 +41,11 @@ export default async function BlogPostPage(props: Params) {
   if (!post) notFound();
 
   const [related] = await Promise.all([relatedBlogPosts(post.category, post.slug)]);
-  const img = safeImageUrl(post.hero_image_url);
+  const img = safeBlogImageUrl(post.hero_image_url);
 
-  // Buyer/vendor CTA copy. Links to the app for now — swaps to the
-  // buyer/vendor waitlist page once that's built (separate piece of work).
+  // Once the app is actually live (APP_PLAY_STORE_URL set), link straight to
+  // it. Until then, capture the lead in waitlist_signups instead of sending
+  // an engaged reader to a dead "coming soon" message.
   const ctaLabel =
     post.audience === "vendor"
       ? `Join the ${APP_NAME} vendor waitlist`
@@ -68,7 +70,27 @@ export default async function BlogPostPage(props: Params) {
       <SiteHeader />
       <main className="pwrap" style={{ maxWidth: 720 }}>
         <div className="card">
-          {img ? <img className="img" src={img} alt={post.title} /> : null}
+          {img ? (
+            <>
+              <img className="img" src={img} alt={post.title} />
+              {post.hero_image_credit ? (
+                <p className="imgCredit">
+                  Photo by{" "}
+                  {post.hero_image_credit_url ? (
+                    <a href={post.hero_image_credit_url} target="_blank" rel="noopener nofollow">
+                      {post.hero_image_credit}
+                    </a>
+                  ) : (
+                    post.hero_image_credit
+                  )}{" "}
+                  on{" "}
+                  <a href="https://unsplash.com/?utm_source=kays_market&utm_medium=referral" target="_blank" rel="noopener nofollow">
+                    Unsplash
+                  </a>
+                </p>
+              ) : null}
+            </>
+          ) : null}
           <div className="pbody">
             {post.category ? (
               <p className="store">
@@ -89,8 +111,8 @@ export default async function BlogPostPage(props: Params) {
                 {ctaLabel}
               </a>
             ) : (
-              <div className="soon" style={{ marginTop: 24 }}>
-                📱 {ctaLabel}, launching soon on Google Play
+              <div style={{ marginTop: 24 }}>
+                <WaitlistForm defaultRole={post.audience === "vendor" ? "vendor" : "buyer"} />
               </div>
             )}
           </div>

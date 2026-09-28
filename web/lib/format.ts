@@ -24,6 +24,24 @@ export function safeImageUrl(u: unknown): string {
   }
 }
 
+/**
+ * Blog hero images only: same host as above, PLUS images.unsplash.com (the
+ * auto-picked hero image source — see generate-blog-draft/index.ts). Never
+ * used for product/store images, which stay Supabase-only.
+ */
+export function safeBlogImageUrl(u: unknown): string {
+  if (typeof u !== "string" || u.length > 600) return "";
+  try {
+    const url = new URL(u);
+    if (url.protocol !== "https:") return "";
+    if (url.host === "images.unsplash.com") return url.toString();
+    if (url.host === supabaseHost() && url.pathname.startsWith("/storage/v1/")) return url.toString();
+    return "";
+  } catch {
+    return "";
+  }
+}
+
 /** products.images is a JSON string like '["url1","url2"]'. */
 export function imageList(imagesField: unknown): string[] {
   try {

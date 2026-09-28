@@ -5,6 +5,7 @@
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 export const PAGE_SIZE = 24;
 export const MAX_PAGE = 20; // caps how deep anyone can crawl one listing
@@ -15,6 +16,10 @@ export function isUuid(v: unknown): v is string {
 
 export function isHandle(v: unknown): v is string {
   return typeof v === "string" && HANDLE_RE.test(v);
+}
+
+export function isEmail(v: unknown): v is string {
+  return typeof v === "string" && v.length <= 255 && EMAIL_RE.test(v);
 }
 
 /** Nigerian states (+ FCT). Used as an allowlist for the state filter. */

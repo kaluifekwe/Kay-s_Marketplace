@@ -167,18 +167,88 @@ export async function getFeaturedStore(): Promise<WebStore | null> {
   return (data as WebStore | null) ?? null;
 }
 
+// ── Blog (content-marketing engine, blog_content_engine.sql) ────────────────
+// Reads web_public_blog_posts only: PUBLISHED posts, safe columns only. No
+// research notes, SEO score, or unpublished social copy ever reach this file.
+
+const BLOG_COLS = "id, title, slug, meta_description, article_content, hero_image_url, category, audience, state, published_at";
+
+export type WebBlogPost = {
+  id: string;
+  title: string;
+  slug: string;
+  meta_description: string | null;
+  article_content: string;
+  hero_image_url: string | null;
+  category: string | null;
+  audience: "buyer" | "vendor";
+  state: string | null;
+  published_at: string;
+};
+
+export async function listBlogPosts(opts: {
+  category?: string;
+  page: number;
+}): Promise<{ items: WebBlogPost[]; hasMore: boolean }> {
+  const from = (opts.page - 1) * PAGE_SIZE;
+  let query = getSupabase()
+    .from("web_public_blog_posts")
+    .select(BLOG_COLS)
+    .order("published_at", { ascending: false })
+    .range(from, from + PAGE_SIZE);
+
+  const category = cleanCategory(opts.category);
+  if (category) query = query.eq("category", category);
+
+  const { data } = await query;
+  const rows = (data ?? []) as WebBlogPost[];
+  return { items: rows.slice(0, PAGE_SIZE), hasMore: rows.length > PAGE_SIZE };
+}
+
+export async function getBlogPost(slug: string): Promise<WebBlogPost | null> {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,198}[a-z0-9])?$/.test(slug)) return null;
+  const { data } = await getSupabase()
+    .from("web_public_blog_posts")
+    .select(BLOG_COLS)
+    .eq("slug", slug)
+    .maybeSingle();
+  return (data as WebBlogPost | null) ?? null;
+}
+
+export async function listBlogCategories(): Promise<string[]> {
+  const { data } = await getSupabase().from("web_public_blog_posts").select("category");
+  const rows = (data ?? []) as { category: string | null }[];
+  return [...new Set(rows.map((r) => r.category).filter((c): c is string => !!c))].sort();
+}
+
+/** A few related posts (same category, excluding the current one) for internal linking. */
+export async function relatedBlogPosts(category: string | null, excludeSlug: string): Promise<WebBlogPost[]> {
+  if (!category) return [];
+  const { data } = await getSupabase()
+    .from("web_public_blog_posts")
+    .select(BLOG_COLS)
+    .eq("category", category)
+    .neq("slug", excludeSlug)
+    .order("published_at", { ascending: false })
+    .limit(3);
+  return (data ?? []) as WebBlogPost[];
+}
+
 /** For the sitemap: newest listings only, capped. */
 export async function sitemapEntries(): Promise<{
   products: { id: string; created_at: string }[];
   stores: { handle: string }[];
+  posts: { slug: string; published_at: string }[];
 }> {
   const db = getSupabase();
-  const [p, s] = await Promise.all([
+  const [p, s, b] = await Promise.all([
     db.from("web_public_products").select("id, created_at").order("created_at", { ascending: false }).limit(5000),
     db.from("web_public_stores").select("handle").limit(2000),
+    db.from("web_public_blog_posts").select("slug, published_at").order("published_at", { ascending: false }).limit(2000),
   ]);
   return {
     products: (p.data ?? []) as { id: string; created_at: string }[],
     stores: (s.data ?? []) as { handle: string }[],
+    posts: (b.data ?? []) as { slug: string; published_at: string }[],
   };
 }

@@ -29,6 +29,7 @@ export async function SiteHeader({ q = "" }: { q?: string }) {
         <HeaderDeliverTo />
         <nav className="tnav">
           <Link href="/stores">Stores</Link>
+          <Link href="/blog">Blog</Link>
         </nav>
         {cta ? (
           <a className="headerCta" href={cta} rel="noopener">

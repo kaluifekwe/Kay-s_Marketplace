@@ -35,6 +35,15 @@ a {
   background: #eee;
   display: block;
 }
+.imgCredit {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  margin: 4px 0 0;
+}
+.imgCredit a {
+  color: var(--muted);
+}
 .pbody {
   padding: 18px;
 }
@@ -84,6 +93,63 @@ a {
   color: var(--muted);
   font-size: 12px;
   margin-top: 16px;
+}
+
+/* ---- Waitlist form (blog CTA) ---- */
+.waitlistForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #eef6ee;
+  padding: 16px;
+  border-radius: 12px;
+}
+.waitlistRoles {
+  display: flex;
+  gap: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.waitlistRoles label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.waitlistForm input[type="email"],
+.waitlistForm select {
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 14px;
+  background: #fff;
+}
+.waitlistForm button {
+  background: var(--green);
+  color: #fff;
+  border: 0;
+  border-radius: 10px;
+  padding: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.waitlistForm button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.waitlistDone {
+  text-align: center;
+  background: #eef6ee;
+  color: var(--green);
+  padding: 14px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+.waitlistError {
+  color: #b42318;
+  font-size: 13px;
+  margin: 0;
 }
 
 /* ---- Storefront page ---- */

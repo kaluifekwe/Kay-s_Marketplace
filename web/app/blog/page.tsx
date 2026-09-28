@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AppCta, SafetyNote, SiteHeader } from "@/components/Ui";
+import { WaitlistForm } from "@/components/WaitlistForm";
 import { listBlogCategories, listBlogPosts } from "@/lib/data";
-import { APP_NAME, safeImageUrl } from "@/lib/format";
+import { APP_NAME, safeBlogImageUrl } from "@/lib/format";
 import { parsePage, slugify } from "@/lib/validate";
 
 type Props = { searchParams: Promise<{ page?: string }> };
@@ -45,7 +46,7 @@ export default async function BlogIndex(props: Props) {
         {items.length ? (
           <div className="blogGrid">
             {items.map((post) => {
-              const img = safeImageUrl(post.hero_image_url);
+              const img = safeBlogImageUrl(post.hero_image_url);
               return (
                 <Link key={post.id} href={`/blog/${post.slug}`} className="blogCard">
                   {img ? <img className="blogImg" src={img} alt={post.title} loading="lazy" /> : <div className="blogImg" />}
@@ -69,6 +70,11 @@ export default async function BlogIndex(props: Props) {
             {hasMore ? <Link href={`/blog?page=${page + 1}`}>Next →</Link> : <span />}
           </nav>
         ) : null}
+
+        <section className="section" style={{ padding: "24px 0" }}>
+          <h2 className="sectionTitle">Get early access</h2>
+          <WaitlistForm />
+        </section>
 
         <SafetyNote />
       </main>

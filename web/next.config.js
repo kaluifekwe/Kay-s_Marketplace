@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 
-// Images are plain <img> tags pointing at our Supabase Storage host only, and
-// lib/format.ts drops any other host, so the CSP can allow just that host.
+// Images are plain <img> tags. Product/store images point only at our
+// Supabase Storage host; blog hero images may also come from Unsplash
+// (images.unsplash.com) — see lib/format.ts safeImageUrl/safeBlogImageUrl,
+// which drop anything outside these hosts before a URL ever reaches here.
 const supabaseHost = (() => {
   try {
     return new URL(process.env.SUPABASE_URL || "").host;
@@ -10,14 +12,16 @@ const supabaseHost = (() => {
   }
 })();
 
-// The site has no user-generated HTML and no forms besides a GET search box.
-// 'unsafe-inline' scripts are required by Next's own hydration payload; the
-// remaining directives lock everything else down.
+// The site has no user-generated HTML. Forms are a GET search box and the
+// waitlist POST (/api/waitlist, same-origin only — see form-action below and
+// waitlist_signups.sql for the DB-side guard). 'unsafe-inline' scripts are
+// required by Next's own hydration payload; the remaining directives lock
+// everything else down.
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
-  `img-src 'self' data: ${supabaseHost ? "https://" + supabaseHost : ""}`.trim(),
+  `img-src 'self' data: https://images.unsplash.com ${supabaseHost ? "https://" + supabaseHost : ""}`.trim(),
   "font-src 'self'",
   "connect-src 'self'",
   "object-src 'none'",

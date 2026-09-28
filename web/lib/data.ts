@@ -171,7 +171,8 @@ export async function getFeaturedStore(): Promise<WebStore | null> {
 // Reads web_public_blog_posts only: PUBLISHED posts, safe columns only. No
 // research notes, SEO score, or unpublished social copy ever reach this file.
 
-const BLOG_COLS = "id, title, slug, meta_description, article_content, hero_image_url, category, audience, state, published_at";
+const BLOG_COLS =
+  "id, title, slug, meta_description, article_content, hero_image_url, hero_image_credit, hero_image_credit_url, category, audience, state, published_at";
 
 export type WebBlogPost = {
   id: string;
@@ -180,6 +181,8 @@ export type WebBlogPost = {
   meta_description: string | null;
   article_content: string;
   hero_image_url: string | null;
+  hero_image_credit: string | null;
+  hero_image_credit_url: string | null;
   category: string | null;
   audience: "buyer" | "vendor";
   state: string | null;

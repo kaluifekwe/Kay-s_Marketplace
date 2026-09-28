@@ -1,0 +1,1 @@
+export { WaitlistList } from "./list";

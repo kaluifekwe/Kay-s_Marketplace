@@ -22,12 +22,20 @@ import { logAdminAction } from "../_shared/audit.ts";
 // Plain fetch to each provider's REST API, no SDK — same convention as every
 // other external integration in this codebase (flutterwave.ts, Paystack,
 // Shipbubble, Terminal, Prembly all do raw fetch, not a vendor SDK).
+//
+// HERO IMAGE: after the draft is generated, a best-effort Unsplash search
+// picks a hero image (free tier). No UNSPLASH_ACCESS_KEY set = no auto image,
+// same as before — the admin can still paste a URL in by hand. Attribution
+// (photographer name + link) is stored alongside the image and must be shown
+// wherever the image is, per Unsplash's API guidelines (see the blog
+// frontend).
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY") || "";
 const geminiKey = Deno.env.get("GEMINI_API_KEY") || "";
+const unsplashKey = Deno.env.get("UNSPLASH_ACCESS_KEY") || "";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -190,6 +198,53 @@ async function generateWithClaude(brief: string): Promise<Draft> {
   return draft;
 }
 
+type UnsplashImage = { url: string; photographerName: string; photographerUrl: string };
+
+/**
+ * Best-effort hero image lookup. Never throws — a failed or absent Unsplash
+ * key just means no auto-picked image, same as before this existed; the
+ * admin can still set hero_image_url manually.
+ */
+async function fetchUnsplashImage(query: string): Promise<UnsplashImage | null> {
+  if (!unsplashKey) return null;
+  try {
+    const res = await fetch(
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1&orientation=landscape&content_filter=high`,
+      { headers: { Authorization: `Client-ID ${unsplashKey}` } },
+    );
+    if (!res.ok) {
+      console.error(`generate-blog-draft: Unsplash search ${res.status} for "${query}"`);
+      return null;
+    }
+    const data = await res.json().catch(() => null);
+    const photo = data?.results?.[0];
+    if (!photo?.urls?.regular) return null;
+
+    // Unsplash's API guidelines require pinging this endpoint when a photo is
+    // actually used (separate from the search request). Fire-and-forget —
+    // never block or fail the draft on this.
+    if (photo.links?.download_location) {
+      fetch(`${photo.links.download_location}&client_id=${unsplashKey}`).catch(() => {});
+    }
+
+    const utm = "utm_source=kays_market&utm_medium=referral";
+    return {
+      url: photo.urls.regular,
+      photographerName: photo.user?.name || "Unsplash",
+      photographerUrl: `${photo.user?.links?.html || "https://unsplash.com"}?${utm}`,
+    };
+  } catch (err) {
+    console.error("generate-blog-draft: Unsplash lookup failed:", err);
+    return null;
+  }
+}
+
+/** category/topic -> a search query with a decent shot at a relevant photo. */
+function buildImageQuery(row: Record<string, unknown>): string {
+  const category = typeof row.category === "string" ? row.category.replace(/-/g, " ") : null;
+  return category ? `${category} Nigeria` : String(row.topic ?? "Nigeria marketplace");
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -230,10 +285,20 @@ serve(async (req) => {
       model = "claude-sonnet-5 (paid — used because Gemini failed)";
     }
 
+    // Best-effort — never blocks the draft on a failed/missing Unsplash lookup.
+    const image = await fetchUnsplashImage(buildImageQuery(row));
+
     const { error: updateErr } = await supabase
       .from("content_items")
       .update({
         ...draft,
+        ...(image
+          ? {
+              hero_image_url: image.url,
+              hero_image_credit: image.photographerName,
+              hero_image_credit_url: image.photographerUrl,
+            }
+          : {}),
         content_status: "REVIEW",
         updated_at: new Date().toISOString(),
       })

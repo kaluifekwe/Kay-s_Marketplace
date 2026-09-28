@@ -245,8 +245,14 @@ export const ContentShow = () => {
                       <Input
                         value={draft.hero_image_url}
                         onChange={set("hero_image_url")}
-                        placeholder="Unsplash photo or a real vendor/product photo URL"
+                        placeholder="Auto-picked from Unsplash on generate, or paste your own"
                       />
+                      {record?.hero_image_credit ? (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Photo by {record.hero_image_credit} on Unsplash — attribution shown automatically on
+                          the blog. Pasting a different URL here clears that credit on next generate.
+                        </Text>
+                      ) : null}
                     </div>
                     <div>
                       <Text strong>Article body (Markdown)</Text>

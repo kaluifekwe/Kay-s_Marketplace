@@ -29,6 +29,12 @@ import { logAdminAction } from "../_shared/audit.ts";
 // (photographer name + link) is stored alongside the image and must be shown
 // wherever the image is, per Unsplash's API guidelines (see the blog
 // frontend).
+//
+// SECTION IMAGES: one more Unsplash search per "## " heading in the article
+// (capped at MAX_SECTION_IMAGES), embedded directly as markdown image +
+// attribution line right under each heading. Same no-key-no-op behavior.
+// This changes article_content itself, so it happens before the DB update —
+// there's no separate column for these, they're part of the article body.
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -245,6 +251,37 @@ function buildImageQuery(row: Record<string, unknown>): string {
   return category ? `${category} Nigeria` : String(row.topic ?? "Nigeria marketplace");
 }
 
+const MAX_SECTION_IMAGES = 5;
+
+/**
+ * One image under every "## " heading (h2 only — the regex requires
+ * whitespace right after the two #s, so "### Sub" never matches), each with
+ * its own attribution line. No-op if UNSPLASH_ACCESS_KEY isn't set, same as
+ * the hero image. Capped so a heading-heavy article can't fire an unbounded
+ * number of Unsplash requests.
+ */
+async function embedSectionImages(content: string, topicContext: string): Promise<string> {
+  if (!unsplashKey) return content;
+  const lines = content.split("\n");
+  const out: string[] = [];
+  let used = 0;
+  const utm = "https://unsplash.com/?utm_source=kays_market&utm_medium=referral";
+  for (const line of lines) {
+    out.push(line);
+    const heading = used < MAX_SECTION_IMAGES ? line.match(/^##\s+(.+)$/) : null;
+    if (heading) {
+      const image = await fetchUnsplashImage(`${heading[1]} ${topicContext}`.slice(0, 100));
+      if (image) {
+        out.push("");
+        out.push(`![${heading[1]}](${image.url})`);
+        out.push(`*Photo by [${image.photographerName}](${image.photographerUrl}) on [Unsplash](${utm})*`);
+        used++;
+      }
+    }
+  }
+  return out.join("\n");
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -286,7 +323,9 @@ serve(async (req) => {
     }
 
     // Best-effort — never blocks the draft on a failed/missing Unsplash lookup.
-    const image = await fetchUnsplashImage(buildImageQuery(row));
+    const imageQuery = buildImageQuery(row);
+    const image = await fetchUnsplashImage(imageQuery);
+    draft.article_content = await embedSectionImages(draft.article_content, imageQuery);
 
     const { error: updateErr } = await supabase
       .from("content_items")

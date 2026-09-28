@@ -2,8 +2,12 @@ import Link from "next/link";
 import { APP_NAME, firstImage, getAppCtaHref, jsonLd, naira } from "@/lib/format";
 import { STATES, slugify } from "@/lib/validate";
 import type { WebProduct } from "@/lib/data";
+import { listCategories } from "@/lib/data";
+import { HeaderDeliverTo } from "./HeaderDeliverTo";
 
-export function SiteHeader({ q = "" }: { q?: string }) {
+export async function SiteHeader({ q = "" }: { q?: string }) {
+  const categories = await listCategories();
+  const cta = getAppCtaHref();
   return (
     <header className="top">
       <div className="topwrap">
@@ -22,10 +26,25 @@ export function SiteHeader({ q = "" }: { q?: string }) {
           />
           <button type="submit">Search</button>
         </form>
+        <HeaderDeliverTo />
         <nav className="tnav">
           <Link href="/stores">Stores</Link>
         </nav>
+        {cta ? (
+          <a className="headerCta" href={cta} rel="noopener">
+            Get the app
+          </a>
+        ) : null}
       </div>
+      {categories.length ? (
+        <div className="catRail" aria-label="Categories">
+          {categories.slice(0, 10).map((c) => (
+            <Link key={c.category} href={`/c/${encodeURIComponent(slugify(c.category))}`} className="catChip">
+              {c.category}
+            </Link>
+          ))}
+        </div>
+      ) : null}
     </header>
   );
 }

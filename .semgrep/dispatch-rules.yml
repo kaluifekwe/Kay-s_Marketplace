@@ -1,0 +1,54 @@
+# Dispatch-specific rules (informational, like KaysPay's kayspay-rules.yml).
+# They encode the public-web security model: the storefront must only ever hold
+# the anon key and read the web_public_* views, and must never build PostgREST
+# filter strings out of user input.
+rules:
+  - id: dispatch-web-no-service-role
+    languages: [generic]
+    severity: ERROR
+    message: >
+      The public web app must never reference the Supabase service-role key.
+      It reads only the web_public_* views with the anon key (see
+      web_public_views.sql). Remove this.
+    pattern-regex: SERVICE_ROLE_KEY|SUPABASE_SERVICE|service_role
+    paths:
+      include:
+        - /web/app/
+        - /web/lib/
+        - /web/components/
+        - /web/next.config.js
+
+  - id: dispatch-postgrest-or-interpolation
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Building a PostgREST filter string with interpolated values lets user input
+      inject extra filters (commas/parentheses). Use a single-column filter such
+      as .ilike(column, value) or .eq(column, value) with a validated value.
+    pattern-either:
+      - pattern: |-
+          $Q.or(`...${$V}...`)
+      - pattern: |-
+          $Q.or("..." + $V)
+      - pattern: |-
+          $Q.filter(`...${$V}...`)
+    paths:
+      include:
+        - /web/
+        - /dispatch-admin/src/
+
+  - id: dispatch-web-unsafe-inner-html
+    languages: [typescript]
+    severity: WARNING
+    message: >
+      dangerouslySetInnerHTML is only allowed for JSON-LD produced by jsonLd()
+      (which escapes "<"). Never inject vendor-written text as HTML.
+    patterns:
+      - pattern: |-
+          <$EL dangerouslySetInnerHTML={{ __html: $X }} />
+      - pattern-not: |-
+          <$EL dangerouslySetInnerHTML={{ __html: jsonLd(...) }} />
+    paths:
+      include:
+        - /web/app/
+        - /web/components/

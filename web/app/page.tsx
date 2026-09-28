@@ -1,28 +1,32 @@
-import { APP_NAME, getAppCtaHref } from "@/lib/format";
+import type { Metadata } from "next";
+import { Browse } from "@/components/Browse";
+import { APP_NAME } from "@/lib/format";
+import { cleanQuery } from "@/lib/validate";
 
-// Simple landing for the bare domain. Individual products live at /p/[id] and
-// stores at /store/[handle].
-export default function Home() {
-  const cta = getAppCtaHref();
+type Props = { searchParams: Promise<{ q?: string; page?: string }> };
+
+export async function generateMetadata(props: Props): Promise<Metadata> {
+  const searchParams = await props.searchParams;
+  const q = cleanQuery(searchParams.q);
+  return {
+    title: q ? `${q} — ${APP_NAME}` : `${APP_NAME} — shop trusted Nigerian vendors with escrow protection`,
+    description:
+      "Browse products from verified Nigerian vendors. Buy safely in the app with escrow protection and tracked delivery.",
+    alternates: { canonical: "/" },
+    // Search-result pages are thin/duplicate for search engines.
+    robots: q || searchParams.page ? { index: false, follow: true } : undefined,
+  };
+}
+
+export default async function Home(props: Props) {
+  const searchParams = await props.searchParams;
+  const q = cleanQuery(searchParams.q);
   return (
-    <main className="pwrap">
-      <div className="card">
-        <div className="pbody">
-          <h1 className="name">{APP_NAME}</h1>
-          <p className="desc">
-            The first intrastate online marketplace in Nigeria — shop trusted
-            vendors with escrow protection.
-          </p>
-          {cta ? (
-            <a className="cta" href={cta}>
-              Get the {APP_NAME} app
-            </a>
-          ) : (
-            <div className="soon">📱 Launching soon on Google Play</div>
-          )}
-        </div>
-      </div>
-      <p className="brand">🔒 {APP_NAME} — secured with escrow protection</p>
-    </main>
+    <Browse
+      heading={q ? `Results for "${q}"` : "Latest products"}
+      basePath="/"
+      q={q}
+      pageParam={searchParams.page}
+    />
   );
 }

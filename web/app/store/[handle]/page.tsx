@@ -1,84 +1,71 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getSupabase } from "@/lib/supabase";
-import { APP_NAME, naira, firstImage, getAppCtaHref } from "@/lib/format";
+import { AppCta, JsonLd, ProductGrid, SafetyNote, SiteHeader } from "@/components/Ui";
+import { getStore, listStoreProducts } from "@/lib/data";
+import { APP_NAME, safeImageUrl, siteUrl } from "@/lib/format";
 
-export const dynamic = "force-dynamic";
+type Params = { params: Promise<{ handle: string }> };
 
-type Params = { params: { handle: string } };
-
-const STORE_FIELDS =
-  "id, name, description, logo_path, store_banner_url, is_verified, address";
-
-// Look up by clean handle first, then fall back to a raw store id.
-async function getStore(handleOrId: string) {
-  const db = getSupabase();
-  const byHandle = await db
-    .from("stores")
-    .select(STORE_FIELDS)
-    .eq("handle", handleOrId.toLowerCase())
-    .maybeSingle();
-  if (byHandle.data) return byHandle.data;
-  const byId = await db
-    .from("stores")
-    .select(STORE_FIELDS)
-    .eq("id", handleOrId)
-    .maybeSingle();
-  return byId.data;
-}
-
-async function getProducts(storeId: string) {
-  const { data } = await getSupabase()
-    .from("products")
-    .select("id, name, price, images")
-    .eq("store_id", storeId)
-    .order("created_at", { ascending: false })
-    .limit(60);
-  return data ?? [];
-}
-
-export async function generateMetadata({ params }: Params): Promise<Metadata> {
+export async function generateMetadata(props: Params): Promise<Metadata> {
+  const params = await props.params;
   const store = await getStore(params.handle);
-  if (!store) return { title: `Store not found — ${APP_NAME}` };
+  if (!store) return { title: `Store not found — ${APP_NAME}`, robots: { index: false } };
   const description =
-    (store.description as string) ||
-    `Shop ${store.name} on ${APP_NAME} — secured with escrow protection.`;
-  const img =
-    (store.store_banner_url as string) || (store.logo_path as string) || "";
+    store.description || `Shop ${store.name} on ${APP_NAME}, secured with escrow protection.`;
+  const img = safeImageUrl(store.store_banner_url) || safeImageUrl(store.logo_path);
   return {
     title: `${store.name} — ${APP_NAME}`,
-    description,
+    description: description.slice(0, 200),
+    alternates: { canonical: `/store/${store.handle}` },
     openGraph: {
-      title: store.name as string,
-      description,
+      title: store.name,
+      description: description.slice(0, 200),
       type: "website",
       siteName: APP_NAME,
       images: img ? [img] : [],
     },
     twitter: {
       card: "summary_large_image",
-      title: store.name as string,
-      description,
+      title: store.name,
+      description: description.slice(0, 200),
       images: img ? [img] : [],
     },
   };
 }
 
-export default async function StorePage({ params }: Params) {
+export default async function StorePage(props: Params) {
+  const params = await props.params;
   const store = await getStore(params.handle);
   if (!store) notFound();
 
-  const products = await getProducts(store.id as string);
-  const banner = (store.store_banner_url as string) || "";
-  const logo = (store.logo_path as string) || "";
-  const cta = getAppCtaHref();
+  const products = await listStoreProducts(store.id);
+  const banner = safeImageUrl(store.store_banner_url);
+  const logo = safeImageUrl(store.logo_path);
+
+  // Brand-level data only. No address, phone or owner details exist in the view.
+  const structured = {
+    "@context": "https://schema.org",
+    "@type": "Store",
+    name: store.name,
+    url: `${siteUrl()}/store/${store.handle}`,
+    image: banner || logo || undefined,
+    description: store.description ?? undefined,
+    ...(store.review_count > 0
+      ? {
+          aggregateRating: {
+            "@type": "AggregateRating",
+            ratingValue: Number(store.avg_rating),
+            reviewCount: store.review_count,
+          },
+        }
+      : {}),
+  };
 
   return (
     <>
+      <SiteHeader />
       <main className="swrap">
-        {banner ? (
-          <img className="banner" src={banner} alt={store.name as string} />
-        ) : null}
+        {banner ? <img className="banner" src={banner} alt={store.name} /> : null}
         <div className="head">
           <div className="logo">
             {logo ? (
@@ -100,56 +87,29 @@ export default async function StorePage({ params }: Params) {
                 </span>
               ) : null}
             </h1>
-            {store.description ? (
-              <p className="sdesc">{store.description as string}</p>
-            ) : null}
-            {store.address ? (
-              <p className="saddr">📍 {store.address as string}</p>
-            ) : null}
+            {store.description ? <p className="sdesc">{store.description}</p> : null}
+            <p className="saddr">
+              {store.state ? `📍 ${store.state}` : ""}
+              {store.review_count > 0
+                ? `${store.state ? " · " : ""}★ ${Number(store.avg_rating).toFixed(1)} (${store.review_count})`
+                : ""}
+            </p>
           </div>
         </div>
 
         <p className="count">
           {products.length} {products.length === 1 ? "item" : "items"}
         </p>
-
-        {products.length ? (
-          <div className="grid">
-            {products.map((p: any) => {
-              const img = firstImage(p.images);
-              return (
-                <a className="pcard" key={p.id} href={`/p/${p.id}`}>
-                  {img ? (
-                    <img className="pimg" src={img} alt={p.name} loading="lazy" />
-                  ) : (
-                    <div className="pimg" />
-                  )}
-                  <div className="pcbody">
-                    <p className="pcname">{p.name}</p>
-                    <p className="pcprice">{naira(p.price)}</p>
-                  </div>
-                </a>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="empty">No products listed yet.</p>
-        )}
+        <ProductGrid items={products} />
+        <SafetyNote />
       </main>
 
       <div className="bar">
         <div className="barwrap">
-          {cta ? (
-            <a className="cta" href={cta}>
-              Get the {APP_NAME} app to buy
-            </a>
-          ) : (
-            <div className="soon">
-              📱 Buy securely in the {APP_NAME} app — launching soon on Google Play
-            </div>
-          )}
+          <AppCta />
         </div>
       </div>
+      <JsonLd data={structured} />
     </>
   );
 }

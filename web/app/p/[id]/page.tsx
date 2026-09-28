@@ -1,81 +1,97 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getSupabase } from "@/lib/supabase";
-import { APP_NAME, naira, firstImage, getAppCtaHref } from "@/lib/format";
+import { AppCta, JsonLd, SafetyNote, SiteHeader } from "@/components/Ui";
+import { getProduct } from "@/lib/data";
+import { APP_NAME, imageList, naira, siteUrl } from "@/lib/format";
+import { isUuid } from "@/lib/validate";
 
-export const dynamic = "force-dynamic";
+type Params = { params: Promise<{ id: string }> };
 
-type Params = { params: { id: string } };
-
-async function getProduct(id: string) {
-  const { data } = await getSupabase()
-    .from("products")
-    .select("id, name, description, price, images, store_id")
-    .eq("id", id)
-    .maybeSingle();
-  return data;
-}
-
-export async function generateMetadata({ params }: Params): Promise<Metadata> {
+export async function generateMetadata(props: Params): Promise<Metadata> {
+  const params = await props.params;
   const p = await getProduct(params.id);
-  if (!p) return { title: `Product not found — ${APP_NAME}` };
-  const img = firstImage(p.images);
-  const description = (p.description as string) || `${naira(p.price)} on ${APP_NAME}`;
+  if (!p) return { title: `Product not found — ${APP_NAME}`, robots: { index: false } };
+  const img = imageList(p.images)[0];
+  const description = p.description || `${naira(p.price)} on ${APP_NAME}`;
   return {
-    title: `${p.name} — ${APP_NAME}`,
-    description,
+    title: `${p.name} — ${naira(p.price)} — ${APP_NAME}`,
+    description: description.slice(0, 200),
+    alternates: { canonical: `/p/${p.id}` },
     openGraph: {
-      title: p.name as string,
-      description,
+      title: p.name,
+      description: description.slice(0, 200),
       type: "website",
       siteName: APP_NAME,
       images: img ? [img] : [],
     },
     twitter: {
       card: "summary_large_image",
-      title: p.name as string,
-      description,
+      title: p.name,
+      description: description.slice(0, 200),
       images: img ? [img] : [],
     },
   };
 }
 
-export default async function ProductPage({ params }: Params) {
+export default async function ProductPage(props: Params) {
+  const params = await props.params;
+  if (!isUuid(params.id)) notFound();
   const p = await getProduct(params.id);
   if (!p) notFound();
 
-  let storeName = "";
-  const { data: store } = await getSupabase()
-    .from("stores")
-    .select("name")
-    .eq("id", p.store_id)
-    .maybeSingle();
-  storeName = (store?.name as string) ?? "";
-
-  const img = firstImage(p.images);
-  const cta = getAppCtaHref();
+  const imgs = imageList(p.images);
+  // Structured data so Google can show price and availability in results.
+  // Seller is the store BRAND only; no contact details are ever included.
+  const structured = {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name: p.name,
+    description: p.description ?? undefined,
+    image: imgs,
+    category: p.category ?? undefined,
+    url: `${siteUrl()}/p/${p.id}`,
+    offers: {
+      "@type": "Offer",
+      price: Number(p.price),
+      priceCurrency: "NGN",
+      availability: "https://schema.org/InStock",
+      url: `${siteUrl()}/p/${p.id}`,
+      seller: { "@type": "Organization", name: p.store_name },
+    },
+  };
 
   return (
-    <main className="pwrap">
-      <div className="card">
-        {img ? <img className="img" src={img} alt={p.name as string} /> : null}
-        <div className="pbody">
-          <p className="price">{naira(p.price)}</p>
-          <h1 className="name">{p.name}</h1>
-          {storeName ? <p className="store">Sold by {storeName}</p> : null}
-          {p.description ? <p className="desc">{p.description as string}</p> : null}
-          {cta ? (
-            <a className="cta" href={cta}>
-              Get the {APP_NAME} app to buy
-            </a>
-          ) : (
-            <div className="soon">
-              📱 Buy securely in the {APP_NAME} app — launching soon on Google Play
+    <>
+      <SiteHeader />
+      <main className="pwrap">
+        <div className="card">
+          {imgs[0] ? <img className="img" src={imgs[0]} alt={p.name} /> : null}
+          {imgs.length > 1 ? (
+            <div className="thumbs">
+              {imgs.slice(1).map((u) => (
+                <img key={u} src={u} alt="" loading="lazy" />
+              ))}
             </div>
-          )}
+          ) : null}
+          <div className="pbody">
+            <p className="price">{naira(p.price)}</p>
+            <h1 className="name">{p.name}</h1>
+            <p className="store">
+              Sold by{" "}
+              <Link href={`/store/${p.store_handle}`}>
+                {p.store_name}
+                {p.store_verified ? " ✔" : ""}
+              </Link>
+              {p.state ? ` · ${p.state}` : ""}
+            </p>
+            {p.description ? <p className="desc">{p.description}</p> : null}
+            <AppCta label={`Buy in the ${APP_NAME} app`} />
+          </div>
         </div>
-      </div>
-      <p className="brand">🔒 {APP_NAME} — secured with escrow protection</p>
-    </main>
+        <SafetyNote />
+      </main>
+      <JsonLd data={structured} />
+    </>
   );
 }

@@ -7,10 +7,17 @@ export const revalidate = 3600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const base = siteUrl();
-  const { products, stores } = await sitemapEntries().catch(() => ({ products: [], stores: [] }));
+  const { products, stores, posts } = await sitemapEntries().catch(() => ({ products: [], stores: [], posts: [] }));
   return [
     { url: `${base}/`, changeFrequency: "daily", priority: 1 },
     { url: `${base}/stores`, changeFrequency: "daily", priority: 0.6 },
+    { url: `${base}/blog`, changeFrequency: "daily", priority: 0.9 },
+    ...posts.map((post) => ({
+      url: `${base}/blog/${post.slug}`,
+      lastModified: new Date(post.published_at),
+      changeFrequency: "monthly" as const,
+      priority: 0.85,
+    })),
     ...STATES.map((s) => ({
       url: `${base}/state/${slugify(s)}`,
       changeFrequency: "daily" as const,

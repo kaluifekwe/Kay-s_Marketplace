@@ -254,6 +254,10 @@ a {
   font-weight: 700;
   cursor: pointer;
 }
+.tnav {
+  display: flex;
+  gap: 16px;
+}
 .tnav a {
   text-decoration: none;
   font-weight: 600;
@@ -660,4 +664,116 @@ a {
   .headerCta {
     order: 4;
   }
+}
+
+/* ---- Blog ---- */
+.blogGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 4px 0 16px;
+}
+@media (min-width: 640px) {
+  .blogGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.blogCard {
+  text-decoration: none;
+  color: inherit;
+  background: #fff;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.06);
+}
+.blogImg {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #eee;
+  display: block;
+}
+.blogBody {
+  padding: 12px 14px 16px;
+}
+.blogCat {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+.blogTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  line-height: 1.3;
+}
+.blogExcerpt {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Article body (react-markdown output) */
+.article {
+  font-size: 15.5px;
+  line-height: 1.7;
+  color: #1f2937;
+}
+.article h2 {
+  font-size: 20px;
+  font-weight: 800;
+  margin: 28px 0 10px;
+}
+.article h3 {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 22px 0 8px;
+}
+.article p {
+  margin: 0 0 16px;
+}
+.article ul,
+.article ol {
+  margin: 0 0 16px;
+  padding-left: 22px;
+}
+.article li {
+  margin-bottom: 6px;
+}
+.article a {
+  color: var(--green);
+  font-weight: 600;
+}
+.article strong {
+  font-weight: 700;
+}
+.article blockquote {
+  border-left: 3px solid var(--green);
+  margin: 0 0 16px;
+  padding: 4px 0 4px 16px;
+  color: var(--muted);
+  font-style: italic;
+}
+.relatedList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.relatedList li {
+  padding: 10px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+.relatedList a {
+  color: var(--green);
+  font-weight: 600;
+  text-decoration: none;
 }

@@ -8,12 +8,16 @@ import { logAdminAction } from "../_shared/audit.ts";
 // admin-* function's shape (getUserIdFromToken + role check) so it satisfies
 // the same CI guard.
 //
-// Claude Sonnet 5 is the primary writer; Gemini's free tier is the fallback
-// ONLY if the Claude call itself fails (network/rate-limit/error) — not used
-// for quality reasons, purely availability. Neither call happens unless an
-// admin explicitly clicks Generate: this function is never scheduled or
-// triggered automatically, so every model call is a deliberate, visible
-// admin action (and a real, if tiny, cost).
+// GEMINI IS THE MODEL IN USE: free-tier, no cost, by deliberate choice (not a
+// fallback for reliability — Gemini's free tier is what actually runs).
+// Claude Sonnet 5 exists as a ready, dormant upgrade path: it activates
+// automatically, and ONLY, once an ANTHROPIC_API_KEY secret is ever set — a
+// paid path, so it stays off until you decide it's worth it. With no
+// Anthropic key configured, every generation uses Gemini; nothing here is
+// tried against Claude first, so no request ever silently costs money.
+//
+// Neither model is ever called unless an admin explicitly clicks Generate:
+// this function is never scheduled or triggered automatically.
 //
 // Plain fetch to each provider's REST API, no SDK — same convention as every
 // other external integration in this codebase (flutterwave.ts, Paystack,
@@ -69,8 +73,9 @@ const DRAFT_KEYS: (keyof Draft)[] = [
   "social_facebook", "social_instagram", "social_x", "social_linkedin", "social_whatsapp_status",
 ];
 
-// House style: fixed, reused on every call (cached on the Claude side; sent
-// plain to Gemini, which has no equivalent caching for this call shape).
+// House style: fixed, reused on every call (cached on the Claude side, if
+// that path is ever enabled; sent plain to Gemini, which has no equivalent
+// caching for this call shape).
 const SYSTEM_PROMPT = `You write for the Kay's Market blog: a Nigerian intrastate marketplace with
 escrow protection, ID-verified vendors, and same-state delivery.
 
@@ -131,6 +136,33 @@ function validateDraft(obj: unknown): Draft | null {
   return rec as unknown as Draft;
 }
 
+async function generateWithGemini(brief: string): Promise<Draft> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text: brief }] }],
+        generationConfig: { responseMimeType: "application/json" },
+      }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Gemini ${res.status}: ${data?.error?.message || JSON.stringify(data).slice(0, 300)}`);
+  }
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error("Gemini returned no text content");
+  const draft = validateDraft(JSON.parse(extractJson(text)));
+  if (!draft) throw new Error("Gemini response did not match the expected draft shape");
+  return draft;
+}
+
+// Dormant unless ANTHROPIC_API_KEY is set — see the file header. Paid, so
+// never called implicitly; only reached if Gemini itself fails AND a key
+// has been deliberately added.
 async function generateWithClaude(brief: string): Promise<Draft> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -155,31 +187,6 @@ async function generateWithClaude(brief: string): Promise<Draft> {
   if (!textBlock?.text) throw new Error("Claude returned no text content");
   const draft = validateDraft(JSON.parse(extractJson(textBlock.text)));
   if (!draft) throw new Error("Claude response did not match the expected draft shape");
-  return draft;
-}
-
-async function generateWithGemini(brief: string): Promise<Draft> {
-  if (!geminiKey) throw new Error("GEMINI_API_KEY not set — no fallback available");
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: "user", parts: [{ text: brief }] }],
-        generationConfig: { responseMimeType: "application/json" },
-      }),
-    },
-  );
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(`Gemini ${res.status}: ${data?.error?.message || JSON.stringify(data).slice(0, 300)}`);
-  }
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Gemini returned no text content");
-  const draft = validateDraft(JSON.parse(extractJson(text)));
-  if (!draft) throw new Error("Gemini response did not match the expected draft shape");
   return draft;
 }
 
@@ -210,14 +217,17 @@ serve(async (req) => {
 
     let draft: Draft;
     let model: string;
+    if (!geminiKey) {
+      return json({ error: "GEMINI_API_KEY is not set. Run: supabase secrets set GEMINI_API_KEY=..." }, 500);
+    }
     try {
-      if (!anthropicKey) throw new Error("ANTHROPIC_API_KEY not set");
-      draft = await generateWithClaude(brief);
-      model = "claude-sonnet-5";
-    } catch (claudeErr) {
-      console.error(`generate-blog-draft: Claude failed for ${content_id}, falling back to Gemini:`, claudeErr);
       draft = await generateWithGemini(brief);
-      model = "gemini-2.5-flash (fallback)";
+      model = "gemini-2.5-flash";
+    } catch (geminiErr) {
+      console.error(`generate-blog-draft: Gemini failed for ${content_id}:`, geminiErr);
+      if (!anthropicKey) throw geminiErr; // no paid key set — nothing else to try
+      draft = await generateWithClaude(brief);
+      model = "claude-sonnet-5 (paid — used because Gemini failed)";
     }
 
     const { error: updateErr } = await supabase

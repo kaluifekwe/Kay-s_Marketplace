@@ -323,3 +323,341 @@ a {
   color: var(--green);
   font-weight: 600;
 }
+
+/* ---- Homepage: header extras ---- */
+.deliverTo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 0 10px;
+  height: 40px;
+  background: #fff;
+}
+.deliverTo select {
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  outline: none;
+  max-width: 120px;
+}
+.headerCta {
+  background: var(--green);
+  color: #fff;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 10px 16px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.catRail {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 24px 10px;
+  display: flex;
+  gap: 20px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.catChip {
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  text-decoration: none;
+  padding: 4px 2px;
+}
+
+/* ---- Homepage: sections ---- */
+.section {
+  max-width: 1240px;
+  margin: 32px auto 0;
+  padding: 0 24px;
+  width: 100%;
+}
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.sectionTitle {
+  font-size: 19px;
+  font-weight: 800;
+  margin: 0;
+}
+.sectionHint {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ---- Hero ---- */
+.hero {
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+  min-height: 260px;
+}
+.heroInner {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 36px 28px 56px;
+}
+.heroText {
+  flex: 1;
+  min-width: 0;
+  max-width: 520px;
+}
+.heroTag {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  margin-bottom: 12px;
+}
+.heroTitle {
+  font-size: 28px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.15;
+  margin: 0 0 10px;
+}
+.heroSub {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.88);
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+.heroCta {
+  display: inline-block;
+  background: #fff;
+  color: #14532d;
+  text-decoration: none;
+  border-radius: 10px;
+  padding: 11px 20px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.heroCtaSoon {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.heroArt {
+  flex-shrink: 0;
+  width: 140px;
+  height: 140px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.heroDots {
+  position: absolute;
+  bottom: 16px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+.heroDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.45);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.heroDot.on {
+  width: 20px;
+  background: #fff;
+}
+
+/* ---- Trust strip ---- */
+.trustStrip {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 16px 20px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.trustItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 4px;
+}
+.trustIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #ecfdf5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.trustTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.trustSub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ---- Shop by state ---- */
+.stateGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.stateCard {
+  text-decoration: none;
+  background: #fff;
+  border: 2px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 13px 15px;
+  transition: border-color 0.15s;
+}
+.stateCard:hover {
+  border-color: var(--green);
+}
+.stateName {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.stateCount {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* ---- Vendor spotlight ---- */
+.vendorBanner {
+  text-decoration: none;
+  background: linear-gradient(90deg, #fef3c7, #fef9e7);
+  border: 1px solid #fde68a;
+  border-radius: 14px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.vendorText {
+  flex: 1;
+  min-width: 0;
+}
+.vendorTitle {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #78350f;
+}
+.vendorSub {
+  font-size: 11.5px;
+  color: #92400e;
+  margin-top: 2px;
+}
+.vendorGo {
+  display: inline-block;
+  flex-shrink: 0;
+  background: #78350f;
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ---- Why band ---- */
+.whyBand {
+  background: #14532d;
+  margin-top: 40px;
+}
+.whyWrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 30px 24px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  text-align: center;
+}
+.whyStat {
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+}
+.whySub {
+  font-size: 12.5px;
+  color: #bbf7d0;
+  margin-top: 4px;
+}
+
+/* Wider grid on desktop-ish widths (all product grids, not just the homepage). */
+@media (min-width: 960px) {
+  .grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* ---- Mobile: stack everything (most traffic is phones) ---- */
+@media (max-width: 640px) {
+  .heroInner {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 28px 20px 60px;
+  }
+  .heroArt {
+    width: 96px;
+    height: 96px;
+  }
+  .heroTitle {
+    font-size: 24px;
+  }
+  .trustStrip {
+    grid-template-columns: 1fr;
+  }
+  .trustItem {
+    border-left: none !important;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 10px;
+  }
+  .trustItem:first-child {
+    border-top: none;
+    padding-top: 0;
+  }
+  .stateGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .vendorBanner {
+    flex-wrap: wrap;
+  }
+  .whyWrap {
+    grid-template-columns: 1fr;
+  }
+  .deliverTo {
+    order: 3;
+    width: 100%;
+  }
+  .headerCta {
+    order: 4;
+  }
+}

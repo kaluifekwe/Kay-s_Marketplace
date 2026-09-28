@@ -132,6 +132,41 @@ export async function listCategories(): Promise<{ category: string; product_coun
   return (data ?? []) as { category: string; product_count: number }[];
 }
 
+/**
+ * How many verified vendors sit in each state, for the "Shop by state"
+ * homepage section. Small dataset (one row per store), reduced in JS rather
+ * than adding a dedicated view for it.
+ */
+export async function listStateVendorCounts(): Promise<{ state: string; count: number }[]> {
+  const { data } = await getSupabase().from("web_public_stores").select("state");
+  const rows = (data ?? []) as { state: string | null }[];
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.state) continue;
+    counts.set(r.state, (counts.get(r.state) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([state, count]) => ({ state, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * The homepage "vendor spotlight". Only a genuinely rated store qualifies
+ * (never picks an unrated one just to fill the slot) — returns null when
+ * nothing qualifies yet, and the section is skipped rather than shown empty.
+ */
+export async function getFeaturedStore(): Promise<WebStore | null> {
+  const { data } = await getSupabase()
+    .from("web_public_stores")
+    .select(STORE_COLS)
+    .gt("review_count", 0)
+    .order("avg_rating", { ascending: false })
+    .order("review_count", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as WebStore | null) ?? null;
+}
+
 /** For the sitemap: newest listings only, capped. */
 export async function sitemapEntries(): Promise<{
   products: { id: string; created_at: string }[];

@@ -1,9 +1,10 @@
 import "./globals.css";
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
-import { APP_NAME } from "@/lib/format";
+import { APP_NAME, siteUrl } from "@/lib/format";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl()),
   title: APP_NAME,
   description: "Shop trusted vendors with escrow protection.",
 };

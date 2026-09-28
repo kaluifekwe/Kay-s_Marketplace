@@ -14,12 +14,17 @@ export function WaitlistForm({ defaultRole }: { defaultRole?: "buyer" | "vendor"
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!state) {
+      setStatus("error");
+      setMessage("Choose your state.");
+      return;
+    }
     setStatus("sending");
     try {
       const res = await fetch("/api/waitlist", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, role, state: state || null }),
+        body: JSON.stringify({ email, role, state }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
@@ -40,7 +45,7 @@ export function WaitlistForm({ defaultRole }: { defaultRole?: "buyer" | "vendor"
   }
 
   return (
-    <form className="waitlistForm" onSubmit={onSubmit}>
+    <form id="waitlist" className="waitlistForm" onSubmit={onSubmit}>
       <div className="waitlistRoles">
         <label>
           <input type="radio" name="role" checked={role === "buyer"} onChange={() => setRole("buyer")} />
@@ -60,8 +65,10 @@ export function WaitlistForm({ defaultRole }: { defaultRole?: "buyer" | "vendor"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
       />
-      <select value={state} onChange={(e) => setState(e.target.value)} aria-label="Your state (optional)">
-        <option value="">State (optional)</option>
+      <select required value={state} onChange={(e) => setState(e.target.value)} aria-label="Your state">
+        <option value="" disabled>
+          Select your state
+        </option>
         {STATES.map((s) => (
           <option key={s} value={s}>
             {s}

@@ -24,12 +24,14 @@ export async function POST(req: Request) {
   if (role !== "buyer" && role !== "vendor") {
     return NextResponse.json({ ok: false, error: "Choose buyer or vendor." }, { status: 400 });
   }
-  const cleanState = typeof state === "string" && (STATES as readonly string[]).includes(state) ? state : null;
+  if (typeof state !== "string" || !(STATES as readonly string[]).includes(state)) {
+    return NextResponse.json({ ok: false, error: "Choose your state." }, { status: 400 });
+  }
 
   const supabase = getSupabase();
   const { error } = await supabase
     .from("waitlist_signups")
-    .insert({ email: (email as string).toLowerCase(), role, state: cleanState, source: "blog" });
+    .insert({ email: (email as string).toLowerCase(), role, state, source: "blog" });
 
   if (error) {
     if (error.code === "23505") {

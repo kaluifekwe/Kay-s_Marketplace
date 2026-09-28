@@ -3,7 +3,7 @@ import Link from "next/link";
 import { AppCta, SafetyNote, SiteHeader } from "@/components/Ui";
 import { WaitlistForm } from "@/components/WaitlistForm";
 import { listBlogCategories, listBlogPosts } from "@/lib/data";
-import { APP_NAME, safeBlogImageUrl } from "@/lib/format";
+import { APP_NAME, getAppCtaHref, safeBlogImageUrl } from "@/lib/format";
 import { parsePage, slugify } from "@/lib/validate";
 
 type Props = { searchParams: Promise<{ page?: string }> };
@@ -80,7 +80,13 @@ export default async function BlogIndex(props: Props) {
       </main>
       <div className="bar">
         <div className="barwrap">
-          <AppCta />
+          {getAppCtaHref() ? (
+            <AppCta />
+          ) : (
+            <a className="cta" href="#waitlist">
+              📩 Join the waitlist
+            </a>
+          )}
         </div>
       </div>
     </>

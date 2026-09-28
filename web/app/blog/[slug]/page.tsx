@@ -135,7 +135,13 @@ export default async function BlogPostPage(props: Params) {
       </main>
       <div className="bar">
         <div className="barwrap">
-          <AppCta />
+          {ctaHref ? (
+            <AppCta />
+          ) : (
+            <a className="cta" href="#waitlist">
+              📩 Join the waitlist
+            </a>
+          )}
         </div>
       </div>
       <JsonLd data={structured} />

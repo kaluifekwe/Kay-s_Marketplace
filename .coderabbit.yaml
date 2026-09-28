@@ -1,0 +1,110 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# AI code review for every pull request (CodeRabbit is free for public repos).
+# The instructions below encode THIS project's risks: an escrow marketplace
+# where money moves, most of the code is AI-written, and the public web site
+# must never expose vendor details. Start advisory (comments only); tighten
+# to blocking once the false-positive rate is understood.
+language: "en-US"
+early_access: false
+
+tone_instructions: "Be direct and specific. Prioritise security and money-logic bugs over style. Explain how a bug could actually be triggered."
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false   # advisory for now
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  changed_files_summary: true
+  sequence_diagrams: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - ".*"        # review PRs into any branch, not only the default branch
+
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/.next/**"
+    - "!**/build/**"
+    - "!**/dist/**"
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+    - "!**/pubspec.lock"
+    - "!.claude/**"
+
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        This code is largely AI-generated, so review for BEHAVIOUR, not just style.
+        For every change ask: what happens if this runs twice, concurrently, halfway
+        (crash or timeout mid-way), with a negative/zero/huge amount, or when called
+        by the wrong user? Flag hardcoded secrets, logging of personal data, and any
+        trust in client-supplied values (amounts, roles, user ids, prices).
+        Explain the concrete failure scenario for each finding.
+
+    - path: "dispatchph_mobile/supabase/functions/**"
+      instructions: |
+        These Edge Functions move money and change order state. Check strictly:
+        - The caller is authenticated AND authorised for THIS resource (ownership or
+          role), not just "logged in". admin-* functions must verify role = admin
+          and record an audit entry.
+        - Amounts and prices are re-derived server-side; never trust the request body.
+        - Money-changing operations are idempotent (safe on retry/duplicate webhook),
+          atomic (single RPC/transaction, no read-then-write races), and cannot
+          overdraw or double-pay. Look for TOCTOU and double-spend.
+        - Escrow/payout gates (disputes, holds, payout_blocked, maker-checker on
+          large payouts) cannot be bypassed by any code path.
+        - Webhooks verify their signature before doing anything.
+        - Failures never leave money in a half-moved state; ambiguous provider
+          results stay pending for reconciliation instead of guessing.
+        - Secrets come from env, are never logged or returned to the client.
+        - Errors do not leak internals; the service-role key is never exposed.
+
+    - path: "**/*.sql"
+      instructions: |
+        Database changes are security-critical and the live DB is the source of truth.
+        Check: RLS is enabled on every new table; policies are scoped to the owner or
+        role (never USING (true) for writes, and avoid public read of sensitive
+        columns); no grants to anon/PUBLIC on sensitive tables or views; SECURITY
+        DEFINER functions set search_path and check auth.uid()/role inside; sensitive
+        columns (role, credit, payout, kyc, flags) are guarded from client updates;
+        money functions are atomic and idempotent; the file is safe to re-run and
+        documents how to roll back. Views for the public web must not expose phone,
+        address, vendor_id, email, NIN or KYC fields.
+
+    - path: "web/**"
+      instructions: |
+        This is the PUBLIC storefront. It must use the anon key only and read only
+        the web_public_* views. Flag: any service-role key or direct table read;
+        vendor contact details (phone, whatsapp, address, owner identity) in any
+        output; PostgREST filters built from user input (.or() with interpolation);
+        unvalidated URL params (must be UUID/handle/enum-checked before any query);
+        dangerouslySetInnerHTML except JSON-LD via jsonLd(); image URLs not limited
+        to our Supabase Storage host; relaxed security headers or CSP; open
+        redirects. Buying must never happen on the web.
+
+    - path: "dispatch-admin/**"
+      instructions: |
+        Admin panel. Any action that changes money, orders, users or settings must go
+        through an audited Edge Function, not a direct table write from the browser.
+        Flag missing confirmation on destructive actions and any exposure of secrets.
+
+    - path: "dispatchph_mobile/lib/**"
+      instructions: |
+        Flutter app. Flag secrets or keys in code, trusting client-side checks for
+        money/role/escrow decisions, missing error handling on payment flows, PII in
+        logs, and state that can leave an order or payment inconsistent after a
+        network failure or double tap. Payment and escrow decisions belong on the server.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        CI security. Flag: actions not pinned to a version, broad permissions (use
+        least privilege), pull_request_target combined with checking out PR code,
+        secrets echoed or passed to untrusted code, and steps that weaken or skip the
+        security checks.
+
+chat:
+  auto_reply: true

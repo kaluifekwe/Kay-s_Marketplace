@@ -1,0 +1,185 @@
+name: Security and quality
+
+# Same pipeline as the KaysPay repo (verify + Gitleaks + Semgrep + OSV-Scanner),
+# adapted to this repo's stack: Next.js web, React admin, Flutter app, and
+# Deno edge functions.
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: security-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-web:
+    name: verify (web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Build (placeholder env, no network to the database needed)
+        env:
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_ANON_KEY: ci-placeholder
+          SITE_URL: https://kaysmarket.com.ng
+        run: npm run build
+
+  verify-admin:
+    name: verify (admin panel)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # dispatch-admin/ doesn't exist on every branch yet; skip cleanly
+      # rather than fail when it's absent.
+      - name: Check dispatch-admin exists
+        id: check
+        run: echo "exists=$([ -f dispatch-admin/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.exists == 'true'
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dispatch-admin/package-lock.json
+      - name: Install dependencies
+        if: steps.check.outputs.exists == 'true'
+        working-directory: dispatch-admin
+        run: npm ci
+      - name: Type-check and build
+        if: steps.check.outputs.exists == 'true'
+        working-directory: dispatch-admin
+        run: npm run build
+
+  verify-app:
+    name: verify (flutter app)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: dispatchph_mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Get packages
+        run: flutter pub get
+      # Fails only on analyzer ERRORS. Warnings/infos are reported but do not
+      # block, so pre-existing lint noise does not stall unrelated work.
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+  policy:
+    name: policy checks and secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Gitleaks needs full history, not just the merge commit.
+
+      - name: Scan for committed secrets (Gitleaks)
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The public storefront's whole security model is "anon key + read-only
+      # views". A service-role key must never reach that project.
+      - name: Enforce web app never touches the service-role key
+        shell: bash
+        run: |
+          if grep -rnE 'SERVICE_ROLE_KEY|SUPABASE_SERVICE|service_role' web/app web/lib web/components web/next.config.js; then
+            echo 'The public web app must not reference the Supabase service-role key.' >&2
+            exit 1
+          fi
+
+      # Every admin-* edge function must verify the caller is an admin before
+      # doing anything (it inline-checks users.role, see each function).
+      # Skips cleanly on a branch that has no admin-* functions yet.
+      - name: Enforce admin functions check the caller's role
+        shell: bash
+        run: |
+          shopt -s nullglob
+          fns=(dispatchph_mobile/supabase/functions/admin-*/index.ts)
+          missing=0
+          for f in "${fns[@]}"; do
+            if ! grep -qE 'role !== "admin"|role !== .admin.' "$f"; then
+              echo "Missing admin role check: $f" >&2
+              missing=1
+            fi
+          done
+          exit $missing
+
+      # The web views must never re-expose contact or identity columns. Looks
+      # only at each view's SELECT column list (comments stripped). Skips
+      # cleanly on a branch that doesn't have web_public_views.sql yet.
+      - name: Enforce public web views expose no contact columns
+        shell: bash
+        run: |
+          [ -f web_public_views.sql ] || { echo "web_public_views.sql not present on this branch, skipping."; exit 0; }
+          bad=$(awk '/^CREATE VIEW web_public_/{v=1; sel=0} v && /^SELECT/{sel=1} v && /^FROM/{sel=0; v=0} sel{print}' web_public_views.sql \
+            | sed 's/--.*//' \
+            | grep -nwEi 'phone|whatsapp_number|address|vendor_id|email|nin|kyc_status|stock' || true)
+          if [ -n "$bad" ]; then
+            echo "web_public_views.sql exposes a contact/identity column:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+
+  semgrep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Semgrep
+        run: pip install semgrep
+      # Only pass targets that exist on this branch; Semgrep errors on a
+      # missing path regardless of --error, and these grow over time as the
+      # web/admin/functions projects land on different branches.
+      - name: Community security rules (blocking)
+        shell: bash
+        run: |
+          targets=()
+          for p in web/app web/lib web/components dispatch-admin/src dispatchph_mobile/supabase/functions; do
+            [ -e "$p" ] && targets+=("$p")
+          done
+          semgrep scan --config=p/security-audit --config=p/javascript --config=p/typescript --error "${targets[@]}"
+      - name: Dispatch-specific rules (blocking; they guard the public-web security model)
+        run: semgrep scan --config=.semgrep/dispatch-rules.yml --error
+      # No SARIF upload: findings show in this job's log. (Same choice as the
+      # KaysPay repo; Code Scanning is optional.)
+
+  osv-scan:
+    # Full permission set kept: trimming it caused a startup_failure in the
+    # KaysPay repo (the reusable workflow needs these internally).
+    permissions:
+      actions: read
+      security-events: write
+      contents: read
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@v2.5.0"
+    with:
+      upload-sarif: false
+      scan-args: |-
+        --recursive
+        --config=.osv-scanner.toml
+        ./

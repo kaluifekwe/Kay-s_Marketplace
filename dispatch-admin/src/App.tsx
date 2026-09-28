@@ -27,6 +27,7 @@ import {
   UndoOutlined,
   DiffOutlined,
   EnvironmentOutlined,
+  ReadOutlined,
 } from "@ant-design/icons";
 
 import { supabaseClient } from "./supabaseClient";
@@ -41,6 +42,7 @@ import { AuditList } from "./pages/audit";
 import { RefundList } from "./pages/refunds";
 import { ReconciliationList } from "./pages/reconciliation";
 import { StateRequestList } from "./pages/state-requests";
+import { ContentList, ContentShow, ContentCreate } from "./pages/content";
 
 const BRAND = "#1b8a3a"; // Kays Market green
 
@@ -117,6 +119,13 @@ function App() {
                 list: "/settings",
                 meta: { label: "Settings", icon: <SettingOutlined /> },
               },
+              {
+                name: "content_items",
+                list: "/content",
+                create: "/content/create",
+                show: "/content/show/:id",
+                meta: { label: "Content", icon: <ReadOutlined /> },
+              },
             ]}
             options={{
               syncWithLocation: true,
@@ -174,6 +183,11 @@ function App() {
                 </Route>
                 <Route path="/settings">
                   <Route index element={<SettingsList />} />
+                </Route>
+                <Route path="/content">
+                  <Route index element={<ContentList />} />
+                  <Route path="create" element={<ContentCreate />} />
+                  <Route path="show/:id" element={<ContentShow />} />
                 </Route>
                 <Route path="*" element={<ErrorComponent />} />
               </Route>

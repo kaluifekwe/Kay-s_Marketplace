@@ -4,6 +4,8 @@ gradle-wrapper.jar
 /gradlew
 /gradlew.bat
 /local.properties
+# Holds MAPS_API_KEY and other build-time secrets; never commit it.
+secrets.properties
 GeneratedPluginRegistrant.java
 .cxx/
 

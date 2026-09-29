@@ -73,6 +73,10 @@ export default async function BlogIndex(props: Props) {
 
         <section className="section" style={{ padding: "24px 0" }}>
           <h2 className="sectionTitle">Get early access</h2>
+          <p className="waitlistIntro">
+            We're onboarding buyers and vendors state by state. Join now and be first to know the moment Kay's
+            Market opens where you are — escrow protection and verified vendors, from day one.
+          </p>
           <WaitlistForm />
         </section>
 

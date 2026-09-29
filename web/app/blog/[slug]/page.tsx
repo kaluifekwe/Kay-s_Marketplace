@@ -112,6 +112,12 @@ export default async function BlogPostPage(props: Params) {
               </a>
             ) : (
               <div style={{ marginTop: 24 }}>
+                <h2 className="sectionTitle">Get early access</h2>
+                <p className="waitlistIntro">
+                  We're onboarding {post.audience === "vendor" ? "vendors" : "buyers"} state by state. Join now
+                  and be first to know the moment Kay's Market opens where you are — escrow protection and
+                  verified vendors, from day one.
+                </p>
                 <WaitlistForm defaultRole={post.audience === "vendor" ? "vendor" : "buyer"} />
               </div>
             )}

@@ -46,6 +46,14 @@ export function etaHours(eta?: string): number {
   return ETA_UNKNOWN;
 }
 
+// Hours used for filtering and ranking. A provider's numeric ETA is preferred,
+// but the lower of the two is taken so a carrier that passed the text-based
+// filter before is never dropped by a stricter number (e.g. "Within 1 business
+// day" = 24h while delivery_eta says 25h).
+function optionHours(c: CourierOption): number {
+  return Math.min(c.etaHours ?? ETA_UNKNOWN, etaHours(c.eta));
+}
+
 export async function quoteAll(input: QuoteInput): Promise<MergedQuote> {
   const providers = enabledProviders();
   const results = await Promise.allSettled(providers.map((p) => p.getQuotes(input)));
@@ -74,7 +82,7 @@ export async function quoteAll(input: QuoteInput): Promise<MergedQuote> {
   // too slow" is a genuine no-fast-courier result that should drop straight to
   // the vendor-arranged fallback.
   const maxHours = await getNumber("max_delivery_hours", "MAX_DELIVERY_HOURS", 24);
-  const fast = couriers.filter((c) => etaHours(c.eta) <= maxHours);
+  const fast = couriers.filter((c) => optionHours(c) <= maxHours);
   if (couriers.length > 0 && fast.length === 0) {
     reasons.push(`all_options_too_slow (max=${maxHours}h)`);
   }
@@ -84,7 +92,7 @@ export async function quoteAll(input: QuoteInput): Promise<MergedQuote> {
   // Fastest-first: rank by estimated delivery hours, then cheapest as tiebreaker.
   // Buyers care about timing first; among equally fast options the cheaper wins.
   couriers.sort((a, b) => {
-    const d = etaHours(a.eta) - etaHours(b.eta);
+    const d = optionHours(a) - optionHours(b);
     return d !== 0 ? d : a.fee - b.fee;
   });
   return { couriers, providerData, reason: reasons.join(" | ") || "no_rates" };

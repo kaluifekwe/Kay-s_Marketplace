@@ -12,6 +12,11 @@ serve(async () => {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e) }), { status: 500 });
+    // Log the detail server-side; never echo exception text to the caller.
+    console.error("whats-my-ip lookup failed:", e);
+    return new Response(JSON.stringify({ error: "lookup_failed" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    });
   }
 });

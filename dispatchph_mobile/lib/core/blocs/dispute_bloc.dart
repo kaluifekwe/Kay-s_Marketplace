@@ -13,7 +13,26 @@ class DisputeCubit extends Cubit<DisputeState> {
 
   final _uuid = const Uuid();
 
-  static const _disputeFields = 'id, order_id, raised_by, buyer_id, vendor_id, reason, buyer_explanation, buyer_phone, delivery_address, issue_type, evidence_urls, vendor_evidence_urls, status, vendor_response, resolution_type, replacement_product_id, escalated_to_admin, resolution_deadline, buyer_submitted_at, vendor_responded_at, resolved_at, created_at, vendor_response_deadline, admin_decision, admin_notes, return_required, return_deadline, return_receipt_photos, return_verified, refund_method, video_url, vendor_confirm_deadline, vendor_return_confirmed_at, vendor_return_received_photo, is_post_payment, vendor_owes_refund';
+  // Select all columns rather than hand-listing them: the previous explicit list
+  // requested `vendor_response`, which doesn't exist in the table, so the WHOLE
+  // query errored and returned an empty disputes list (buyer AND vendor). The
+  // Dispute model already null-safes any missing field, so `*` is safe + robust
+  // against future schema drift.
+  static const _disputeFields = '*';
+
+  // Parse rows one at a time so a single malformed dispute can't wipe the whole
+  // list (which previously hid every dispute from the vendor/buyer).
+  List<Dispute> _parseDisputes(List rows) {
+    final out = <Dispute>[];
+    for (final d in rows) {
+      try {
+        out.add(Dispute.fromJson(d as Map<String, dynamic>));
+      } catch (e) {
+        print('[DisputeCubit] skipped unparseable dispute: $e');
+      }
+    }
+    return out;
+  }
 
   Future<void> loadDisputesForVendor(String vendorId) async {
     emit(state.copyWith(isLoading: true));
@@ -25,7 +44,7 @@ class DisputeCubit extends Cubit<DisputeState> {
           .order('created_at', ascending: false)
           .limit(100);
 
-      final disputes = (disputesData as List).map((d) => Dispute.fromJson(d)).toList();
+      final disputes = _parseDisputes(disputesData as List);
       emit(state.copyWith(isLoading: false, vendorDisputes: disputes));
     } catch (e) {
       print('[DisputeCubit] loadDisputesForVendor error: $e');
@@ -43,7 +62,7 @@ class DisputeCubit extends Cubit<DisputeState> {
           .order('created_at', ascending: false)
           .limit(100);
 
-      final disputes = (disputesData as List).map((d) => Dispute.fromJson(d)).toList();
+      final disputes = _parseDisputes(disputesData as List);
       emit(state.copyWith(isLoading: false, buyerDisputes: disputes));
     } catch (e) {
       print('[DisputeCubit] loadDisputesForBuyer error: $e');
@@ -248,34 +267,20 @@ class DisputeCubit extends Cubit<DisputeState> {
         'p_vendor_id': vendorId,
       });
 
-      // If escrow already paid the vendor out for this order, hold their
-      // NEXT payout for the order amount so a buyer-favor refund is funded
-      // from the held vendor money rather than the platform's own pocket.
+      // If escrow already paid the vendor out for this order, hold their NEXT
+      // payout for the order amount so a buyer-favour refund is funded from the
+      // held vendor money rather than the platform's own pocket. This MUST run
+      // server-side: users.payout_blocked is guarded against client writes, so
+      // the old client-side update silently failed and the hold never applied.
+      // The RPC verifies the caller is the order's buyer, checks payment_released,
+      // and sets the dispute + hold atomically (idempotent).
       try {
-        final orderRow = await SupabaseService.client
-            .from('orders')
-            .select('payment_released, total_with_delivery, total')
-            .eq('id', orderId)
-            .maybeSingle();
-        if (orderRow != null && orderRow['payment_released'] == true) {
-          final owed = (orderRow['total_with_delivery'] as num?)?.toDouble()
-              ?? (orderRow['total'] as num?)?.toDouble() ?? 0;
-          await SupabaseService.client.from('disputes').update({
-            'is_post_payment': true,
-            'vendor_owes_refund': owed,
-          }).eq('id', disputeId);
-
-          final vendorRow = await SupabaseService.client
-              .from('users').select('payout_blocked_amount').eq('id', vendorId).maybeSingle();
-          final existingBlocked = (vendorRow?['payout_blocked_amount'] as num?)?.toDouble() ?? 0;
-          await SupabaseService.client.from('users').update({
-            'payout_blocked': true,
-            'payout_blocked_reason': 'Active dispute on order $orderId',
-            'payout_blocked_amount': existingBlocked + owed,
-          }).eq('id', vendorId);
-        }
+        await SupabaseService.client.rpc('apply_dispute_payout_hold', params: {
+          'p_dispute_id': disputeId,
+          'p_order_id': orderId,
+        });
       } catch (e) {
-        print('[DisputeCubit] post-payment payout hold error: $e');
+        print('[DisputeCubit] apply_dispute_payout_hold error: $e');
       }
 
       PushService.sendPush(
@@ -409,28 +414,49 @@ class DisputeCubit extends Cubit<DisputeState> {
     }
   }
 
-  /// Buyer accepts replacement
+  /// Buyer accepts replacement. Runs server-side: the original payment stays in
+  /// escrow and the order resets to "paid" so the vendor ships the replacement
+  /// (a client can't clear the guarded active-dispute lock or reset protected
+  /// order fields, and leaving has_dispute set would strand the money in escrow).
   Future<void> acceptReplacement(String disputeId) async {
     try {
-      await SupabaseService.client.from('disputes').update({
-        'status': 'replacement_accepted',
-        'resolution_type': 'replacement',
-        'resolved_at': DateTime.now().toIso8601String(),
-      }).eq('id', disputeId);
+      final res = await SupabaseService.client.functions.invoke(
+        'accept-replacement',
+        body: {'dispute_id': disputeId},
+      );
+      final data = res.data;
+      if (data is Map && data['error'] != null) {
+        print('[DisputeCubit] acceptReplacement server error: ${data['error']}');
+      }
       await loadDisputeById(disputeId);
     } catch (e) {
       print('[DisputeCubit] acceptReplacement error: $e');
     }
   }
 
-  /// Buyer rejects replacement (back to negotiation)
+  /// Buyer rejects replacement → back to the vendor's negotiation options
+  /// (offer another, accept the refund, or send to admin). The dispute stays
+  /// open (money still held) — we do NOT drop it to a dead 'open' state.
   Future<void> rejectReplacement(String disputeId) async {
     try {
       await SupabaseService.client.from('disputes').update({
         'replacement_product_id': null,
         'resolution_type': null,
-        'status': 'open',
+        'status': 'awaiting_vendor_response',
+        'vendor_response_deadline':
+            DateTime.now().add(const Duration(hours: 24)).toIso8601String(),
       }).eq('id', disputeId);
+
+      final disputeData = await SupabaseService.client
+          .from('disputes').select('vendor_id, order_id').eq('id', disputeId).maybeSingle();
+      if (disputeData != null && disputeData['vendor_id'] != null) {
+        PushService.sendPush(
+          userId: disputeData['vendor_id'] as String,
+          title: 'Replacement declined',
+          body: 'The buyer declined your replacement. Offer another, accept the refund, or send it to admin.',
+          data: {'type': 'dispute', 'orderId': disputeData['order_id']},
+        );
+      }
       await loadDisputeById(disputeId);
     } catch (e) {
       print('[DisputeCubit] rejectReplacement error: $e');
@@ -442,34 +468,17 @@ class DisputeCubit extends Cubit<DisputeState> {
   /// Never write status='resolved'/'refunded' locally on failure — that
   /// would record a refund that never happened (common on flaky networks).
   Future<bool> acceptRefund(String disputeId) async {
+    // Runs through the vendor-accept-refund Edge Function: it authenticates the
+    // vendor and processes the refund under the service role (calling
+    // process-refund directly from here 403s — vendors aren't allowed refund
+    // callers). The function also claws back the vendor + releases the hold and
+    // notifies the buyer, so there's nothing more to do here.
     try {
-      final disputeData = await SupabaseService.client
-          .from('disputes')
-          .select('id, order_id, buyer_id')
-          .eq('id', disputeId)
-          .maybeSingle();
-
-      if (disputeData == null) return false;
-
-      await PaymentService.processRefund(
-        orderId: disputeData['order_id'],
-        disputeId: disputeId,
-        reason: 'Dispute resolved in buyer\'s favor',
-      );
-
-      // Increment buyer's refund count
-      if (disputeData['buyer_id'] != null) {
-        await SupabaseService.client.rpc('increment_user_refunds', params: {
-          'user_id': disputeData['buyer_id'],
-        });
-        PushService.sendPush(
-          userId: disputeData['buyer_id'] as String,
-          title: 'Refund Accepted',
-          body: 'Your refund has been accepted. Payment will be returned.',
-          data: {'type': 'dispute', 'orderId': disputeId},
-        );
+      final result = await PaymentService.vendorAcceptRefund(disputeId: disputeId);
+      if (result['error'] != null) {
+        print('[DisputeCubit] acceptRefund server error: ${result['error']}');
+        return false;
       }
-
       await loadDisputeById(disputeId);
       return true;
     } catch (e) {
@@ -666,8 +675,7 @@ class DisputeCubit extends Cubit<DisputeState> {
           reason: 'Dispute resolved by admin in buyer\'s favor',
           refundMethod: refundMethod,
         );
-
-        await _releaseVendorPayoutHold(dispute['vendor_id'] as String, disputeId);
+        // process-refund releases the vendor payout hold (atomic + idempotent).
       }
 
       await SupabaseService.client.from('users').update({
@@ -737,21 +745,14 @@ class DisputeCubit extends Cubit<DisputeState> {
   /// out of the held amount (denial, or no-return-required approval that's
   /// funded straight from the platform).
   Future<void> _releaseVendorPayoutHold(String vendorId, String disputeId) async {
+    // Server-side + atomic + idempotent. users.payout_blocked is guarded against
+    // client writes, so this can only work from an admin/service context — the
+    // RPC enforces that. Only used by the admin-deny path now; the refund paths
+    // release the hold inside process-refund itself.
     try {
-      final dispute = await SupabaseService.client
-          .from('disputes').select('is_post_payment, vendor_owes_refund').eq('id', disputeId).maybeSingle();
-      if (dispute == null || dispute['is_post_payment'] != true) return;
-      final owed = (dispute['vendor_owes_refund'] as num?)?.toDouble() ?? 0;
-
-      final vendor = await SupabaseService.client
-          .from('users').select('payout_blocked_amount').eq('id', vendorId).maybeSingle();
-      final remaining = ((vendor?['payout_blocked_amount'] as num?)?.toDouble() ?? 0) - owed;
-
-      await SupabaseService.client.from('users').update({
-        'payout_blocked': remaining > 0,
-        'payout_blocked_reason': remaining > 0 ? 'Other active disputes' : null,
-        'payout_blocked_amount': remaining > 0 ? remaining : 0,
-      }).eq('id', vendorId);
+      await SupabaseService.client.rpc('release_dispute_payout_hold', params: {
+        'p_dispute_id': disputeId,
+      });
     } catch (e) {
       print('[DisputeCubit] _releaseVendorPayoutHold error: $e');
     }
@@ -840,39 +841,22 @@ class DisputeCubit extends Cubit<DisputeState> {
     required String receivedPhotoPath,
   }) async {
     try {
-      final dispute = await SupabaseService.client
-          .from('disputes').select('order_id, buyer_id, vendor_id, refund_method').eq('id', disputeId).maybeSingle();
-      if (dispute == null) return false;
-
+      // Upload the receipt photo, then let the server finalize everything. This
+      // MUST go through vendor-confirm-return: calling process-refund from here
+      // fails (a vendor isn't an allowed refund caller — it 403s), which used to
+      // leave the return "resolved" with no refund actually paid. The Edge
+      // Function authenticates the vendor, then runs the refund + clawback +
+      // payout-hold release under the service role.
       final photoUrl = await StorageService.uploadDisputeEvidence(disputeId: disputeId, filePath: receivedPhotoPath);
 
-      await SupabaseService.client.from('disputes').update({
-        'vendor_return_received_photo': photoUrl,
-        'vendor_return_confirmed_at': DateTime.now().toIso8601String(),
-        'status': 'resolved',
-        'resolution_type': 'refund',
-        'resolved_at': DateTime.now().toIso8601String(),
-      }).eq('id', disputeId);
-
-      await PaymentService.processRefund(
-        orderId: dispute['order_id'],
+      final result = await PaymentService.vendorConfirmReturn(
         disputeId: disputeId,
-        reason: 'Dispute resolved — vendor confirmed return received',
-        refundMethod: dispute['refund_method'] as String? ?? 'credit',
+        receivedPhotoUrl: photoUrl,
       );
-
-      await _releaseVendorPayoutHold(dispute['vendor_id'] as String, disputeId);
-
-      await SupabaseService.client.from('orders').update({
-        'has_dispute': false,
-      }).eq('id', dispute['order_id']);
-
-      PushService.sendPush(
-        userId: dispute['buyer_id'] as String,
-        title: 'Return Confirmed — Refund Processed',
-        body: 'The vendor confirmed your return. Your refund has been processed.',
-        data: {'type': 'dispute', 'orderId': dispute['order_id']},
-      );
+      if (result['error'] != null) {
+        print('[DisputeCubit] vendorConfirmReturnReceived server error: ${result['error']}');
+        return false;
+      }
 
       await loadDisputeById(disputeId);
       return true;

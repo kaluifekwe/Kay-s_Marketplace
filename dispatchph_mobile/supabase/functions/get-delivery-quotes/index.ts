@@ -1,10 +1,12 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { quoteAll } from "../_shared/delivery/orchestrate.ts";
+import { getNumber } from "../_shared/settings.ts";
 import type { Address, PackageItem } from "../_shared/delivery/types.ts";
 
 // Fetch live courier rates at CHECKOUT across every enabled provider
-// (Shipbubble, Terminal Africa, …) and return a merged, cheapest-first list.
+// (Shipbubble, Terminal Africa, …) and return a merged, fastest-first list
+// (price as tiebreaker). Options from ALL providers are pooled, never deduped.
 // Orders don't exist yet here (created post-payment), so quotes are keyed by
 // buyer + vendor + cart. An empty couriers array => client falls back to the
 // in-chat delivery-fee negotiation.
@@ -93,10 +95,22 @@ serve(async (req) => {
     const { data: vendorUser } = await supabase.from("users").select("name, email, phone").eq("id", vendor_id).maybeSingle();
     const { data: buyerUser } = await supabase.from("users").select("name, email, phone").eq("id", buyer_id).maybeSingle();
 
+    // A courier MUST have a reachable pickup + delivery number. Never substitute
+    // a placeholder — a fake number means the rider can't reach anyone (this is
+    // what caused the failed pickup). Bail out with a clear reason instead so the
+    // client can tell the right person to add their phone.
+    const phoneOk = (p?: string | null) => /^0\d{10}$/.test((p || "").replace(/\D/g, ""));
+    if (!phoneOk(vendorUser?.phone)) {
+      return json({ quote_id: null, couriers: [], reason: "vendor_no_phone" });
+    }
+    if (!phoneOk(buyerUser?.phone)) {
+      return json({ quote_id: null, couriers: [], reason: "buyer_no_phone" });
+    }
+
     const sender: Address = {
       name: vendorUser?.name || "Vendor",
       email: vendorUser?.email || "vendor@kaysmarketplace.ng",
-      phone: vendorUser?.phone || "08000000000",
+      phone: vendorUser!.phone as string,
       address: pickup.address,
       landmark: pickup.landmark,
       city: pickup.city,
@@ -107,7 +121,7 @@ serve(async (req) => {
     const receiver: Address = {
       name: buyerUser?.name || "Buyer",
       email: buyerUser?.email || "buyer@kaysmarketplace.ng",
-      phone: buyerUser?.phone || "08000000000",
+      phone: buyerUser!.phone as string,
       address: delivery_address,
       landmark: delivery_landmark,
       city: delivery_city,
@@ -126,11 +140,92 @@ serve(async (req) => {
     }));
     const totalWeight = packageItems.reduce((s, i) => s + i.weight * i.quantity, 0);
 
-    // Fan out to every enabled provider, merge, sort cheapest-first.
+    // ── Quote cache ─────────────────────────────────────────────────────────
+    // Re-quoting the SAME cart to the SAME address re-hits BOTH courier APIs
+    // (Shipbubble + Terminal) and is the slow part of checkout. Reuse a fresh,
+    // unexpired quote for an identical route+cart instead of calling the
+    // providers again — cuts provider load + latency on retries, re-renders and
+    // navigating back into checkout. (request-pickup deliberately does NOT cache:
+    // it needs a fresh price to actually book the rider.)
+    const cacheWindowIso = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const itemSig = JSON.stringify(packageItems.map((i) => [i.name, i.weight, i.quantity, i.amount]));
+    const { data: cachedRows } = await supabase
+      .from("delivery_quotes")
+      .select("id, available_couriers")
+      .eq("vendor_id", vendor_id)
+      .eq("buyer_id", buyer_id)
+      .eq("delivery_address", delivery_address)
+      .gt("expires_at", new Date().toISOString())
+      .gte("created_at", cacheWindowIso)
+      .order("created_at", { ascending: false })
+      .limit(5);
+    for (const row of cachedRows ?? []) {
+      const ac = (row as any).available_couriers ?? {};
+      const rowItems = Array.isArray(ac.items) ? ac.items : [];
+      const rowSig = JSON.stringify(rowItems.map((i: any) => [i.name, i.weight, i.quantity, i.amount]));
+      const rowCouriers = Array.isArray(ac.couriers) ? ac.couriers : [];
+      // Same vendor + buyer + address + exact cart, still within its validity
+      // window → serve the stored options and skip the provider round-trip.
+      if (rowSig === itemSig && rowCouriers.length > 0) {
+        return json({
+          quote_id: (row as any).id,
+          cached: true,
+          couriers: rowCouriers.map((c: any) => ({
+            provider: c.provider,
+            option_ref: c.optionRef,
+            name: c.name,
+            logo: c.logo,
+            fee: c.fee,
+            currency: c.currency,
+            eta: c.eta,
+          })),
+        });
+      }
+    }
+
+    // Fan out to every enabled provider, merge, sort fastest-first (price tiebreak).
     const { couriers, providerData, reason } = await quoteAll({ sender, receiver, items: packageItems });
 
     if (couriers.length === 0) {
+      // Log the per-provider reasons. The client only decides whether to retry
+      // from this string, so when a buyer reports "no riders" this is the only
+      // record of WHY — and the difference between a route no courier covers and
+      // a provider that fell over on the first call is invisible without it.
+      console.log(
+        `no-couriers vendor=${vendor_id} city=${delivery_city ?? "?"} ` +
+        `state=${receiver.state || "?"} coords=${delivery_latitude ?? "-"},${delivery_longitude ?? "-"} ` +
+        `reason=${reason}`,
+      );
       return json({ quote_id: null, couriers: [], reason });
+    }
+
+    // Courier APIs quote only the carrier's shipping cost. The aggregator (e.g.
+    // Terminal) adds its OWN service charge (~₦300) when the platform actually
+    // books — that isn't in the quote, so without this the platform ate it on
+    // every delivery. Add a buffer so the buyer's delivery fee covers it:
+    //   • a PERCENT of shipping (scales with distance), and
+    //   • a fixed FLOOR, because on a cheap quote the percent alone can fall
+    //     UNDER the aggregator's roughly-flat ~₦300 charge (e.g. 20% of ₦1,000
+    //     = ₦200 < ₦300, leaving the platform to eat the gap).
+    // The buffer added = max(percent-of-fee, floor). Both configurable:
+    //   DELIVERY_FEE_MARKUP_PCT   (default 20)
+    //   DELIVERY_FEE_MARKUP_FLOOR (default 300, in naira)
+    // Set both to 0 to disable the buffer entirely. This marked-up fee is what's
+    // stored, shown, paid, and later read by book-delivery as buyer_charged.
+    const feeMarkupPct = await getNumber("delivery_fee_markup_pct", "DELIVERY_FEE_MARKUP_PCT", 20);
+    const feeMarkupFloor = await getNumber("delivery_fee_markup_floor", "DELIVERY_FEE_MARKUP_FLOOR", 300);
+    for (const c of couriers) {
+      const base = Number(c.fee);
+      const buffer = Math.max(base * (feeMarkupPct / 100), feeMarkupFloor);
+      c.fee = Math.ceil(base + buffer);
+      // The raw provider price is not persisted anywhere, so without this line
+      // there is no way to audit whether the buffer actually fired (a stored fee
+      // is indistinguishable from an un-marked-up one). Logged, not stored:
+      // delivery_quotes is buyer-readable and this reveals our margin.
+      console.log(
+        `fee-buffer ${c.provider}/${c.name}: raw=${base} buffer=${Math.ceil(buffer)} ` +
+        `charged=${c.fee} (pct=${feeMarkupPct} floor=${feeMarkupFloor} rule=${base * (feeMarkupPct / 100) >= feeMarkupFloor ? "pct" : "floor"})`,
+      );
     }
 
     const { data: quote, error: quoteError } = await supabase

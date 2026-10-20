@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../../core/services/error_text.dart';
 import '../../theme/app_theme.dart';
 import '../../core/services/credit_service.dart';
 import '../../core/services/payment_service.dart';
@@ -92,7 +93,7 @@ class _RefundChoiceScreenState extends State<RefundChoiceScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.errorRed),
+          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
         );
         setState(() => _processing = false);
       }

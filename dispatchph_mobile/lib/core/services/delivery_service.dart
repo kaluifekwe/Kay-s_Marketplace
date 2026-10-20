@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import '../models/delivery_models.dart';
 import 'supabase_service.dart';
+import 'error_text.dart';
 
 /// Data + helper layer for the Shipbubble courier delivery integration.
 ///
@@ -75,6 +76,29 @@ class DeliveryService {
     await SupabaseService.client.from('vendor_locations').delete().eq('id', locationId);
   }
 
+  /// Edit an existing pickup location in place (keeps its is_default flag). Used
+  /// to fix a bad address, e.g. a Plus Code, without deleting and re-adding.
+  static Future<void> updateVendorLocation({
+    required String locationId,
+    required String label,
+    required String address,
+    required String landmark,
+    required String city,
+    required String state,
+    double? latitude,
+    double? longitude,
+  }) async {
+    await SupabaseService.client.from('vendor_locations').update({
+      'label': label,
+      'address': address,
+      'landmark': landmark,
+      'city': city,
+      'state': state,
+      'latitude': latitude,
+      'longitude': longitude,
+    }).eq('id', locationId);
+  }
+
   // ---- Buyer delivery addresses ----
 
   static Future<List<BuyerAddress>> getBuyerAddresses(String buyerId) async {
@@ -137,6 +161,29 @@ class DeliveryService {
     await SupabaseService.client.from('buyer_addresses').delete().eq('id', addressId);
   }
 
+  /// Edit an existing delivery address in place (keeps its is_default flag). Used
+  /// to fix a bad address, e.g. a Plus Code, without deleting and re-adding.
+  static Future<void> updateBuyerAddress({
+    required String addressId,
+    required String label,
+    required String address,
+    required String landmark,
+    required String city,
+    required String state,
+    double? latitude,
+    double? longitude,
+  }) async {
+    await SupabaseService.client.from('buyer_addresses').update({
+      'label': label,
+      'address': address,
+      'landmark': landmark,
+      'city': city,
+      'state': state,
+      'latitude': latitude,
+      'longitude': longitude,
+    }).eq('id', addressId);
+  }
+
   // ---- Live courier rates (checkout) ----
 
   /// Fetch live Shipbubble courier rates for one vendor + delivery address.
@@ -153,28 +200,26 @@ class DeliveryService {
     double? deliveryLongitude,
     required List<Map<String, dynamic>> items, // [{name, weight, quantity, amount}]
   }) async {
-    final response = await SupabaseService.client.functions.invoke(
-      'get-delivery-quotes',
-      headers: _authHeaders,
-      body: {
-        'vendor_id': vendorId,
-        'buyer_id': buyerId,
-        'delivery_address': deliveryAddress,
-        'delivery_landmark': deliveryLandmark,
-        'delivery_city': deliveryCity,
-        'delivery_state': deliveryState,
-        'delivery_latitude': deliveryLatitude,
-        'delivery_longitude': deliveryLongitude,
-        'items': items,
-      },
-    );
-
-    if (response.status != 200) {
-      final data = response.data;
-      final msg = data is Map ? (data['error'] ?? 'Failed to get delivery rates') : 'Failed to get delivery rates';
-      throw Exception(msg);
+    try {
+      final response = await SupabaseService.client.functions.invoke(
+        'get-delivery-quotes',
+        headers: _authHeaders,
+        body: {
+          'vendor_id': vendorId,
+          'buyer_id': buyerId,
+          'delivery_address': deliveryAddress,
+          'delivery_landmark': deliveryLandmark,
+          'delivery_city': deliveryCity,
+          'delivery_state': deliveryState,
+          'delivery_latitude': deliveryLatitude,
+          'delivery_longitude': deliveryLongitude,
+          'items': items,
+        },
+      );
+      return DeliveryQuote.fromJson(Map<String, dynamic>.from(response.data as Map));
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't fetch delivery rates. Please try again."));
     }
-    return DeliveryQuote.fromJson(Map<String, dynamic>.from(response.data as Map));
   }
 
   // ---- Vendor "Request Pickup" (book courier when the item is ready) ----
@@ -183,16 +228,16 @@ class DeliveryService {
   /// server re-quotes fresh and books; returns { booked, delivery_id?, reason?,
   /// message? }. booked=false with a reason means try again / unavailable.
   static Future<Map<String, dynamic>> requestPickup(String orderId) async {
-    final response = await SupabaseService.client.functions.invoke(
-      'request-pickup',
-      headers: _authHeaders,
-      body: {'order_id': orderId},
-    );
-    final data = response.data;
-    if (response.status != 200) {
-      throw Exception(data is Map ? (data['message'] ?? data['error'] ?? 'Pickup request failed') : 'Pickup request failed');
+    try {
+      final response = await SupabaseService.client.functions.invoke(
+        'request-pickup',
+        headers: _authHeaders,
+        body: {'order_id': orderId},
+      );
+      return Map<String, dynamic>.from(response.data as Map);
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't book the courier. Please try again."));
     }
-    return Map<String, dynamic>.from(data as Map);
   }
 
   // ---- Tracking ----

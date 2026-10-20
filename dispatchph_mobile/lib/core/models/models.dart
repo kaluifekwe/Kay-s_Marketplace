@@ -151,7 +151,7 @@ class Product {
     required this.stock,
     required this.createdAt,
     this.vendorState,
-    this.deliveryType = 'negotiate',
+    this.deliveryType = 'courier',
   });
 
   List<String> get imageList {
@@ -176,7 +176,7 @@ class Product {
         stock: json['stock'] as int? ?? 0,
         createdAt: DateTime.parse(json['created_at'] as String),
         vendorState: json['vendor_state'] as String?,
-        deliveryType: json['delivery_type'] as String? ?? 'negotiate',
+        deliveryType: json['delivery_type'] as String? ?? 'courier',
       );
 
   Map<String, dynamic> toJson() => {
@@ -662,11 +662,13 @@ class Dispute {
 
   factory Dispute.fromJson(Map<String, dynamic> json) => Dispute(
         id: json['id'] as String,
-        orderId: json['order_id'] as String,
-        raisedBy: json['raised_by'] as String,
+        orderId: json['order_id'] as String? ?? '',
+        // Null-safe: a single row with a null raised_by/reason must not throw and
+        // wipe the whole disputes list (that hid real disputes from the vendor).
+        raisedBy: json['raised_by'] as String? ?? json['buyer_id'] as String? ?? '',
         buyerId: json['buyer_id'] as String? ?? json['raised_by'] as String? ?? '',
         vendorId: json['vendor_id'] as String? ?? '',
-        reason: json['reason'] as String,
+        reason: json['reason'] as String? ?? '',
         buyerExplanation: json['buyer_explanation'] as String?,
         buyerPhone: json['buyer_phone'] as String?,
         deliveryAddress: json['delivery_address'] as String?,

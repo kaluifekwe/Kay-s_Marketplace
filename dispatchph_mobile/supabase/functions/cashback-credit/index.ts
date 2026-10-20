@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getBool } from "../_shared/settings.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -41,6 +42,21 @@ serve(async (req) => {
         status: 405,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // Kill switch. Google restricts apps that declare "financial features"
+    // (Kay's Credit cashback = a rewards incentive) to ORGANIZATION accounts;
+    // on a personal account the submission is rejected. Cashback is OFF by
+    // default so the Play "no financial features" declaration is TRUE, not a
+    // misrepresentation. Re-enable by setting CASHBACK_ENABLED=true once the
+    // developer account is an organization. Returns success so callers
+    // (auto-release-escrow / release-escrow) treat it as a no-op, never a
+    // failure — with no cashback_amount, so no "cashback earned" push fires.
+    if (!(await getBool("cashback_enabled", "CASHBACK_ENABLED", false))) {
+      return new Response(
+        JSON.stringify({ success: true, disabled: true, cashback_amount: 0 }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     const callerId = getUserIdFromToken(req.headers.get("Authorization"));

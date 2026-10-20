@@ -5,12 +5,15 @@ import 'package:image_picker/image_picker.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/app_image.dart';
-import '../../widgets/delivery_option_tile.dart';
 import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/storage_service.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/error_text.dart';
+import '../kyc/kyc_screen.dart';
+import '../../core/services/delivery_service.dart';
+import '../delivery/vendor_locations_screen.dart';
 
 class AddProductScreen extends StatefulWidget {
   const AddProductScreen({super.key});
@@ -26,13 +29,74 @@ class _AddProductScreenState extends State<AddProductScreen> {
   final _stockController = TextEditingController();
   final _picker = ImagePicker();
   String _category = 'Other';
-  String _deliveryType = 'negotiate';
+  final String _deliveryType = 'courier'; // courier-only; fee calculated at checkout
   bool _isLoading = false;
   double _uploadProgress = 0;
   List<XFile> _images = [];
   List<_VariantRow> _variants = [];
 
   final _categories = ['Food', 'Fashion', 'Electronics', 'Health', 'Home', 'Other'];
+
+  @override
+  void initState() {
+    super.initState();
+    // A vendor must be identity-verified before they can list products.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _ensureVerified());
+  }
+
+  Future<void> _ensureVerified() async {
+    // 1. Identity verified (KYC).
+    final ok = await requireKyc(context, action: KycAction.sell);
+    if (!mounted) return;
+    if (!ok) {
+      Navigator.pop(context); // declined / not verified — can't list
+      return;
+    }
+
+    // 2. Pickup address required — couriers collect orders from the vendor's
+    // address, so a product can't go live without one. Mirrors the buyer
+    // "add address" gate at checkout. If they don't add it, they can't list.
+    final vendorId = await AuthService.getUserId();
+    if (!mounted) return;
+    final locations = await DeliveryService.getVendorLocations(vendorId);
+    if (!mounted) return;
+    if (locations.isEmpty) {
+      final add = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          icon: const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 48),
+          title: const Text('Add your pickup address'),
+          content: const Text(
+            'Couriers pick up orders from your address, so you need a pickup '
+            'location before you can list a product. It only takes a minute.',
+            textAlign: TextAlign.center,
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not now')),
+            ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Add address')),
+          ],
+        ),
+      );
+      if (add != true || !mounted) {
+        Navigator.pop(context);
+        return;
+      }
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const VendorLocationsScreen()),
+      );
+      if (!mounted) return;
+      // Re-check after they return — still none means they can't list yet.
+      final after = await DeliveryService.getVendorLocations(vendorId);
+      if (!mounted) return;
+      if (after.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Add a pickup address to list products.')),
+        );
+        Navigator.pop(context);
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -209,13 +273,13 @@ class _AddProductScreenState extends State<AddProductScreen> {
         deliveryType: _deliveryType,
       );
     } catch (e) {
-      error = e.toString();
+      error = friendlyError(e, fallback: "We couldn't save your product. Please try again.");
     }
 
     if (!mounted) return;
     setState(() => _isLoading = false);
     if (error != null) {
-      _showError('Failed to save: $error');
+      _showError(error);
       return;
     }
     Navigator.pop(context);
@@ -277,38 +341,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
             ),
             const SizedBox(height: 24),
 
-            // Delivery Policy Section
-            const Text(
-              'Delivery Policy',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
-            ),
-            const SizedBox(height: 4),
-            Text('How will delivery fee be handled?', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-            const SizedBox(height: 12),
-            DeliveryOptionTile(
-              icon: '🎁',
-              title: 'Free Delivery',
-              subtitle: 'I cover all delivery costs.\nNo fee charged to buyer.',
-              isSelected: _deliveryType == 'free',
-              onTap: () => setState(() => _deliveryType = 'free'),
-            ),
-            const SizedBox(height: 8),
-            DeliveryOptionTile(
-              icon: '💬',
-              title: 'Buyer Pays (Agree in Chat)',
-              subtitle: 'Buyer pays full delivery fee.\nAgree the amount in chat.',
-              isSelected: _deliveryType == 'negotiate',
-              onTap: () => setState(() => _deliveryType = 'negotiate'),
-            ),
-            const SizedBox(height: 8),
-            DeliveryOptionTile(
-              icon: '🤝',
-              title: 'Split Delivery Fee (Agree in Chat)',
-              subtitle: 'You and buyer share the cost.\nAgree the split in chat.',
-              isSelected: _deliveryType == 'split',
-              onTap: () => setState(() => _deliveryType = 'split'),
-            ),
-            const SizedBox(height: 24),
+            // Delivery is courier-only: the exact rate is fetched at checkout.
+            // Vendors don't choose a policy. The chat delivery-fee flow is only a
+            // fallback when no courier covers the route (deliveryType = 'courier').
 
             // Product Images Section
             Row(

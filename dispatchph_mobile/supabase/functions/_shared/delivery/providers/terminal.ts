@@ -1,8 +1,14 @@
 // Terminal Africa (TShip) provider adapter.
 // Flow: GET /packaging (cached) -> POST /addresses x2 -> POST /parcels
-//       -> POST /rates/multi/shipment  (quote)
+//       -> GET /rates/shipment  (quote)
 //       -> POST /shipments/pickup with rate_id  (book)
 // Docs: https://docs.terminal.africa/tship
+//
+// NOTE: We use the SINGLE-parcel rates endpoint (GET /rates/shipment), not the
+// multi-parcel one (POST /rates/multi/shipment). Per Terminal support, local
+// carriers (GIG/Kwik/Fez/Chowdeck/Redstar/Dellyman) are only rated on the
+// single-parcel endpoint; multi-parcel returns DHL only. We always bundle an
+// order into one parcel, so single-parcel is the correct call.
 import type {
   Address,
   BookInput,
@@ -16,8 +22,21 @@ import type {
 } from "../types.ts";
 
 const KEY = Deno.env.get("TERMINAL_API_KEY") ?? "";
-// Test keys only work against the sandbox host; override for production.
-const BASE = Deno.env.get("TERMINAL_BASE_URL") ?? "https://sandbox.terminal.africa/v1";
+
+// Single source of truth for the host, exported so the status poller cannot
+// disagree with the booker.
+//
+// It used to be read separately in both places with DIFFERENT defaults: booking
+// fell back to sandbox, polling fell back to production. While TERMINAL_BASE_URL
+// was unset, shipments were therefore created in the sandbox and then looked up
+// in production, where those ids do not exist, so every poll returned 400 and
+// their status never moved again. Deliveries booked before the variable was set
+// are permanently unresolvable for that reason.
+//
+// Test keys only work against the sandbox host, so sandbox stays the default;
+// set TERMINAL_BASE_URL to https://api.terminal.africa/v1 for live keys.
+export const TERMINAL_BASE = Deno.env.get("TERMINAL_BASE_URL") ?? "https://sandbox.terminal.africa/v1";
+const BASE = TERMINAL_BASE;
 
 function headers() {
   return { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" };
@@ -129,11 +148,14 @@ export const terminal: DeliveryProvider = {
   async getQuotes(input: QuoteInput): Promise<ProviderQuote> {
     if (!KEY) return { provider: "terminal", couriers: [], providerData: {}, reason: "no_api_key" };
 
-    const pkg = await packagingId();
+    // Packaging + both addresses are independent — create them CONCURRENTLY so
+    // Terminal isn't three sequential round-trips before we can even ask for rates.
+    const [pkg, from, to] = await Promise.all([
+      packagingId(),
+      createAddress(input.sender),
+      createAddress(input.receiver),
+    ]);
     if (!pkg) return { provider: "terminal", couriers: [], providerData: {}, reason: "no_packaging" };
-
-    const from = await createAddress(input.sender);
-    const to = await createAddress(input.receiver);
     if (!from.id || !to.id) {
       return {
         provider: "terminal",
@@ -168,15 +190,14 @@ export const terminal: DeliveryProvider = {
     // Rates-by-address: Terminal auto-creates a shipment behind each rate and
     // returns its id on the rate (rate.shipment). We keep that id per option so
     // book() can arrange the pickup against (shipment_id, rate_id).
-    const ratesRes = await api("/rates/multi/shipment", {
-      method: "POST",
-      body: JSON.stringify({
-        currency: "NGN",
-        pickup_address: from.id,
-        delivery_address: to.id,
-        parcels: [parcelId],
-      }),
+    // Single-parcel endpoint is a GET with query params (parcel_id, addresses).
+    const ratesQuery = new URLSearchParams({
+      currency: "NGN",
+      pickup_address: from.id,
+      delivery_address: to.id,
+      parcel_id: parcelId,
     });
+    const ratesRes = await api(`/rates/shipment?${ratesQuery.toString()}`);
     const rates = ratesRes.data?.data;
     if (!ratesRes.ok || !Array.isArray(rates) || rates.length === 0) {
       return { provider: "terminal", couriers: [], providerData: {}, reason: `no_rates (${ratesRes.data?.message ?? "empty"})` };
@@ -243,8 +264,21 @@ export const terminal: DeliveryProvider = {
       "shipment.delivered": "delivered",
       "cancelled": "cancelled",
       "shipment.cancelled": "cancelled",
+      "rejected": "cancelled",
+      "shipment.rejected": "cancelled",
+      "failed": "failed",
+      "shipment.failed": "failed",
+      "returned": "failed",
+      "shipment.returned": "failed",
+      "pickup-failed": "failed",
     };
-    const status = map[raw] ?? "in_transit";
+    // Don't fabricate an "in_transit" from an unknown status — that would wrongly
+    // advance an order (e.g. a "rejected" cancel). Skip what we don't recognise.
+    const status = map[raw];
+    if (!status) {
+      console.warn(`terminal parseWebhook: unmapped status "${raw}"`);
+      return null;
+    }
     return { providerOrderId, status, courierName: d.carrier?.name };
   },
 };

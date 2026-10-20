@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
+import '../../core/services/error_text.dart';
 import '../../core/constants/nigerian_states.dart';
 import '../../core/services/supabase_service.dart';
 import 'home_router.dart';
@@ -39,7 +40,7 @@ class _SelectStateScreenState extends State<SelectStateScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save: $e')),
+          SnackBar(content: Text(friendlyError(e, fallback: "We couldn't save your state. Please try again."))),
         );
       }
     } finally {

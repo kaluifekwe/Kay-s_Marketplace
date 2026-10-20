@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
+import '../../core/services/error_text.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/app_image.dart';
@@ -133,12 +134,12 @@ class _VendorStoreSettingsScreenState extends State<VendorStoreSettingsScreen> {
       }).eq('id', widget.store.id);
 
       if (!mounted) return;
-      await context.read<MarketplaceCubit>().loadProducts();
+      await context.read<MarketplaceCubit>().loadProducts(forceRefresh: true);
       if (!mounted) return;
       Navigator.pop(context);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyError(e, fallback: "We couldn't save your store. Please try again."))));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);

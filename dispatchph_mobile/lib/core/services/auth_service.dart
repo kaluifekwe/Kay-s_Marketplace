@@ -1,6 +1,8 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 import 'supabase_service.dart';
+import 'error_text.dart';
 
 class AuthService {
   static Future<String> _generateUniqueId() async {
@@ -17,12 +19,15 @@ class AuthService {
     return id;
   }
 
-  static Future<bool> register({
+  /// Register a new account. Returns null on success, or a clear, user-facing
+  /// error message (never a raw code) on failure.
+  static Future<String?> register({
     String? id,
     required String email,
     required String password,
     required String name,
     required String role,
+    String? phone,
     String? storeId,
     String? address,
     String? state,
@@ -35,7 +40,9 @@ class AuthService {
         data: {'name': name, 'role': role},
       );
 
-      if (response.user == null) return false;
+      if (response.user == null) {
+        return 'That email may already be registered. Try logging in instead.';
+      }
 
       final userId = response.user!.id;
       final uniqueId = await _generateUniqueId();
@@ -47,6 +54,12 @@ class AuthService {
         'role': role,
         'password': 'managed_by_supabase_auth',
       };
+      // Contact phone — the number couriers call for pickup/delivery. Without it
+      // a booking would fall back to a placeholder and the rider couldn't reach
+      // the user, so it's captured at signup.
+      if (phone != null && phone.trim().isNotEmpty) {
+        userData['phone'] = phone.trim();
+      }
       if (address != null && address.isNotEmpty) {
         userData['address'] = address;
       }
@@ -57,13 +70,21 @@ class AuthService {
         userData['lga'] = lga;
       }
 
+      // UPSERT, not insert: the on_auth_user_created trigger (atomic_signup.sql)
+      // already created this row inside signUp()'s transaction, so an insert
+      // would fail on the id and report failure for a signup that worked. The
+      // trigger guarantees the profile EXISTS (no more orphaned auth users);
+      // this call enriches it with the fields only the client knows —
+      // phone/address/state/lga/unique_id.
       try {
         userData['unique_id'] = uniqueId;
-        await SupabaseService.client.from('users').insert(userData);
+        await SupabaseService.client.from('users').upsert(userData);
       } catch (_) {
+        // unique_id collision or an address the column rejects: retry without
+        // them rather than lose the whole profile.
         userData.remove('unique_id');
         userData.remove('address');
-        await SupabaseService.client.from('users').insert(userData);
+        await SupabaseService.client.from('users').upsert(userData);
       }
 
       // ₦200 welcome credit for new buyers is granted SERVER-SIDE by the
@@ -78,10 +99,70 @@ class AuthService {
       await prefs.setString('auth_store_id', '');
       await prefs.setString('auth_unique_id', uniqueId);
 
-      return true;
+      return null;
     } catch (e) {
       print('[AuthService] Register error: $e');
-      return false;
+      return friendlyAuthError(e, fallback: "We couldn't create your account. Please try again.");
+    }
+  }
+
+  /// Whether the signed-in user has verified their email (OTP). Existing/legacy
+  /// users (null column) are grandfathered as verified. Fails OPEN (returns true)
+  /// on any error so a transient hiccup never locks out a legitimate user.
+  static Future<bool> isEmailVerified() async {
+    try {
+      final uid = SupabaseService.auth.currentUser?.id;
+      if (uid == null) return true;
+      final row = await SupabaseService.client
+          .from('users')
+          .select('email_verified')
+          .eq('id', uid)
+          .maybeSingle();
+      if (row == null) return true;
+      return row['email_verified'] != false; // null or true => verified
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static ({bool ok, String? error}) _fnResult(dynamic data, int? status, {required String fallback}) {
+    final msg = data is Map ? (data['message'] ?? data['error']) : null;
+    return (ok: false, error: (msg ?? (status != null ? '$fallback ($status).' : fallback)).toString());
+  }
+
+  /// Password reset step 1 — email a 6-digit code (logged-out flow). Returns
+  /// null on success, else a user-facing message.
+  static Future<String?> requestPasswordReset(String email) async {
+    try {
+      final res = await SupabaseService.client.functions
+          .invoke('request-password-reset', body: {'email': email.trim()});
+      if (res.status == 200) return null;
+      return _fnResult(res.data, res.status, fallback: "We couldn't send the reset code. Please try again.").error;
+    } on FunctionException catch (e) {
+      return _fnResult(e.details, e.status, fallback: "We couldn't send the reset code").error;
+    } catch (_) {
+      return 'Could not reach the server. Check your connection and try again.';
+    }
+  }
+
+  /// Password reset step 2 — verify the code and set a new password. Returns
+  /// null on success, else a user-facing message.
+  static Future<String?> confirmPasswordReset({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) async {
+    try {
+      final res = await SupabaseService.client.functions.invoke(
+        'confirm-password-reset',
+        body: {'email': email.trim(), 'code': code.trim(), 'new_password': newPassword},
+      );
+      if (res.status == 200) return null;
+      return _fnResult(res.data, res.status, fallback: 'Could not reset your password. Please try again.').error;
+    } on FunctionException catch (e) {
+      return _fnResult(e.details, e.status, fallback: 'Could not reset your password').error;
+    } catch (_) {
+      return 'Could not reach the server. Check your connection and try again.';
     }
   }
 
@@ -191,17 +272,7 @@ class AuthService {
       return null;
     } catch (e) {
       print('[AuthService] Login error: $e');
-      final msg = e.toString();
-      if (msg.contains('Email not confirmed') || msg.contains('email_not_confirmed')) {
-        return 'Email not confirmed. Please check your inbox and confirm your email first.';
-      }
-      if (msg.contains('Invalid login credentials') || msg.contains('invalid_grant')) {
-        return 'Invalid email or password.';
-      }
-      if (msg.contains('SocketException') || msg.contains('Failed host lookup')) {
-        return 'No internet connection. Please check your network.';
-      }
-      return 'Login failed: ${e.toString()}';
+      return friendlyAuthError(e, fallback: "We couldn't sign you in. Please try again.");
     }
   }
 
@@ -232,6 +303,44 @@ class AuthService {
   static Future<String> getStoreId() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString('auth_store_id') ?? '';
+  }
+
+  /// Current name + contact phone for the edit-profile screen.
+  static Future<Map<String, String>> loadProfile() async {
+    try {
+      final userId = await getUserId();
+      if (userId.isEmpty) return {'name': '', 'phone': ''};
+      final data = await SupabaseService.client
+          .from('users')
+          .select('name, phone')
+          .eq('id', userId)
+          .maybeSingle();
+      return {
+        'name': (data?['name'] as String?) ?? '',
+        'phone': (data?['phone'] as String?) ?? '',
+      };
+    } catch (e) {
+      print('[AuthService] loadProfile error: $e');
+      return {'name': '', 'phone': ''};
+    }
+  }
+
+  /// Save edited name + contact phone. Returns null on success, else a message.
+  static Future<String?> updateProfile({required String name, required String phone}) async {
+    try {
+      final userId = await getUserId();
+      if (userId.isEmpty) return 'You are not signed in.';
+      await SupabaseService.client.from('users').update({
+        'name': name.trim(),
+        'phone': phone.trim(),
+      }).eq('id', userId);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('auth_name', name.trim());
+      return null;
+    } catch (e) {
+      print('[AuthService] updateProfile error: $e');
+      return 'Could not save your changes. Please try again.';
+    }
   }
 
   static Future<void> updateLastActive() async {

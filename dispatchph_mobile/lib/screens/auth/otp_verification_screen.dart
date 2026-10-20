@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/otp_input.dart';
@@ -54,17 +53,6 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
     }
   }
 
-  void _skipOtp() {
-    final mockToken = 'test_token_${DateTime.now().millisecondsSinceEpoch}';
-    AuthService.saveToken(mockToken);
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => const ProfileSelectionScreen(),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -113,16 +101,6 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
                   ),
                 ),
               ),
-              if (kDebugMode)
-                Center(
-                  child: TextButton(
-                    onPressed: _skipOtp,
-                    child: Text(
-                      'Skip Verification (Test Mode)',
-                      style: TextStyle(color: AppColors.mediumGray),
-                    ),
-                  ),
-                ),
             ],
           ),
         ),

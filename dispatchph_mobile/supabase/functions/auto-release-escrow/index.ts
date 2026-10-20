@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isScheduledCaller, refusalReason } from "../_shared/cron-auth.ts";
 
 // Runs on a schedule (pg_cron, see auto_release_cron.sql) instead of relying
 // on a Dart Timer inside the app — escrow release and dispute escalation
@@ -18,9 +19,12 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  // Only the service role (pg_cron / internal calls) may trigger this.
-  const authHeader = req.headers.get("Authorization") || "";
-  if (authHeader.replace("Bearer ", "") !== supabaseServiceKey) {
+  // Only the scheduler or an operator holding the service key may trigger this.
+  if (!isScheduledCaller(req)) {
+    // Log the reason. A scheduler that cannot authenticate is an operational
+    // fault, and the previous silence is exactly why this ran unnoticed for
+    // weeks: pg_cron reports "succeeded" on a 403, so nothing surfaced it.
+    console.error(`auto-release-escrow: refused caller — ${refusalReason(req)}`);
     return new Response(JSON.stringify({ error: "Forbidden" }), {
       status: 403,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -33,6 +37,8 @@ serve(async (req) => {
   const releaseErrors: Record<string, string> = {};
 
   const flaggedForReview: string[] = [];
+  // Vendor-arranged orders parked for an administrator instead of auto-released.
+  const heldForDecision: string[] = [];
 
   try {
     // ---- 1a. At the 24h mark, a still-silent buyer (no confirm, no dispute)
@@ -83,12 +89,25 @@ serve(async (req) => {
 
     // ---- 1b. Release escrow for flagged orders whose 12h grace period has
     // also passed, as long as no dispute has since been opened.
+    //
+    // COURIER ORDERS ONLY. On a courier delivery the "delivered" state was
+    // written by the courier company's own system through a server-to-server
+    // webhook, so an independent third party has attested that the parcel
+    // arrived. Releasing on a silent buyer is reasonable: we have evidence.
+    //
+    // On a VENDOR-ARRANGED delivery there is no such attestation. The vendor
+    // marked their own order shipped and supplied the only photograph, so
+    // releasing on silence would pay the vendor on their own word, with the
+    // 12h admin notification serving as the sole check — and a notification
+    // nobody opens is not a check. Those orders stay held, in the admin
+    // queue, until a person decides. See the query below.
     const { data: dueOrders } = await supabase
       .from("orders")
       .select("id, buyer_id")
       .eq("status", "shipped")
       .eq("admin_review_flagged", true)
       .eq("has_dispute", false)
+      .eq("delivery_type", "courier")
       .not("extended_release_at", "is", null)
       .lt("extended_release_at", now);
 
@@ -158,6 +177,104 @@ serve(async (req) => {
       } catch (e: any) {
         releaseErrors[order.id] = e.message;
       }
+    }
+
+    // ---- 1b-ii. Vendor-arranged deliveries whose grace has also expired.
+    // These are NOT released (see 1b). They are marked held so they surface in
+    // the admin queue as an outstanding decision rather than sitting in
+    // `shipped` looking like any other in-flight order — an invisible hold is
+    // just a different way to lose the money. Admins are told once, when the
+    // hold starts; the flag then persists until someone acts on it.
+    const { data: toHold } = await supabase
+      .from("orders")
+      .select("id, vendor_id, total")
+      .eq("status", "shipped")
+      .eq("admin_review_flagged", true)
+      .eq("has_dispute", false)
+      .eq("payout_held", false)
+      .neq("delivery_type", "courier")
+      .not("extended_release_at", "is", null)
+      .lt("extended_release_at", now);
+
+    for (const order of toHold || []) {
+      const { error: holdErr } = await supabase
+        .from("orders")
+        .update({
+          payout_held: true,
+          payout_held_at: now,
+          payout_hold_reason:
+            "Vendor-arranged delivery: buyer never confirmed receipt and no courier confirmed delivery independently.",
+        })
+        .eq("id", order.id)
+        .eq("status", "shipped")
+        .eq("payout_held", false); // claim, so two runs cannot both notify
+
+      if (holdErr) {
+        releaseErrors[order.id] = holdErr.message;
+        continue;
+      }
+      heldForDecision.push(order.id);
+
+      const { data: admins } = await supabase.from("users").select("id").eq("role", "admin");
+      for (const admin of admins || []) {
+        await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: admin.id,
+            title: "Payout held — decision needed",
+            body:
+              `Order #${String(order.id).substring(0, 8)} was delivered by the vendor, not a courier, ` +
+              `and the buyer never confirmed. Nothing has been paid. Review it.`,
+            data: { type: "payout_held", orderId: order.id },
+          }),
+        }).catch((e) => console.error("payout-hold push failed:", e));
+      }
+    }
+
+    // ---- 1c. Buyer confirmation reminders ----
+    // While the delivery-confirmation window is still open (shipped, not yet due,
+    // no dispute), nudge the buyer roughly every 6h to confirm receipt. This
+    // makes auto-release fair — the buyer is repeatedly warned, not surprised —
+    // and undercuts a later "I was never told to confirm" / "not received" claim.
+    // The first nudge lands ~6h after the window opened (shipped_at), so it never
+    // doubles up with the "Order Shipped/Arrived" push.
+    const { data: toRemind } = await supabase
+      .from("orders")
+      .select("id, buyer_id, auto_release_at, shipped_at, confirm_last_reminder_at")
+      .eq("status", "shipped")
+      .eq("has_dispute", false)
+      .not("auto_release_at", "is", null)
+      .gt("auto_release_at", now);
+
+    const buyerReminders: string[] = [];
+    for (const order of toRemind || []) {
+      if (!order.buyer_id) continue;
+      // Baseline for the 6h cadence: the last reminder, or (first time) when the
+      // window opened. Fall back to auto_release_at - 24h if shipped_at is unset.
+      const windowOpenedAt = order.shipped_at
+        ? new Date(order.shipped_at)
+        : new Date(new Date(order.auto_release_at).getTime() - 24 * 60 * 60 * 1000);
+      const baseline = order.confirm_last_reminder_at ? new Date(order.confirm_last_reminder_at) : windowOpenedAt;
+      if (Date.now() - baseline.getTime() < 6 * 60 * 60 * 1000) continue;
+
+      const remainingMs = new Date(order.auto_release_at).getTime() - Date.now();
+      const remHours = Math.max(0, Math.floor(remainingMs / (60 * 60 * 1000)));
+      const remMins = Math.max(0, Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000)));
+
+      await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: order.buyer_id,
+          title: "Confirm you received your order",
+          body: `Confirm order #${String(order.id).substring(0, 8)} if you've received it — or report a problem if you haven't. It completes automatically in ${remHours}h ${remMins}m.`,
+          data: { type: "order", orderId: order.id, screen: "buyer_orders" },
+        }),
+      }).catch((e) => console.error("buyer confirm reminder push failed:", e));
+
+      await supabase.from("orders").update({ confirm_last_reminder_at: now }).eq("id", order.id);
+      buyerReminders.push(order.id);
     }
 
     // ---- 2. Auto-escalate disputes whose vendor missed the 24h response window ----
@@ -266,22 +383,10 @@ serve(async (req) => {
         await supabase.from("orders").update({ has_dispute: false }).eq("id", d.order_id);
 
         // Release any payout hold tied to this dispute now that it's settled.
-        if (d.is_post_payment) {
-          const { data: vendor } = await supabase
-            .from("users")
-            .select("payout_blocked_amount")
-            .eq("id", d.vendor_id)
-            .maybeSingle();
-          const remaining = ((vendor?.payout_blocked_amount as number | undefined) || 0) - (d.vendor_owes_refund || 0);
-          await supabase
-            .from("users")
-            .update({
-              payout_blocked: remaining > 0,
-              payout_blocked_reason: remaining > 0 ? "Other active disputes" : null,
-              payout_blocked_amount: remaining > 0 ? remaining : 0,
-            })
-            .eq("id", d.vendor_id);
-        }
+        // process-refund (called just above) already releases it; this is an
+        // idempotent belt-and-braces call (the claim on payout_hold_released
+        // makes the second call a no-op) in case that request failed.
+        await supabase.rpc("release_dispute_payout_hold", { p_dispute_id: d.id });
 
         // Vendor warning for missing the confirmation window.
         const { data: vendorRow } = await supabase
@@ -350,6 +455,8 @@ serve(async (req) => {
         success: true,
         orders_released: released,
         orders_flagged_for_review: flaggedForReview,
+        payouts_held_for_decision: heldForDecision,
+        buyer_confirm_reminders: buyerReminders,
         order_errors: releaseErrors,
         disputes_escalated: (escalated?.length || 0) + (legacyEscalated?.length || 0),
         disputes_auto_closed: autoClosed,

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The colour Android paints from the moment the icon is tapped until
+         Flutter draws its first frame. It must match the TOP of the splash
+         screen's gradient (SplashScreen uses 0xFF1B5E20 -> 0xFF2E7D32 ->
+         primaryGreen) so the handover is invisible.
+
+         It was @android:color/white, the untouched Flutter template default,
+         which is why a cold start flashed a blank white screen before the
+         marketplace appeared. -->
+    <color name="brand_splash">#1B5E20</color>
+</resources>

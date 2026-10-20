@@ -1,11 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import '../../core/services/error_text.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/app_image.dart';
-import '../../widgets/delivery_option_tile.dart';
 import '../../bloc_exports.dart';
 import '../../core/services/storage_service.dart';
 import '../../core/services/supabase_service.dart';
@@ -64,14 +64,14 @@ class _EditProductScreenState extends State<EditProductScreen> {
     _priceController = TextEditingController(text: widget.product.price.toString());
     _stockController = TextEditingController(text: widget.product.stock.toString());
     _category = widget.product.category ?? 'Other';
-    _deliveryType = (widget.product.deliveryType as String?) ?? 'negotiate';
+    _deliveryType = 'courier'; // courier-only; fee calculated at checkout
     final decoded = jsonDecode(widget.product.images ?? '[]');
     _imagePaths = List<String>.from(decoded);
     _loadVariants();
   }
 
   Future<void> _loadVariants() async {
-    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id);
+    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id, forceRefresh: true);
     if (mounted) {
       setState(() {
         _variants = variants.map((v) => _VariantRow(
@@ -190,7 +190,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to update product: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyError(e, fallback: "We couldn't update your product. Please try again."))));
       }
       setState(() => _isLoading = false);
       return;
@@ -286,35 +286,25 @@ class _EditProductScreenState extends State<EditProductScreen> {
               },
             ),
             const SizedBox(height: 24),
-            const Text(
-              'Delivery Policy',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
-            ),
-            const SizedBox(height: 4),
-            Text('How will delivery fee be handled?', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-            const SizedBox(height: 12),
-            DeliveryOptionTile(
-              icon: '🎁',
-              title: 'Free Delivery',
-              subtitle: 'I cover all delivery costs.\nNo fee charged to buyer.',
-              isSelected: _deliveryType == 'free',
-              onTap: () => setState(() => _deliveryType = 'free'),
-            ),
-            const SizedBox(height: 8),
-            DeliveryOptionTile(
-              icon: '💬',
-              title: 'Buyer Pays (Agree in Chat)',
-              subtitle: 'Buyer pays full delivery fee.\nAgree the amount in chat.',
-              isSelected: _deliveryType == 'negotiate',
-              onTap: () => setState(() => _deliveryType = 'negotiate'),
-            ),
-            const SizedBox(height: 8),
-            DeliveryOptionTile(
-              icon: '🤝',
-              title: 'Split Delivery Fee (Agree in Chat)',
-              subtitle: 'You and buyer share the cost.\nAgree the split in chat.',
-              isSelected: _deliveryType == 'split',
-              onTap: () => setState(() => _deliveryType = 'split'),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.lightGray,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Text('🚚', style: TextStyle(fontSize: 20)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Delivery is by courier. The exact fee is calculated at checkout. '
+                      'If no courier covers the route, the buyer arranges delivery with you in chat.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[700], height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 16),
             Row(

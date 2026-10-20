@@ -103,7 +103,7 @@ class WelcomeScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Marketplace',
+                      'Market',
                       style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                             color: AppColors.riderYellow,
                             fontSize: 18,

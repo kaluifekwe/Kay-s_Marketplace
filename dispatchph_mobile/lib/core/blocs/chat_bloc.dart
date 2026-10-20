@@ -37,7 +37,9 @@ class ChatCubit extends Cubit<ChatState> {
 
       final chats = (data as List).map((c) => Chat.fromJson(c)).toList();
       if (chats.isEmpty) {
-        emit(state.copyWith(chats: []));
+        // Reset unread + last messages too — otherwise an empty list leaves a
+        // stale unread badge (the "phantom N messages" bug).
+        emit(state.copyWith(chats: [], unreadCounts: {}, lastMessages: {}));
         return;
       }
 
@@ -77,7 +79,8 @@ class ChatCubit extends Cubit<ChatState> {
       emit(state.copyWith(chats: sorted, unreadCounts: unreadCounts, lastMessages: lastMessages));
     } catch (e) {
       print('[ChatCubit] loadChatsForBuyer error: $e');
-      emit(state.copyWith(chats: []));
+      // Keep the last good state on a transient error — don't wipe the list
+      // (which would also strand a stale unread badge).
     }
   }
 
@@ -91,7 +94,9 @@ class ChatCubit extends Cubit<ChatState> {
 
       final chats = (data as List).map((c) => Chat.fromJson(c)).toList();
       if (chats.isEmpty) {
-        emit(state.copyWith(chats: []));
+        // Reset unread + last messages too — otherwise an empty list leaves a
+        // stale unread badge (the "phantom N messages" bug).
+        emit(state.copyWith(chats: [], unreadCounts: {}, lastMessages: {}));
         return;
       }
 
@@ -131,7 +136,8 @@ class ChatCubit extends Cubit<ChatState> {
       emit(state.copyWith(chats: sorted, unreadCounts: unreadCounts, lastMessages: lastMessages));
     } catch (e) {
       print('[ChatCubit] loadChatsForVendor error: $e');
-      emit(state.copyWith(chats: []));
+      // Keep the last good state on a transient error — don't wipe the list
+      // (which would also strand a stale unread badge).
     }
   }
 
@@ -154,47 +160,56 @@ class ChatCubit extends Cubit<ChatState> {
   Future<void> openChat(String orderId, String buyerId, String vendorId, {String? currentUserId}) async {
     final sw = Stopwatch()..start();
     try {
-      var chatData = await SupabaseService.client
+      // A conversation is identified by the (buyer, vendor) pair; order_id only
+      // records where it started. NEVER look up by order_id: a 'product_<id>'
+      // order_id is shared by every buyer who chats about that product, so
+      // maybeSingle() threw on the second one and the exception aborted openChat
+      // before markChatRead could run — which is why those vendors' unread
+      // badges never cleared. chats_buyer_vendor_uniq guarantees one row here.
+      final existingChats = await SupabaseService.client
           .from('chats')
           .select('id, order_id, buyer_id, vendor_id, created_at')
-          .eq('order_id', orderId)
-          .maybeSingle();
-
-      // Fallback: find any existing chat between this buyer and vendor
-      if (chatData == null) {
-        final existingChats = await SupabaseService.client
-            .from('chats')
-            .select('id, order_id, buyer_id, vendor_id, created_at')
-            .eq('buyer_id', buyerId)
-            .eq('vendor_id', vendorId);
-        if ((existingChats as List).isNotEmpty) {
-          chatData = existingChats[0];
-        }
-      }
+          .eq('buyer_id', buyerId)
+          .eq('vendor_id', vendorId)
+          .order('created_at', ascending: true)
+          .limit(1);
+      dynamic chatData = (existingChats as List).isEmpty ? null : existingChats.first;
 
       if (chatData == null) {
         final chatId = _escrow.generateChatId();
-        final insertResult = await SupabaseService.client.from('chats').insert({
-          'id': chatId,
-          'order_id': orderId,
-          'buyer_id': buyerId,
-          'vendor_id': vendorId,
-        }).select('id').maybeSingle();
-
-        if (insertResult == null) {
-          print('[ChatCubit] Chat insert failed (RLS?), trying select again...');
+        try {
+          await SupabaseService.client.from('chats').insert({
+            'id': chatId,
+            'order_id': orderId,
+            'buyer_id': buyerId,
+            'vendor_id': vendorId,
+          });
+        } catch (e) {
+          // Losing a race here is normal, not fatal: the lookup above and this
+          // insert aren't atomic, so a concurrent openChat (double tap, or a push
+          // opening the chat while the list loads) can create this pair's row
+          // first. chats_buyer_vendor_uniq then makes our insert a unique
+          // violation instead of a duplicate row. Fall through and adopt theirs.
+          print('[ChatCubit] chat insert did not land (likely concurrent create): $e');
         }
 
-        chatData = await SupabaseService.client
+        // Re-read by the PAIR, never by order_id: if another call won the race,
+        // its row carries ITS order_id (e.g. 'product_x' vs a real order id), so
+        // an order_id lookup finds nothing and strands the user on a chat that
+        // never opens.
+        final rows = await SupabaseService.client
             .from('chats')
             .select('id, order_id, buyer_id, vendor_id, created_at')
-            .eq('order_id', orderId)
-            .maybeSingle();
+            .eq('buyer_id', buyerId)
+            .eq('vendor_id', vendorId)
+            .order('created_at', ascending: true)
+            .limit(1);
 
-        if (chatData == null) {
-          print('[ChatCubit] ERROR: Could not find or create chat for orderId=$orderId');
+        if ((rows as List).isEmpty) {
+          print('[ChatCubit] ERROR: Could not find or create chat for buyer=$buyerId vendor=$vendorId');
           return;
         }
+        chatData = rows.first;
       }
 
       final chat = Chat.fromJson(chatData);

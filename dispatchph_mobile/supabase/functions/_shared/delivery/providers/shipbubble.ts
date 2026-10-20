@@ -75,8 +75,13 @@ export const shipbubble: DeliveryProvider = {
   async getQuotes(input: QuoteInput): Promise<ProviderQuote> {
     if (!KEY) return { provider: "shipbubble", couriers: [], providerData: {}, reason: "no_api_key" };
 
-    const sender = await validateAddress(input.sender, "Kay Vendor");
-    const receiver = await validateAddress(input.receiver, "Kay Customer");
+    // Resolve both addresses + the package category CONCURRENTLY — they're
+    // independent, so this removes ~2 sequential round-trips from every quote.
+    const [sender, receiver, categoryId] = await Promise.all([
+      validateAddress(input.sender, "Kay Vendor"),
+      validateAddress(input.receiver, "Kay Customer"),
+      getCategoryId(),
+    ]);
     if (!sender.code || !receiver.code) {
       return {
         provider: "shipbubble",
@@ -86,7 +91,6 @@ export const shipbubble: DeliveryProvider = {
       };
     }
 
-    const categoryId = await getCategoryId();
     if (categoryId === null) {
       return { provider: "shipbubble", couriers: [], providerData: {}, reason: "no_rates (could not resolve package category)" };
     }
@@ -148,9 +152,23 @@ export const shipbubble: DeliveryProvider = {
     const meta = (input.option.meta ?? {}) as any;
 
     // Platform pays Shipbubble from its prepaid wallet — gate on balance.
+    //
+    // Distinguish "couldn't READ the balance" from "the balance is genuinely
+    // short". This previously did `Number(data?.data?.balance ?? 0)`, so a 401
+    // (rejected API key) or any 5xx collapsed to 0 and was reported as
+    // wallet_low — which fired the "Courier wallet low" admin alert and sent
+    // someone to top up a wallet that was fine, while the real cause (bad key)
+    // stayed invisible. Fail with a distinct code instead.
     const balRes = await fetch(`${BASE}/billing/wallet`, { headers: headers() });
     const balData = await balRes.json().catch(() => ({}));
-    const balance = Number(balData?.data?.balance ?? 0);
+    const balance = Number(balData?.data?.balance);
+    if (!balRes.ok || !Number.isFinite(balance)) {
+      const detail = balRes.status === 401 || balRes.status === 403
+        ? "Shipbubble rejected the API key — check SHIPBUBBLE_API_KEY"
+        : `Shipbubble balance check failed (HTTP ${balRes.status})`;
+      console.error(`shipbubble balance check: ${detail}; body=${JSON.stringify(balData).slice(0, 200)}`);
+      return { ok: false, errorCode: "failed", message: `${detail}. Booking not attempted.` };
+    }
     if (balance < input.option.fee) {
       return { ok: false, errorCode: "wallet_low", message: `balance ${balance} < fee ${input.option.fee}` };
     }
@@ -195,12 +213,24 @@ export const shipbubble: DeliveryProvider = {
       picked_up: "picked_up",
       in_transit: "in_transit",
       delivered: "delivered",
+      completed: "delivered",
       failed: "failed",
       cancelled: "cancelled",
+      rejected: "cancelled",
+      returned: "failed",
+      delivery_failed: "failed",
+      pickup_failed: "failed",
     };
+    // Don't fabricate an "in_transit" from an unknown status (that would wrongly
+    // advance an order — e.g. a "rejected"/"returned" cancel). Skip + log unknowns.
+    const status = map[(p.status ?? "").toLowerCase()];
+    if (!status) {
+      console.warn(`shipbubble parseWebhook: unmapped status "${p.status}"`);
+      return null;
+    }
     return {
       providerOrderId: p.order_id,
-      status: map[p.status ?? ""] ?? "in_transit",
+      status,
       courierName: p.courier?.name,
       courierPhone: p.courier?.phone,
     };

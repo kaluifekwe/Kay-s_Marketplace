@@ -11,6 +11,12 @@ class PhoneInputField extends StatelessWidget {
     this.errorText,
   });
 
+  /// A valid Nigerian mobile number: 11 digits starting with 0 (e.g. 08012345678).
+  static bool isValid(String raw) {
+    final d = raw.replaceAll(RegExp(r'\D'), '');
+    return d.length == 11 && d.startsWith('0');
+  }
+
   @override
   Widget build(BuildContext context) {
     return TextField(
@@ -19,18 +25,8 @@ class PhoneInputField extends StatelessWidget {
       maxLength: 11,
       decoration: InputDecoration(
         hintText: '080XXXXXXXX',
-        prefixIcon: const Padding(
-          padding: EdgeInsets.only(left: 16, right: 8),
-          child: Text(
-            '+234',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: AppColors.mediumGray,
-            ),
-          ),
-        ),
-        prefixIconConstraints: const BoxConstraints(minWidth: 60),
+        helperText: 'Enter your 11-digit number, e.g. 08012345678',
+        prefixIcon: const Icon(Icons.phone, size: 20, color: AppColors.mediumGray),
         errorText: errorText,
         counterText: '',
       ),

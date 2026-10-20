@@ -21,6 +21,9 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen> {
   Map<String, String> _userNames = {};
   Map<String, bool> _onlineStatus = {};
+  // Needed in build to work out who the OTHER party is. One screen serves both
+  // roles, so without this a row can't tell a buyer's chat from a vendor's.
+  String _currentUserId = '';
 
   @override
   void initState() {
@@ -33,6 +36,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final role = prefs.getString('auth_role') ?? 'buyer';
     final userId = prefs.getString('auth_user_id') ?? '';
     if (userId.isEmpty || !mounted) return;
+    _currentUserId = userId;
     if (role == 'vendor') {
       await context.read<ChatCubit>().loadChatsForVendor(userId);
     } else {
@@ -150,7 +154,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 final chat = state.chats[i];
                 final unread = state.unreadCounts[chat.id] ?? 0;
                 final lastMsg = state.lastMessages[chat.id];
-                final otherName = _userNames[chat.vendorId] ?? 'Vendor';
+                // Show the OTHER party, not a fixed side. This screen serves both
+                // roles, so keying on vendorId meant every vendor saw their own
+                // store name (and their own online dot) on every conversation —
+                // two chats with two different buyers looked like the same person.
+                final otherId = chat.buyerId == _currentUserId ? chat.vendorId : chat.buyerId;
+                // Vendors are named by their store (may be missing), buyers by profile.
+                final otherName = _userNames[otherId] ?? (otherId == chat.vendorId ? 'Vendor' : 'Buyer');
                 final lastMsgText = lastMsg != null
                     ? (lastMsg.type == 'text' ? lastMsg.content : '📎 ${lastMsg.type}')
                     : 'No messages yet';
@@ -177,7 +187,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       Positioned(
                         right: 0,
                         bottom: 0,
-                        child: OnlineIndicator(isOnline: _onlineStatus[chat.vendorId] ?? false),
+                        child: OnlineIndicator(isOnline: _onlineStatus[otherId] ?? false),
                       ),
                       if (isUnread)
                         Positioned(

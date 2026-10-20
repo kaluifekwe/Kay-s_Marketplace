@@ -29,7 +29,6 @@ Widget deliveryBadge(String? deliveryType) {
         ],
       );
     case 'negotiate':
-    default:
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -38,6 +37,20 @@ Widget deliveryBadge(String? deliveryType) {
           Text(
             'Chat for delivery fee',
             style: TextStyle(fontSize: 11, color: Colors.orange[700]),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      );
+    case 'courier':
+    default:
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.local_shipping, size: 12, color: Color(0xFF1A8A2E)),
+          const SizedBox(width: 3),
+          Text(
+            'Courier delivery',
+            style: TextStyle(fontSize: 11, color: const Color(0xFF1A8A2E), fontWeight: FontWeight.w600),
             overflow: TextOverflow.ellipsis,
           ),
         ],

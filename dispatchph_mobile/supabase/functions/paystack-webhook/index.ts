@@ -326,11 +326,15 @@ async function processPayment(supabase: any, reference: string, eventId?: string
   // Clear buyer's cart
   if (buyerId) {
     try {
+      // Clear only the items that were checked out, so a single-item "Buy Now"
+      // doesn't wipe the rest of the cart. Full checkout clears all — unchanged.
+      const boughtIds = [...new Set(vendorOrders.flatMap((vo: any) => (vo.items || []).map((it: any) => it.product_id)).filter(Boolean))] as string[];
       await supabase
         .from("cart_items")
         .delete()
-        .eq("buyer_id", buyerId);
-      console.log(`Cart cleared for buyer ${buyerId}`);
+        .eq("buyer_id", buyerId)
+        .in("product_id", boughtIds);
+      console.log(`Cart cleared (${boughtIds.length} product(s)) for buyer ${buyerId}`);
     } catch (cartErr) {
       console.error("Failed to clear cart:", cartErr);
     }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../theme/app_theme.dart';
 import '../../core/services/supabase_service.dart';
+import '../../core/services/error_text.dart';
 
 /// Orders where the buyer was still silent 24h after shipment. Payout is
 /// held with us for a 12h grace period (extended_release_at) so admin can
@@ -90,7 +91,7 @@ class _AdminOrderReviewsScreenState extends State<AdminOrderReviewsScreen> {
       _load();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyError(e))));
       }
     }
   }

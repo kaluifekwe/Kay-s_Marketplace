@@ -15,7 +15,6 @@ import '../../bloc_exports.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/supabase_service.dart';
 import 'search_screen.dart';
-import 'all_vendors_screen.dart';
 import 'my_stores_screen.dart';
 import 'product_detail_screen.dart';
 import 'vendor_store_screen.dart';
@@ -28,9 +27,13 @@ import '../notifications/notification_screen.dart';
 import '../auth/welcome_screen.dart';
 import 'my_rewards_screen.dart';
 import 'buyer_bank_account_screen.dart';
+import '../wallet/wallet_screen.dart';
 import '../delivery/buyer_addresses_screen.dart';
+import '../settings/edit_profile_screen.dart';
+import '../settings/phone_prompt.dart';
 import '../policy/policy_screen.dart';
-import '../kyc/kyc_screen.dart';
+import '../../widgets/whatsapp_support_button.dart';
+import '../settings/delete_account.dart';
 
 class MarketplaceHome extends StatefulWidget {
   final int initialIndex;
@@ -49,7 +52,7 @@ class MarketplaceHome extends StatefulWidget {
   State<MarketplaceHome> createState() => _MarketplaceHomeState();
 }
 
-class _MarketplaceHomeState extends State<MarketplaceHome> {
+class _MarketplaceHomeState extends State<MarketplaceHome> with WidgetsBindingObserver {
   late int _currentIndex = widget.initialIndex;
   Timer? _heartbeat;
   Timer? _notifPoll;
@@ -57,12 +60,13 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<MarketplaceCubit>().loadProducts();
+      _initMarketplace();
       _loadCart();
       _loadChats();
       _loadNotifications();
-      _loadBuyerState();
+      maybePromptForPhone(context);
       AuthService.updateLastActive();
       _heartbeat = Timer.periodic(const Duration(minutes: 1), (_) {
         AuthService.updateLastActive();
@@ -74,9 +78,6 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       });
       if (widget.showWelcomeCredit) {
         _showWelcomeCreditDialog();
-      } else {
-        // Nudge unverified buyers to complete KYC (browsing is free; buying needs it).
-        promptKycReminder(context);
       }
     });
   }
@@ -87,7 +88,7 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         icon: const Icon(Icons.celebration, color: AppColors.primaryGreen, size: 64),
-        title: const Text("Welcome to Kay's Marketplace!"),
+        title: const Text("Welcome to Kay's Market!"),
         content: const Text(
           "Congratulations! 🎉\nYou've received ₦200 welcome credit to use on your first purchase.",
           textAlign: TextAlign.center,
@@ -107,9 +108,20 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _heartbeat?.cancel();
     _notifPoll?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Returning from the background (e.g. after paying by bank transfer in
+    // another app): re-sync the cart so a purchased item — which the webhook
+    // clears server-side — stops showing behind the cart badge.
+    if (state == AppLifecycleState.resumed) {
+      _loadCart();
+    }
   }
 
   Future<void> _loadCart() async {
@@ -140,8 +152,18 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
     final prefs = await SharedPreferences.getInstance();
     final userId = prefs.getString('auth_user_id') ?? '';
     if (userId.isNotEmpty && mounted) {
-      context.read<MarketplaceCubit>().loadBuyerState(userId);
+      await context.read<MarketplaceCubit>().loadBuyerState(userId);
     }
+  }
+
+  /// Order matters: know the buyer's state and restore the saved "my-state only"
+  /// toggle before the first feed load, so the filter applies from the start.
+  Future<void> _initMarketplace() async {
+    await _loadBuyerState();
+    if (!mounted) return;
+    await context.read<MarketplaceCubit>().initSameStateFilter();
+    if (!mounted) return;
+    await context.read<MarketplaceCubit>().loadProducts();
   }
 
   @override
@@ -172,7 +194,12 @@ class _MarketplaceHomeState extends State<MarketplaceHome> {
         body: screens[_currentIndex],
         bottomNavigationBar: _CustomBottomNav(
           currentIndex: _currentIndex,
-          onTap: (i) => setState(() => _currentIndex = i),
+          onTap: (i) {
+            setState(() => _currentIndex = i);
+            // Cheap re-sync so the cart badge reflects the real server state
+            // after a checkout completes (purchased items are cleared there).
+            _loadCart();
+          },
         ),
       ),
     );
@@ -327,12 +354,14 @@ class _MarketplaceFeed extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.lightGray,
+      // Support moved off the feed (it was floating over products) into a
+      // "Contact Support" row on the Profile tab.
       appBar: AppBar(
         backgroundColor: AppColors.primaryGreen,
         elevation: 0,
         leading: const SizedBox.shrink(),
         title: const Text(
-          "Kay's Marketplace",
+          "Kay's Market",
           style: TextStyle(
             color: Colors.white,
             fontSize: 18,
@@ -370,10 +399,16 @@ class _MarketplaceFeed extends StatelessWidget {
             color: AppColors.primaryGreen,
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: GestureDetector(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SearchScreen()),
-              ),
+              onTap: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SearchScreen()),
+                );
+                // Search runs on the shared cubit and overwrites the feed —
+                // restore the browse feed on return so it isn't left stuck on
+                // the last search results until a manual refresh.
+                if (context.mounted) context.read<MarketplaceCubit>().resetFeed();
+              },
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 decoration: BoxDecoration(
@@ -431,37 +466,41 @@ class _MarketplaceFeed extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           BlocBuilder<MarketplaceCubit, MarketplaceState>(
-            buildWhen: (prev, curr) => prev.buyerState != curr.buyerState,
+            buildWhen: (prev, curr) =>
+                prev.buyerState != curr.buyerState || prev.sameStateOnly != curr.sameStateOnly,
             builder: (context, state) {
               if (state.buyerState == null) return const SizedBox.shrink();
-              return InkWell(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AllVendorsScreen()),
-                ),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  color: AppColors.primaryGreen.withAlpha(20),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 18),
-                      const SizedBox(width: 6),
-                      Text(
-                        '${state.buyerState} Marketplace',
+              return Container(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+                color: AppColors.primaryGreen.withAlpha(20),
+                child: Row(
+                  children: [
+                    const Icon(Icons.location_on, color: AppColors.primaryGreen, size: 18),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        state.sameStateOnly
+                            ? 'Showing ${state.buyerState} vendors only'
+                            : 'Showing all vendors',
                         style: const TextStyle(
                           color: AppColors.primaryGreen,
                           fontWeight: FontWeight.bold,
-                          fontSize: 14,
+                          fontSize: 13,
                         ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const Spacer(),
-                      const Text(
-                        'View all vendors',
-                        style: TextStyle(color: AppColors.primaryGreen, fontSize: 12, fontWeight: FontWeight.w600),
-                      ),
-                      const Icon(Icons.chevron_right, color: AppColors.primaryGreen, size: 18),
-                    ],
-                  ),
+                    ),
+                    Text(
+                      '${state.buyerState} only',
+                      style: const TextStyle(color: AppColors.primaryGreen, fontSize: 12),
+                    ),
+                    Switch(
+                      value: state.sameStateOnly,
+                      activeColor: AppColors.primaryGreen,
+                      onChanged: (v) => context.read<MarketplaceCubit>().setSameStateOnly(v),
+                    ),
+                  ],
                 ),
               );
             },
@@ -476,7 +515,7 @@ class _MarketplaceFeed extends StatelessWidget {
                       physics: const NeverScrollableScrollPhysics(),
                       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 2,
-                        childAspectRatio: 0.68,
+                        childAspectRatio: 0.62,
                         crossAxisSpacing: 10,
                         mainAxisSpacing: 10,
                       ),
@@ -519,7 +558,7 @@ class _MarketplaceFeed extends StatelessWidget {
                         ),
                         const SizedBox(height: 20),
                         ElevatedButton.icon(
-                          onPressed: () => context.read<MarketplaceCubit>().loadProducts(),
+                          onPressed: () => context.read<MarketplaceCubit>().loadProducts(forceRefresh: true),
                           icon: const Icon(Icons.refresh_rounded, size: 18),
                           label: const Text('Retry'),
                           style: ElevatedButton.styleFrom(
@@ -543,7 +582,7 @@ class _MarketplaceFeed extends StatelessWidget {
                     // snapping back to "All".
                     return state.selectedCategory != null
                         ? cubit.loadProductsByCategory(state.selectedCategory!)
-                        : cubit.loadProducts();
+                        : cubit.loadProducts(forceRefresh: true);
                   },
                   child: NotificationListener<ScrollNotification>(
                     onNotification: (scrollInfo) {
@@ -563,7 +602,7 @@ class _MarketplaceFeed extends StatelessWidget {
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
                       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 2,
-                        childAspectRatio: 0.68,
+                        childAspectRatio: 0.62,
                         crossAxisSpacing: 10,
                         mainAxisSpacing: 10,
                       ),
@@ -708,21 +747,25 @@ class _ProductCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              flex: 4,
+              flex: 5,
               child: Stack(
                 children: [
                   Container(
                     width: double.infinity,
                     decoration: const BoxDecoration(
-                      color: AppColors.lightGray,
+                      color: Colors.white,
                       borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
                     ),
-                    child: ClipRRect(
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                    // Consistent padding so every product "floats" on white the
+                    // same way (a clean catalog look), regardless of the photo's
+                    // own shape or background.
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
                       child: hasImages
                           ? AppImage(
                               source: images.first.toString(),
-                              fit: BoxFit.cover,
+                              fit: BoxFit.contain,
+                              thumbWidth: 600,
                             )
                           : const Center(
                               child: Icon(Icons.image_outlined, size: 40, color: AppColors.mediumGray),
@@ -1077,20 +1120,27 @@ class ProfileTab extends StatelessWidget {
                 ),
                 const SizedBox(height: 22),
                 card([
-                  tile(Icons.card_giftcard, 'My Rewards & Credit',
-                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MyRewardsScreen()))),
+                  tile(Icons.person_outline, 'Edit Profile',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfileScreen()))),
                   divider,
+                  tile(Icons.account_balance_wallet_outlined, 'Wallet',
+                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()))),
+                  divider,
+                  // 'My Rewards & Credit' hidden for launch: cashback (a Play
+                  // "financial feature") is disabled server-side while we're on a
+                  // personal account, so there's nothing to show. Restore this
+                  // tile when cashback is re-enabled on an organization account.
                   tile(Icons.location_on_outlined, 'My Delivery Addresses',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BuyerAddressesScreen()))),
+                  divider,
+                  tile(Icons.chat_outlined, 'Contact Support',
+                      () => WhatsAppSupportButton.open(context)),
                   divider,
                   tile(Icons.account_balance, 'Bank Account',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BuyerBankAccountScreen()))),
                   divider,
                   tile(Icons.storefront_outlined, 'My Stores',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MyStoresScreen()))),
-                  divider,
-                  tile(Icons.verified_user_outlined, 'Verify Identity (KYC)',
-                      () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KycScreen()))),
                   divider,
                   tile(Icons.description_outlined, 'Terms & Policy',
                       () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PolicyScreen()))),
@@ -1106,6 +1156,8 @@ class ProfileTab extends StatelessWidget {
                       (route) => false,
                     );
                   }, danger: true),
+                  divider,
+                  tile(Icons.delete_forever, 'Delete account', () => deleteAccountFlow(context), danger: true),
                 ]),
               ],
             ),

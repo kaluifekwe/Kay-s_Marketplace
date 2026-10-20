@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primary_button.dart';
+import '../../core/services/error_text.dart';
 import '../../core/services/policy_service.dart';
 import '../policy/policy_screen.dart';
 
@@ -41,7 +42,7 @@ class _PolicyGateScreenState extends State<PolicyGateScreen> {
       if (!mounted) return;
       setState(() => _isSaving = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save your acceptance: $e')),
+        SnackBar(content: Text(friendlyError(e, fallback: "We couldn't save your acceptance. Please try again."))),
       );
     }
   }

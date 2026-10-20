@@ -18,6 +18,24 @@ class _KycScreenState extends State<KycScreen> {
   final _last = TextEditingController();
   bool _loading = false;
   String? _error;
+  String _idType = 'nin'; // 'nin' or 'bvn' — the user chooses which to verify with
+
+  @override
+  void initState() {
+    super.initState();
+    // If already verified, bail straight out as success — never show the form or
+    // call the provider again (each provider check costs money).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bailIfVerified());
+  }
+
+  Future<void> _bailIfVerified() async {
+    if (!await KycService.isVerified()) return;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('You are already verified ✓'), backgroundColor: AppColors.primaryGreen),
+    );
+    Navigator.pop(context, true);
+  }
 
   @override
   void dispose() {
@@ -28,9 +46,18 @@ class _KycScreenState extends State<KycScreen> {
   }
 
   Future<void> _submit() async {
-    final nin = _nin.text.trim();
-    if (!RegExp(r'^\d{11}$').hasMatch(nin)) {
-      setState(() => _error = 'Enter your 11-digit NIN');
+    final id = _nin.text.trim();
+    final first = _first.text.trim();
+    final last = _last.text.trim();
+    final label = _idType.toUpperCase();
+    if (!RegExp(r'^\d{11}$').hasMatch(id)) {
+      setState(() => _error = 'Enter your 11-digit $label');
+      return;
+    }
+    // Both names are required — we match them against the name registered to the
+    // ID, so a blank field (or just an account nickname) can't verify.
+    if (first.isEmpty || last.isEmpty) {
+      setState(() => _error = 'Enter your first name and surname exactly as on your $label');
       return;
     }
     setState(() {
@@ -38,9 +65,10 @@ class _KycScreenState extends State<KycScreen> {
       _error = null;
     });
     final res = await KycService.submitNin(
-      nin: nin,
-      firstName: _first.text.trim().isEmpty ? null : _first.text.trim(),
-      lastName: _last.text.trim().isEmpty ? null : _last.text.trim(),
+      nin: id,
+      idType: _idType,
+      firstName: first,
+      lastName: last,
     );
     if (!mounted) return;
     setState(() => _loading = false);
@@ -69,19 +97,31 @@ class _KycScreenState extends State<KycScreen> {
             Text('One-time verification', style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
             const Text(
-              'To keep the marketplace safe, we verify every buyer with their '
-              'National Identification Number (NIN) before their first purchase. '
-              'You can browse freely — verification is only needed to buy.',
+              'Verify your identity with your National Identification Number (NIN) '
+              'or Bank Verification Number (BVN) — whichever you prefer. It only '
+              'takes a moment, and your ID is never shared with vendors.',
               style: TextStyle(color: AppColors.mediumGray, height: 1.5),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'nin', label: Text('NIN'), icon: Icon(Icons.badge_outlined)),
+                ButtonSegment(value: 'bvn', label: Text('BVN'), icon: Icon(Icons.account_balance_outlined)),
+              ],
+              selected: {_idType},
+              onSelectionChanged: (s) => setState(() {
+                _idType = s.first;
+                _error = null;
+              }),
+            ),
+            const SizedBox(height: 16),
             TextField(
               controller: _nin,
               keyboardType: TextInputType.number,
               maxLength: 11,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'NIN (11 digits)',
+              decoration: InputDecoration(
+                labelText: '${_idType.toUpperCase()} (11 digits)',
                 hintText: 'e.g., 12345678901',
                 counterText: '',
               ),
@@ -117,8 +157,8 @@ class _KycScreenState extends State<KycScreen> {
             ),
             const SizedBox(height: 12),
             const Text(
-              '🔒 Your NIN is sent securely to our verification provider and is '
-              'not shared with vendors.',
+              '🔒 Your NIN/BVN is sent securely to our verification provider and '
+              'is not shared with vendors.',
               style: TextStyle(fontSize: 12, color: AppColors.mediumGray),
             ),
           ],
@@ -128,21 +168,44 @@ class _KycScreenState extends State<KycScreen> {
   }
 }
 
-/// Gate used before a purchase. Returns true if the buyer is verified. If not,
-/// shows a prompt; if they choose to verify and succeed, returns true.
-Future<bool> requireKyc(BuildContext context) async {
+/// What a KYC gate is protecting — tunes the prompt copy. The verification
+/// itself is identical (NIN/BVN); only the reason shown to the user differs.
+enum KycAction { buy, sell, withdraw, fund }
+
+String _kycPrompt(KycAction action) {
+  switch (action) {
+    case KycAction.sell:
+      return 'You need to verify your identity with your NIN before you '
+          'can list products for sale. It only takes a moment.';
+    case KycAction.withdraw:
+      return 'You need to verify your identity with your NIN before you '
+          'can withdraw to your bank. It only takes a moment.';
+    case KycAction.fund:
+      return 'You need to verify your identity with your NIN before you '
+          'can create your funding account. It only takes a moment.';
+    case KycAction.buy:
+      return 'You need to verify your identity with your NIN before you '
+          'can buy. It only takes a moment.';
+  }
+}
+
+/// Gate used before a protected action. Returns true if the user is verified.
+/// If not, shows a prompt; if they choose to verify and succeed, returns true.
+Future<bool> requireKyc(BuildContext context, {KycAction action = KycAction.buy}) async {
+  // Buyers are no longer identity-gated to BUY — anyone can purchase (paying by
+  // card / transfer / wallet). Verification now only protects SELLING and bank
+  // WITHDRAWALS. (Funding a wallet via the legacy virtual account still needs
+  // NIN server-side until funding moves onto the new checkout.)
+  if (action == KycAction.buy) return true;
   if (await KycService.isVerified()) return true;
   if (!context.mounted) return false;
+  final title = action == KycAction.buy ? 'Verify to buy' : 'Verify your identity';
   final proceed = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
       icon: const Icon(Icons.verified_user, color: AppColors.primaryGreen, size: 48),
-      title: const Text('Verify to buy'),
-      content: const Text(
-        'You need to verify your identity with your NIN before you can buy. '
-        'It only takes a moment.',
-        textAlign: TextAlign.center,
-      ),
+      title: Text(title),
+      content: Text(_kycPrompt(action), textAlign: TextAlign.center),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Not now')),
         ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Verify now')),
@@ -157,30 +220,7 @@ Future<bool> requireKyc(BuildContext context) async {
   return verified == true;
 }
 
-/// Non-blocking nudge shown on the buyer home while unverified.
-Future<void> promptKycReminder(BuildContext context) async {
-  if (await KycService.isVerified()) return;
-  if (!context.mounted) return;
-  await showDialog<void>(
-    context: context,
-    builder: (_) => AlertDialog(
-      icon: const Icon(Icons.verified_user_outlined, color: AppColors.primaryGreen, size: 44),
-      title: const Text('Verify your identity'),
-      content: const Text(
-        'Browse all you like — but to buy from vendors you\'ll need to verify '
-        'your NIN first. It only takes a moment.',
-        textAlign: TextAlign.center,
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Maybe later')),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.pop(context);
-            Navigator.push(context, MaterialPageRoute(builder: (_) => const KycScreen()));
-          },
-          child: const Text('Verify now'),
-        ),
-      ],
-    ),
-  );
-}
+/// (Retired) Buyers no longer need to verify to buy, so the old home-screen
+/// "verify your identity" nudge is a no-op. Kept as a stub so existing call
+/// sites keep compiling.
+Future<void> promptKycReminder(BuildContext context) async {}

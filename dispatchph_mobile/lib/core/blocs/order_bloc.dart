@@ -11,6 +11,12 @@ import '../services/credit_service.dart';
 import '../models/models.dart';
 import 'notification_bloc.dart';
 
+/// Returned by [OrderCubit.cancelOrder] when the buyer has no verified bank
+/// account. Refunds are paid out to the buyer's bank, so the UI should offer to
+/// add one rather than just showing this as a failure.
+const String kNoBankAccountError =
+    'Add and verify your bank account first — that is where your refund is paid.';
+
 class OrderCubit extends Cubit<OrderState> {
   final EscrowService _escrow;
   RealtimeChannel? _ordersChannel;
@@ -205,18 +211,23 @@ class OrderCubit extends Cubit<OrderState> {
   Future<bool> confirmDelivery({
     required String orderId,
     required String buyerId,
-    required String deliveryPhotoPath,
+    String? deliveryPhotoPath,
   }) async {
     emit(state.copyWith(isSubmitting: true));
     try {
-      final deliveryPhotoUrl = await StorageService.uploadDeliveryConfirmation(
-        orderId: orderId,
-        filePath: deliveryPhotoPath,
-      );
-
-      if (deliveryPhotoUrl == null) {
-        emit(state.copyWith(isSubmitting: false));
-        return false;
+      // The photo is EVIDENCE, not a gate. Requiring it meant a buyer holding
+      // the goods had to photograph them before they could say so, and the ones
+      // who wouldn't bother fell silent instead — which pushed the order down
+      // the 24h escalation path and made "no confirmation" look like a delivery
+      // problem when it was really an upload problem. A failed upload no longer
+      // blocks the confirmation either; losing the photo is better than
+      // stranding an order whose buyer has told us it arrived.
+      String? deliveryPhotoUrl;
+      if (deliveryPhotoPath != null) {
+        deliveryPhotoUrl = await StorageService.uploadDeliveryConfirmation(
+          orderId: orderId,
+          filePath: deliveryPhotoPath,
+        );
       }
 
       _escrow.cancelAutoRelease(orderId);
@@ -333,13 +344,58 @@ class OrderCubit extends Cubit<OrderState> {
     }
   }
 
-  /// Buyer cancels order BEFORE vendor ships — full refund
   /// Buyer-initiated cancellation. Returns null on success, or an error message
   /// to show the buyer. Only allowed BEFORE a rider is booked — once the vendor
-  /// has requested a rider the order can no longer be cancelled (the courier fee
-  /// is committed and the rider is on the way); the buyer waits for delivery or
-  /// reports a problem. The refund is issued by the `process-refund` edge
-  /// function (idempotent, server-authorised) to Kay's Credit (instant).
+  /// has requested a rider the courier fee is committed, so the buyer waits for
+  /// delivery or reports a problem instead.
+  ///
+  /// This no longer refunds directly. It SUBMITS A REFUND REQUEST that an
+  /// administrator approves, and an approved refund is paid out to the buyer's
+  /// verified bank account. A verified account is therefore required up front —
+  /// `no_bank_account` comes back when one is missing so the caller can send the
+  /// buyer to add theirs.
+  /// Buyer-initiated refund request for an order stuck mid-delivery (a rider was
+  /// booked but nothing has moved — e.g. a courier rejected the pickup and never
+  /// reported it). Unlike [cancelOrder] this does NOT pre-gate on status/rider:
+  /// the server (request-refund) decides eligibility (booked + stalled past the
+  /// grace period) and queues an admin-reviewed request. No money moves here.
+  Future<String?> requestStuckRefund(String orderId, String buyerId) async {
+    try {
+      final session = SupabaseService.client.auth.currentSession;
+      try {
+        await SupabaseService.client.functions.invoke(
+          'request-refund',
+          headers: {
+            'Content-Type': 'application/json',
+            if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
+          },
+          body: {
+            'order_id': orderId,
+            'reason': 'Order not moving — rider booked but never delivered',
+          },
+        );
+      } on FunctionException catch (e) {
+        final data = e.details is Map ? e.details as Map : const {};
+        final msg = data['message'] as String? ?? data['error'] as String?;
+        return msg ?? 'Could not submit your refund request. Please try again.';
+      }
+
+      await NotificationCubit.create(
+        userId: buyerId,
+        title: 'Refund requested',
+        body: 'We received your request. Our team is reviewing it and will update you shortly.',
+        type: 'order',
+        referenceId: orderId,
+      );
+
+      await loadBuyerOrders(buyerId);
+      return null;
+    } catch (e) {
+      print('[OrderCubit] requestStuckRefund error: $e');
+      return 'Could not submit your refund request. Please try again.';
+    }
+  }
+
   Future<String?> cancelOrder(String orderId, String buyerId) async {
     try {
       final orderData = await SupabaseService.client
@@ -356,44 +412,54 @@ class OrderCubit extends Cubit<OrderState> {
       }
 
       final session = SupabaseService.client.auth.currentSession;
-      final response = await SupabaseService.client.functions.invoke(
-        'process-refund',
-        headers: {
-          'Content-Type': 'application/json',
-          if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
-        },
-        body: {
-          'order_id': orderId,
-          'refund_method': 'credit',
-          'reason': 'buyer_cancelled',
-        },
-      );
-
-      if (response.status != 200) {
-        final msg = (response.data is Map) ? response.data['error'] as String? : null;
-        return msg ?? 'Could not cancel the order. Please try again.';
+      try {
+        await SupabaseService.client.functions.invoke(
+          'request-refund',
+          headers: {
+            'Content-Type': 'application/json',
+            if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
+          },
+          body: {
+            'order_id': orderId,
+            'reason': 'Buyer cancelled the order',
+          },
+        );
+      } on FunctionException catch (e) {
+        // invoke() THROWS on any non-2xx rather than returning it, so a status
+        // check here would never run. Reading the body off the exception is the
+        // only way to see why the server refused; without this every refusal,
+        // including the one we built an "add your bank account" prompt for,
+        // arrived as a bare "please try again".
+        final data = e.details is Map ? e.details as Map : const {};
+        if (data['error'] == 'no_bank_account') return kNoBankAccountError;
+        final msg = data['message'] as String? ?? data['error'] as String?;
+        return msg ?? 'Could not submit your refund request. Please try again.';
       }
 
       final vendorId = orderData['vendor_id'] as String;
       PushService.sendPush(
         userId: vendorId,
         title: 'Order Cancelled',
-        body: 'A buyer cancelled their order (refund issued).',
+        body: 'A buyer cancelled their order (refund pending review).',
         data: {'type': 'order', 'orderId': orderId},
       );
 
       await NotificationCubit.create(
         userId: vendorId,
         title: 'Order Cancelled',
-        body: 'A buyer cancelled their order (refund issued).',
+        body: 'A buyer cancelled their order (refund pending review).',
         type: 'vendor_order',
         referenceId: orderId,
       );
 
+      // Refunds are reviewed before any money moves and are paid to the buyer's
+      // bank, so do not tell them it is already back. The old copy promised an
+      // instant credit to a wallet that no longer exists.
       await NotificationCubit.create(
         userId: buyerId,
-        title: 'Order Cancelled',
-        body: 'Your order was cancelled and fully refunded to Kay\'s Credit.',
+        title: 'Refund requested',
+        body: 'We received your cancellation. Your refund is being reviewed and '
+            'will be paid to your bank account.',
         type: 'order',
         referenceId: orderId,
       );

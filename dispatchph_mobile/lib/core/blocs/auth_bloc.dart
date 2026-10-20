@@ -31,13 +31,13 @@ class AuthCubit extends Cubit<AuthState> {
     required String name,
     required String role,
   }) async {
-    final success = await AuthService.register(
+    final error = await AuthService.register(
       email: email,
       password: password,
       name: name,
       role: role,
     );
-    if (success) {
+    if (error == null) {
       emit(AuthState.authenticated(role: role));
       FCMService.init();
     }

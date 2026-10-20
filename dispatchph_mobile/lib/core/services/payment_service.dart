@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'error_text.dart';
+import 'cache_service.dart';
 
 class PaymentService {
   static final _client = Supabase.instance.client;
@@ -43,85 +45,116 @@ class PaymentService {
     required double amount,
     required String email,
   }) async {
-    final response = await _client.functions.invoke(
-      'create-payment',
-      headers: _headers,
-      body: {
-        'order_id': orderId,
-        'buyer_id': buyerId,
-        'vendor_orders': vendorOrders,
-        'amount': amount,
-        'email': email,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Payment initialization failed') : 'Payment initialization failed');
+    try {
+      final response = await _client.functions.invoke(
+        'create-payment',
+        headers: _headers,
+        body: {
+          'order_id': orderId,
+          'buyer_id': buyerId,
+          'vendor_orders': vendorOrders,
+          'amount': amount,
+          'email': email,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't start your payment. Please try again."));
     }
-
-    return response.data as Map<String, dynamic>;
   }
 
-  /// Verify account name via Paystack Edge Function
+  /// Prepare a Flutterwave buyer checkout (card + bank transfer + USSD).
+  /// The server re-derives prices/delivery from the DB, stores a pending intent,
+  /// and returns a hosted payment { link, tx_ref, amount }. Orders are created
+  /// server-side by flutterwave-webhook once the charge completes.
+  static Future<Map<String, dynamic>> prepareCheckout({
+    required String buyerId,
+    required List<Map<String, dynamic>> vendorOrders,
+    String? paymentOption,
+  }) async {
+    try {
+      final response = await _client.functions.invoke(
+        'prepare-checkout',
+        headers: _headers,
+        body: {
+          'buyer_id': buyerId,
+          'vendor_orders': vendorOrders,
+          if (paymentOption != null) 'payment_option': paymentOption,
+        },
+      ).timeout(_timeout);
+      final data = response.data;
+      if (data is Map && data['error'] != null) {
+        final m = data['message'] ?? data['error'];
+        throw Exception(m is String && m.trim().isNotEmpty
+            ? m.trim()
+            : "We couldn't start your payment. Please try again.");
+      }
+      return (data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't start your payment. Please try again."));
+    }
+  }
+
+  /// Verify account name via Flutterwave (same provider as payouts).
   static Future<Map<String, dynamic>> verifyBankAccount({
     required String accountNumber,
     required String bankCode,
   }) async {
-    final response = await _client.functions.invoke(
-      'paystack-proxy',
-      headers: _headers,
-      body: {
-        'action': 'resolve-account',
-        'account_number': accountNumber,
-        'bank_code': bankCode,
-      },
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200 || (data is Map && data['error'] != null)) {
-      throw Exception(data is Map ? (data['error'] ?? 'Account verification failed') : 'Account verification failed');
+    try {
+      final response = await _client.functions.invoke(
+        'flutterwave-proxy',
+        headers: _headers,
+        body: {
+          'action': 'resolve-account',
+          'account_number': accountNumber,
+          'bank_code': bankCode,
+        },
+      ).timeout(_timeout);
+      final data = response.data;
+      if (data is Map && data['error'] != null) {
+        final m = data['message'];
+        throw Exception(m is String && m.trim().isNotEmpty
+            ? m.trim()
+            : "We couldn't confirm that account. Check the number and bank.");
+      }
+      return (data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't confirm that account. Check the number and bank."));
     }
-    return data as Map<String, dynamic>;
   }
 
-  /// Create transfer recipient for vendor via Edge Function
+  /// Flutterwave payouts transfer straight to an account number + bank code, so
+  /// there's no "recipient" to pre-create (that was a Paystack concept). Kept as
+  /// a no-op stub so the existing bank-account save flow doesn't need changing.
   static Future<Map<String, dynamic>> createTransferRecipient({
     required String name,
     required String accountNumber,
     required String bankCode,
   }) async {
-    final response = await _client.functions.invoke(
-      'paystack-proxy',
-      headers: _headers,
-      body: {
-        'action': 'create-transfer-recipient',
-        'name': name,
-        'account_number': accountNumber,
-        'bank_code': bankCode,
-      },
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200 || (data is Map && data['error'] != null)) {
-      throw Exception(data is Map ? (data['error'] ?? 'Failed to create transfer recipient') : 'Failed to create transfer recipient');
-    }
-    return data as Map<String, dynamic>;
+    return {'recipient_code': ''};
   }
 
-  /// List all Nigerian banks via Edge Function
+  /// List all Nigerian banks via Flutterwave.
   static Future<List<Map<String, dynamic>>> listBanks() async {
-    final response = await _client.functions.invoke(
-      'paystack-proxy',
-      headers: _headers,
-      body: {'action': 'list-banks'},
-    ).timeout(_timeout);
-
-    final data = response.data;
-    if (response.status != 200 || (data is Map && data['error'] != null)) {
-      throw Exception(data is Map ? (data['error'] ?? 'Failed to load banks') : 'Failed to load banks');
+    // Banks barely change — serve a persisted copy (survives restarts) and only
+    // hit the network once a week.
+    const cacheKey = 'flw_banks';
+    final cached = await CacheService.getPersisted(cacheKey);
+    if (cached is List && cached.isNotEmpty) {
+      return cached.map((e) => Map<String, dynamic>.from(e as Map)).toList();
     }
-    return List<Map<String, dynamic>>.from((data as Map)['banks']);
+    try {
+      final response = await _client.functions.invoke(
+        'flutterwave-proxy',
+        headers: _headers,
+        body: {'action': 'list-banks'},
+      ).timeout(_timeout);
+      final banks = List<Map<String, dynamic>>.from((response.data as Map)['banks']);
+      await CacheService.setPersisted(cacheKey, banks, const Duration(days: 7));
+      return banks;
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't load the bank list. Please try again."));
+    }
   }
 
   /// Save vendor bank account
@@ -173,19 +206,16 @@ class PaymentService {
   static Future<Map<String, dynamic>> releaseEscrow({
     required String orderId,
   }) async {
-    final response = await _client.functions.invoke(
-      'release-escrow',
-      headers: _headers,
-      body: {
-        'order_id': orderId,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Release failed') : 'Release failed');
+    try {
+      final response = await _client.functions.invoke(
+        'release-escrow',
+        headers: _headers,
+        body: {'order_id': orderId},
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't release this payment. Please try again."));
     }
-    return response.data as Map<String, dynamic>;
   }
 
   /// Process refund — call Edge Function
@@ -195,22 +225,64 @@ class PaymentService {
     String? reason,
     String? refundMethod,
   }) async {
-    final response = await _client.functions.invoke(
-      'process-refund',
-      headers: _headers,
-      body: {
-        'order_id': orderId,
-        'dispute_id': disputeId,
-        'reason': reason,
-        'refund_method': refundMethod,
-      },
-    ).timeout(_timeout);
-
-    if (response.status != 200) {
-      final data = response.data;
-      throw Exception(data is Map ? (data['error'] ?? 'Refund failed') : 'Refund failed');
+    try {
+      final response = await _client.functions.invoke(
+        'process-refund',
+        headers: _headers,
+        body: {
+          'order_id': orderId,
+          'dispute_id': disputeId,
+          'reason': reason,
+          'refund_method': refundMethod,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't process this refund. Please try again."));
     }
-    return response.data as Map<String, dynamic>;
+  }
+
+  /// Vendor confirms a returned item was received — finalizes the buyer refund
+  /// server-side. Must go through this Edge Function (not process-refund
+  /// directly): process-refund rejects a vendor caller, so the vendor's
+  /// confirmation is authenticated here and the refund is run under the service
+  /// role, which also claws back the vendor and releases the payout hold.
+  static Future<Map<String, dynamic>> vendorConfirmReturn({
+    required String disputeId,
+    String? receivedPhotoUrl,
+  }) async {
+    try {
+      final response = await _client.functions.invoke(
+        'vendor-confirm-return',
+        headers: _headers,
+        body: {
+          'dispute_id': disputeId,
+          'received_photo_url': receivedPhotoUrl,
+        },
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't confirm the return. Please try again."));
+    }
+  }
+
+  /// Vendor accepts the buyer's refund directly (negotiation-first resolution).
+  /// Must go through this Edge Function — process-refund rejects a vendor caller,
+  /// so the vendor is authenticated here and the refund runs under the service
+  /// role (which also claws back the vendor and releases the payout hold).
+  static Future<Map<String, dynamic>> vendorAcceptRefund({
+    required String disputeId,
+  }) async {
+    try {
+      final response = await _client.functions.invoke(
+        'vendor-accept-refund',
+        headers: _headers,
+        body: {'dispute_id': disputeId},
+      ).timeout(_timeout);
+      return (response.data as Map).cast<String, dynamic>();
+    } catch (e) {
+      throw Exception(friendlyError(e, fallback: "We couldn't process the refund. Please try again."));
+    }
   }
 
   /// Get transactions for an order

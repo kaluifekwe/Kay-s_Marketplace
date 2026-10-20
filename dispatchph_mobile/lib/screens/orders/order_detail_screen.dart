@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_theme.dart';
 import '../../bloc_exports.dart';
 import '../../core/models/models.dart';
@@ -12,6 +13,7 @@ import '../../core/services/auth_service.dart';
 import '../chat/chat_screen.dart';
 import '../delivery/courier_track_tile.dart';
 import '../marketplace/vendor_store_screen.dart';
+import '../marketplace/buyer_bank_account_screen.dart';
 import 'buyer_dispute_screen.dart';
 import 'delivery_confirmation_screen.dart';
 import 'refund_request_screen.dart';
@@ -26,6 +28,8 @@ String orderStatusLabel(String status) {
     case 'refund_requested': return 'Refund Requested';
     case 'refunded': return 'Refunded';
     case 'auto_released': return 'Auto-Released to Vendor';
+    case 'delivery_failed': return 'Delivery Failed — Report to Refund';
+    case 'in_transit': return 'On the way to you';
     default: return status;
   }
 }
@@ -47,12 +51,19 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Timer? _refreshTimer;
   bool _hasReviewed = false;
   bool _loadFailed = false;
+  String? _currentUserId;
 
   @override
   void initState() {
     super.initState();
+    _loadCurrentUser();
     _loadOrder();
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadOrder());
+  }
+
+  Future<void> _loadCurrentUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _currentUserId = prefs.getString('auth_user_id'));
   }
 
   Future<void> _loadOrder() async {
@@ -228,8 +239,26 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
+                                const Text('Subtotal', style: TextStyle(color: AppColors.mediumGray)),
+                                Text('\u20A6${format.format(order.total)}', style: const TextStyle(color: AppColors.mediumGray)),
+                              ],
+                            ),
+                            if ((order.deliveryFee) > 0) ...[
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('Delivery', style: TextStyle(color: AppColors.mediumGray)),
+                                  Text('\u20A6${format.format(order.deliveryFee)}', style: const TextStyle(color: AppColors.mediumGray)),
+                                ],
+                              ),
+                            ],
+                            const Divider(),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
                                 const Text('Total', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                                Text('\u20A6${format.format(order.total)}',
+                                Text('\u20A6${format.format(order.totalWithDelivery ?? order.total)}',
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: AppColors.primaryGreen)),
                               ],
                             ),
@@ -242,7 +271,33 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                       CourierTrackTile(deliveryId: order.deliveryId!),
                       const SizedBox(height: 16),
                     ],
-                    if (order.status == 'shipped') ...[
+                    // Dispute open on a shipped order — the auto-release countdown
+                    // is paused (the server excludes disputed orders), so show the
+                    // dispute state instead of a still-ticking timer + confirm button.
+                    if (order.status == 'shipped' && _disputeId != null) ...[
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppColors.errorRed.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColors.errorRed.withOpacity(0.3)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.gavel, color: AppColors.errorRed, size: 22),
+                            SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Refund/dispute in progress. The release countdown is paused until this is resolved.',
+                                style: TextStyle(fontSize: 13, height: 1.4),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (order.status == 'shipped' && _disputeId == null) ...[
                       _TimerCard(remaining: _remaining),
                       const SizedBox(height: 16),
                       // Delivery info
@@ -309,6 +364,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                         // The order can no longer be cancelled — the buyer waits
                         // for delivery, or reports a problem once it ships.
                         _InfoRow(icon: Icons.motorcycle, text: 'A rider has been booked for your order'),
+                        _stuckRefundSection(context, order),
                       ] else ...[
                         _InfoRow(icon: Icons.hourglass_empty, text: 'Awaiting the vendor to ship your order'),
                         const SizedBox(height: 8),
@@ -326,7 +382,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                         ),
                       ],
                     ],
-                    if (order.status == 'confirmed' && !_hasReviewed) ...[
+                    if (order.status == 'in_transit') ...[
+                      _InfoRow(icon: Icons.local_shipping, text: 'Your order is on the way'),
+                      _stuckRefundSection(context, order),
+                    ],
+                    if (order.status == 'confirmed' && order.buyerId == _currentUserId && !_hasReviewed) ...[
                       _InfoRow(icon: Icons.check_circle, text: 'Payment released to vendor', color: AppColors.successGreen),
                       const SizedBox(height: 8),
                       SizedBox(
@@ -342,13 +402,43 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                         ),
                       ),
                     ],
-                    if (order.status == 'confirmed' && _hasReviewed) ...[
+                    if (order.status == 'confirmed' && order.buyerId == _currentUserId && _hasReviewed) ...[
                       _InfoRow(icon: Icons.check_circle, text: 'Payment released to vendor', color: AppColors.successGreen),
                       const SizedBox(height: 8),
                       _InfoRow(icon: Icons.star, text: 'You already reviewed this store', color: AppColors.starYellow),
                     ],
+                    if (order.status == 'confirmed' && order.buyerId != _currentUserId) ...[
+                      _InfoRow(icon: Icons.check_circle, text: 'Payment released to your wallet', color: AppColors.successGreen),
+                    ],
                     if (order.status == 'refund_requested')
                       _InfoRow(icon: Icons.report_problem, text: 'Refund requested — vendor will review'),
+                    if (order.status == 'delivery_failed' && order.buyerId == _currentUserId) ...[
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.errorRed.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          "The rider couldn't complete your delivery, so the item is being returned to the vendor. "
+                          "Report the issue to get your item refund (the delivery fee isn't refundable).",
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () => _requestRefund(context, order),
+                          icon: const Icon(Icons.report_problem),
+                          label: const Text('Report Issue'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.errorRed,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
                     if (_disputeId != null && order.status != 'refunded' && order.status != 'cancelled') ...[
                       const SizedBox(height: 8),
                       Row(
@@ -426,29 +516,153 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     );
   }
 
-  void _cancelOrder(BuildContext context, Order order) {
-    // Cancellation is only offered before a rider is booked, so this is always a
-    // full refund. Once a rider is booked the button is hidden (and the server
-    // rejects it) — the buyer waits for delivery or reports a problem.
+  // A courier order can freeze if a rider is booked but the pickup never happens
+  // and the provider never reports the failure (e.g. Terminal silently rejecting
+  // a pickup). After a grace period the buyer can raise an admin-reviewed refund
+  // so they aren't stranded. Mirrors the server window in request-refund.
+  static const int _stallGraceHours = 3;
+  bool _isStuckStalled(Order order) {
+    final riderBooked = order.deliveryType == 'courier' && order.hasShipbubbleDelivery;
+    final stuck = order.status == 'paid' || order.status == 'in_transit';
+    final placed = order.paidAt ?? order.createdAt;
+    final hours = DateTime.now().difference(placed).inMinutes / 60.0;
+    return riderBooked && stuck && hours >= _stallGraceHours;
+  }
+
+  Widget _stuckRefundSection(BuildContext context, Order order) {
+    if (!_isStuckStalled(order)) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.warningOrange.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Text(
+            "Your order hasn't moved in a while. If the rider never came, you can "
+            "request a refund and our team will review it.",
+            style: TextStyle(fontSize: 13),
+          ),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () => _requestStuckRefund(context, order),
+            icon: const Icon(Icons.report_problem),
+            label: const Text('Order not moving? Request a refund'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.errorRed,
+              side: const BorderSide(color: AppColors.errorRed),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _requestStuckRefund(BuildContext context, Order order) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Cancel Order'),
-        content: const Text('Are you sure? This will cancel the order and issue a full refund.'),
+        title: const Text('Request a refund'),
+        content: const Text(
+          'Your order has not moved and the rider may not be coming. This sends a '
+          'refund request to our team to review. If confirmed, you get your money back.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Keep Order')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Wait a bit')),
           ElevatedButton(
             onPressed: () async {
               final messenger = ScaffoldMessenger.of(context);
               final cubit = context.read<OrderCubit>();
               Navigator.pop(context);
-              final error = await cubit.cancelOrder(order.id, order.buyerId);
+              final error = await cubit.requestStuckRefund(order.id, order.buyerId);
+              if (!mounted) return;
               messenger.showSnackBar(SnackBar(
-                content: Text(error ?? 'Order cancelled and refunded to Kay\'s Credit.'),
+                content: Text(error ??
+                    'Refund request submitted. We\'ll review it and update you shortly.'),
+              ));
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.errorRed, foregroundColor: Colors.white),
+            child: const Text('Request refund'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _cancelOrder(BuildContext context, Order order) {
+    // Cancellation is only offered before a rider is booked. It no longer
+    // refunds on the spot: it raises a request an administrator reviews, and an
+    // approved refund is paid to the buyer's verified bank account.
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Cancel Order'),
+        content: const Text(
+          'This submits a refund request for review. Once approved, your refund is '
+          'paid to your verified bank account.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Keep Order')),
+          ElevatedButton(
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              final navigator = Navigator.of(context);
+              final cubit = context.read<OrderCubit>();
+              Navigator.pop(context);
+              final error = await cubit.cancelOrder(order.id, order.buyerId);
+              if (!mounted) return;
+
+              // A refund has nowhere to go without a bank account, so offer to
+              // add one instead of leaving the buyer at a dead end.
+              if (error == kNoBankAccountError) {
+                _promptAddBankAccount(navigator);
+                return;
+              }
+              messenger.showSnackBar(SnackBar(
+                content: Text(
+                  error ?? 'Refund request submitted. We\'ll let you know once it has been reviewed.',
+                ),
               ));
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.mediumGray, foregroundColor: Colors.white),
             child: const Text('Yes, Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Offers to take the buyer straight to the bank-account screen when a refund
+  /// can't be requested because they have no verified account on file.
+  void _promptAddBankAccount(NavigatorState navigator) {
+    showDialog(
+      context: navigator.context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('Add your bank account'),
+        content: const Text(
+          'Refunds are paid to your bank account. Add and verify yours, then request '
+          'the refund again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Not now')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(dctx);
+              navigator.push(
+                MaterialPageRoute(builder: (_) => const BuyerBankAccountScreen()),
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryGreen,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Add bank account'),
           ),
         ],
       ),
@@ -570,6 +784,7 @@ class _StatusBanner extends StatelessWidget {
         return AppColors.mediumGray;
       case 'refund_requested':
       case 'refunded':
+      case 'delivery_failed':
         return AppColors.errorRed;
       case 'auto_released':
         return AppColors.escrowBlue;
@@ -590,6 +805,7 @@ class _StatusBanner extends StatelessWidget {
         return Icons.cancel;
       case 'refund_requested':
       case 'refunded':
+      case 'delivery_failed':
         return Icons.money_off;
       case 'auto_released':
         return Icons.timer;

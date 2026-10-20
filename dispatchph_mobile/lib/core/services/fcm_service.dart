@@ -127,7 +127,7 @@ class FCMService {
         break;
       default:
         NotificationService.showGenericNotification(
-          title: notification.title ?? "Kay's",
+          title: notification.title ?? "Kay's Market",
           body: notification.body ?? '',
         );
     }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/services/error_text.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,13 +9,33 @@ import '../../core/models/models.dart';
 import '../../core/models/delivery_models.dart';
 import '../../core/services/supabase_service.dart';
 import '../../core/services/credit_service.dart';
+import '../../core/services/payment_service.dart';
 import '../../core/services/delivery_service.dart';
+import '../../widgets/rider_searching_indicator.dart';
 import '../delivery/buyer_addresses_screen.dart';
-import '../kyc/kyc_screen.dart';
-import 'payment_simulation_screen.dart';
+import '../chat/chat_screen.dart';
+import 'flutterwave_checkout_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
-  const CheckoutScreen({super.key});
+  /// When set, check out ONLY this product (a single-product "Buy Now"),
+  /// leaving the buyer's other cart items untouched. Null = whole-cart checkout.
+  final String? onlyProductId;
+
+  /// Cart-item ids to check out when the buyer ticked a subset in the cart.
+  /// Null = not a subset checkout. Takes precedence over [onlyProductId].
+  final Set<String>? onlyItemIds;
+
+  /// True when "Buy Now" created the cart line purely to drive this checkout.
+  /// If the buyer leaves without paying we remove it again, so an abandoned
+  /// Buy Now doesn't silently leave (and then accumulate) items in the cart.
+  final bool removeIfUnpaid;
+
+  const CheckoutScreen({
+    super.key,
+    this.onlyProductId,
+    this.onlyItemIds,
+    this.removeIfUnpaid = false,
+  });
 
   @override
   State<CheckoutScreen> createState() => _CheckoutScreenState();
@@ -33,17 +54,101 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   final Map<String, DeliveryQuote> _storeQuotes = {};
   final Map<String, CourierOption?> _storeCourier = {};
   final Map<String, bool> _storeQuoteLoading = {};
+  // Stable key for this checkout session so a timeout-then-retry of wallet
+  // payment reuses the same reference and can't double-charge (server dedupes).
+  // Whether each store's courier-quote search has definitively finished — found
+  // couriers, genuine zero-coverage, or errored after all retries. Lets us tell
+  // "still searching / not yet tried" apart from "searched, none available", so
+  // the no-courier warning only shows once the search has truly completed.
+  final Map<String, bool> _storeQuoteResolved = {};
   BuyerAddress? _selectedAddress;
   bool _loaded = false;
   bool _useCredit = false;
   double _creditBalance = 0;
   String _buyerId = '';
 
+  /// Set once a payment has been taken (or handed to the card provider), so the
+  /// abandonment cleanup below never removes something the buyer paid for.
+  bool _paid = false;
+  /// Captured for dispose(), where reading `context` is no longer safe.
+  CartCubit? _cartRef;
+
+  @override
+  void dispose() {
+    // "Buy Now" creates a cart line just to drive this checkout. If the buyer
+    // leaves without paying, take it back out — otherwise it lingers in the
+    // cart and every further Buy Now on that product stacks another unit.
+    // Fire-and-forget: dispose can't await, and CartCubit swallows its own
+    // errors. Skipped entirely once _paid is set.
+    final cart = _cartRef;
+    if (widget.removeIfUnpaid && !_paid && _buyerId.isNotEmpty && cart != null) {
+      final ids = _scopedItems(cart.state).map((i) => i.id).toList();
+      if (ids.isNotEmpty) cart.removeItems(ids, _buyerId);
+    }
+    super.dispose();
+  }
+
   bool get _hasCourierDelivery => _storeCourier.values.any((c) => c != null);
+
+  // When onlyProductId is set (single-product "Buy Now"), the whole checkout —
+  // display, totals, delivery quotes, orders, and the post-payment cart clear —
+  // works on just that product's cart line, so the rest of the cart is left
+  // intact. Null = normal whole-cart checkout.
+  /// True when this checkout covers only part of the cart (Buy Now, or a
+  /// subset the buyer ticked) rather than everything.
+  bool get _isScoped => widget.onlyItemIds != null || widget.onlyProductId != null;
+
+  List<CartItem> _scopedItems(CartState s) {
+    if (widget.onlyItemIds != null) {
+      return s.items.where((i) => widget.onlyItemIds!.contains(i.id)).toList();
+    }
+    if (widget.onlyProductId != null) {
+      return s.items.where((i) => i.productId == widget.onlyProductId).toList();
+    }
+    return s.items;
+  }
+
+  double _scopedTotal(CartState s) {
+    if (!_isScoped) return s.total;
+    double t = 0;
+    for (final i in _scopedItems(s)) {
+      final unit = i.variantPrice ?? s.productMap[i.productId]?.price ?? 0;
+      t += unit * i.quantity;
+    }
+    return t;
+  }
+
+  /// Clear only what was checked out: the whole cart normally, or just the
+  /// single "Buy Now" product's line when scoped.
+  Future<void> _clearCheckedOut() async {
+    // Clear EXACTLY what was paid for. A scoped checkout (Buy Now, or a subset
+    // the buyer ticked) must leave the rest of the cart alone.
+    if (widget.onlyItemIds != null) {
+      await context.read<CartCubit>().removeItems(widget.onlyItemIds!.toList(), _buyerId);
+    } else if (widget.onlyProductId == null) {
+      // NB: must be clearCart — calling _clearCheckedOut() here recursed
+      // forever, so the await never completed: after a successful wallet/credit
+      // payment the success dialog never showed and the button spun for ever
+      // (the order HAD gone through). Card checkout was unaffected — it doesn't
+      // route through here.
+      await context.read<CartCubit>().clearCart(_buyerId);
+    } else {
+      final ids = context
+          .read<CartCubit>()
+          .state
+          .items
+          .where((i) => i.productId == widget.onlyProductId)
+          .map((i) => i.id)
+          .toList();
+      await context.read<CartCubit>().removeItems(ids, _buyerId);
+    }
+  }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Captured here because dispose() can no longer read `context`.
+    _cartRef ??= context.read<CartCubit>();
     if (!_loaded) {
       _loaded = true;
       _loadData();
@@ -52,7 +157,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   Future<void> _loadData() async {
     final cartState = context.read<CartCubit>().state;
-    final storeIds = cartState.items
+    final storeIds = _scopedItems(cartState)
         .map((i) => cartState.productMap[i.productId]?.storeId)
         .whereType<String>()
         .toSet();
@@ -82,10 +187,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         // A vendor's delivery policy is per-product, but for checkout purposes
         // we use the first item's policy from that store (vendors generally
         // apply one consistent policy across their catalog).
-        final firstItem = cartState.items.firstWhere(
+        final firstItem = _scopedItems(cartState).firstWhere(
           (i) => cartState.productMap[i.productId]?.storeId == storeId,
         );
-        final deliveryType = cartState.productMap[firstItem.productId]?.deliveryType ?? 'negotiate';
+        final deliveryType = cartState.productMap[firstItem.productId]?.deliveryType ?? 'courier';
         deliveryTypes[storeId] = deliveryType;
 
         if (deliveryType == 'free') {
@@ -122,7 +227,16 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             .limit(1)
             .maybeSingle();
 
-        if (accepted != null) {
+        // A negotiated fee is only valid for a short window. A stale one — left
+        // over from a previous order, or accepted long ago and never paid —
+        // must NOT show as the default; the buyer re-negotiates a fresh fee.
+        // (The server enforces the same window at checkout.)
+        final acceptedAt = accepted != null
+            ? DateTime.tryParse(accepted['created_at'] as String? ?? '')
+            : null;
+        final feeFresh = acceptedAt != null &&
+            DateTime.now().difference(acceptedAt) <= const Duration(minutes: 60);
+        if (accepted != null && feeFresh) {
           deliveryFees[storeId] = (accepted['buyer_fee_amount'] as num?)?.toDouble() ?? 0;
           deliveryContributions[storeId] = (accepted['vendor_contribution'] as num?)?.toDouble() ?? 0;
           deliveryAgreed[storeId] = true;
@@ -165,6 +279,43 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
+  // Courier quote retry policy: total attempts before giving up and showing the
+  // "no courier available" fallback. Only transient failures consume retries.
+  static const int _quoteMaxAttempts = 3;
+
+  /// True when an empty quote looks like a transient provider/network failure
+  /// (worth retrying) rather than a genuine "no courier covers this route". A
+  /// provider that errors/times out inside the edge function comes back as an
+  /// empty list with an error reason (allSettled), which is indistinguishable
+  /// from real no-coverage without inspecting the reason string.
+  bool _isTransientQuoteFailure(String? reason) {
+    if (reason == null || reason.isEmpty) return true;
+    final r = reason.toLowerCase();
+
+    // Setup steps that run BEFORE any courier is asked for a price: validating
+    // the two addresses, creating the parcel, resolving the package category or
+    // packaging. None of these say "error"/"timeout", so they used to be read as
+    // a genuine "no courier covers this route" and shown as "no riders
+    // available" without a single retry — while retrying the identical request
+    // by hand worked, which is what proved they were transient. A cold function
+    // instance also has to do the category/packaging lookups the warm one has
+    // cached, so the first quote after a gap is the one that trips.
+    if (r.contains('address_validation_failed') ||
+        r.contains('address_failed') ||
+        r.contains('parcel_failed') ||
+        r.contains('no_packaging') ||
+        r.contains('package category')) {
+      return true;
+    }
+
+    return r.contains('error') ||
+        r.contains('timeout') ||
+        r.contains('timed out') ||
+        r.contains('network') ||
+        r.contains('econn') ||
+        RegExp(r'\b5\d\d\b').hasMatch(r);
+  }
+
   /// Fetch Shipbubble courier rates for every store using the selected delivery
   /// address. When a store has couriers, courier becomes its delivery method
   /// (cheapest pre-selected); otherwise the free/negotiate fallback stands.
@@ -173,33 +324,56 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     if (addr == null || _buyerId.isEmpty) return;
 
     final cartState = context.read<CartCubit>().state;
-    final storeIds = cartState.items
+    final storeIds = _scopedItems(cartState)
         .map((i) => cartState.productMap[i.productId]?.storeId)
         .whereType<String>()
         .toSet();
 
-    for (final storeId in storeIds) {
-      final vendorId = _storeVendorIds[storeId];
-      if (vendorId == null) continue;
-      // A vendor offering free delivery handles it themselves — no courier.
-      if (_storeDeliveryType[storeId] == 'free') continue;
+    // Fetch every store's courier rates CONCURRENTLY instead of one-by-one —
+    // with several vendors this collapses N sequential round-trips into a single
+    // wait, so "searching for riders" takes about as long as the slowest store,
+    // not the sum of them all.
+    await Future.wait(
+      storeIds.map((storeId) => _loadQuoteForStore(storeId, addr)),
+    );
+  }
 
-      // Items for this store, in the shape get-delivery-quotes expects.
-      final items = cartState.items
-          .where((i) => cartState.productMap[i.productId]?.storeId == storeId)
-          .map((i) {
-        final p = cartState.productMap[i.productId];
-        return {
-          'name': p?.name ?? 'Item',
-          'weight': 0.5, // no per-product weight yet; matches server default
-          'quantity': i.quantity,
-          'amount': i.variantPrice ?? p?.price ?? 0,
-        };
-      }).toList();
+  /// Fetch courier rates for ONE store and fold the result into state. Runs
+  /// concurrently with the other stores (see [_loadQuotes]).
+  Future<void> _loadQuoteForStore(String storeId, BuyerAddress addr) async {
+    final vendorId = _storeVendorIds[storeId];
+    if (vendorId == null) return;
+    // A vendor offering free delivery handles it themselves — no courier.
+    if (_storeDeliveryType[storeId] == 'free') return;
 
-      if (mounted) setState(() => _storeQuoteLoading[storeId] = true);
+    final cartState = context.read<CartCubit>().state;
+    // Items for this store, in the shape get-delivery-quotes expects.
+    final items = _scopedItems(cartState)
+        .where((i) => cartState.productMap[i.productId]?.storeId == storeId)
+        .map((i) {
+      final p = cartState.productMap[i.productId];
+      return {
+        'name': p?.name ?? 'Item',
+        'weight': 0.5, // no per-product weight yet; matches server default
+        'quantity': i.quantity,
+        'amount': i.variantPrice ?? p?.price ?? 0,
+      };
+    }).toList();
+
+    if (mounted) {
+      setState(() {
+        _storeQuoteLoading[storeId] = true;
+        _storeQuoteResolved[storeId] = false;
+      });
+    }
+
+    // Auto-retry transient failures (network/API error, provider timeout). A
+    // valid "no courier covers this route" result is NOT retried — retrying
+    // won't change coverage — so it falls straight through to the warning.
+    DeliveryQuote? quote;
+    for (var attempt = 1; attempt <= _quoteMaxAttempts; attempt++) {
       try {
-        final quote = await DeliveryService.getDeliveryQuotes(
+        final q = await DeliveryService.getDeliveryQuotes(
           vendorId: vendorId,
           buyerId: _buyerId,
           deliveryAddress: addr.address,
@@ -210,25 +384,34 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           deliveryLongitude: addr.longitude,
           items: items,
         );
-        if (!mounted) return;
-        setState(() {
-          _storeQuoteLoading[storeId] = false;
-          if (quote.hasCouriers) {
-            final cheapest = quote.couriers.first;
-            _storeQuotes[storeId] = quote;
-            _storeCourier[storeId] = cheapest;
-            _storeDeliveryType[storeId] = 'courier';
-            _storeDeliveryFee[storeId] = cheapest.fee;
-            _storeDeliveryContribution[storeId] = 0;
-            _storeDeliveryAgreed[storeId] = true;
-          }
-        });
+        quote = q;
+        // Stop once we have couriers or a genuine (non-transient) empty
+        // result; only transient provider failures consume another attempt.
+        if (q.hasCouriers || !_isTransientQuoteFailure(q.reason)) break;
       } catch (e) {
-        if (!mounted) return;
-        setState(() => _storeQuoteLoading[storeId] = false);
-        debugPrint('[Checkout] quote error for $storeId: $e');
+        debugPrint('[Checkout] quote attempt $attempt error for $storeId: $e');
+      }
+      if (attempt < _quoteMaxAttempts) {
+        await Future.delayed(Duration(milliseconds: 500 * attempt));
       }
     }
+
+    if (!mounted) return;
+    setState(() {
+      _storeQuoteLoading[storeId] = false;
+      _storeQuoteResolved[storeId] = true;
+      if (quote != null && quote.hasCouriers) {
+        // Server returns options fastest-first (price as tiebreak), so the
+        // first option is the fastest — pre-select it as the default.
+        final preferred = quote.couriers.first;
+        _storeQuotes[storeId] = quote;
+        _storeCourier[storeId] = preferred;
+        _storeDeliveryType[storeId] = 'courier';
+        _storeDeliveryFee[storeId] = preferred.fee;
+        _storeDeliveryContribution[storeId] = 0;
+        _storeDeliveryAgreed[storeId] = true;
+      }
+    });
   }
 
   Future<void> _changeAddress() async {
@@ -242,6 +425,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       _selectedAddress = picked;
       _storeQuotes.clear();
       _storeCourier.clear();
+      _storeQuoteResolved.clear();
       for (final storeId in _storeVendorIds.keys) {
         if (_storeDeliveryType[storeId] == 'courier') {
           _storeDeliveryType[storeId] = 'negotiate';
@@ -284,12 +468,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       appBar: AppBar(title: const Text('Checkout')),
       body: BlocBuilder<CartCubit, CartState>(
         builder: (context, state) {
-          if (state.items.isEmpty) {
+          if (_scopedItems(state).isEmpty) {
             return const Center(child: Text('Cart is empty'));
           }
 
           final Map<String, List<CartItem>> storeGroups = {};
-          for (final item in state.items) {
+          for (final item in _scopedItems(state)) {
             final product = state.productMap[item.productId];
             if (product == null) continue;
             storeGroups.putIfAbsent(product.storeId, () => []).add(item);
@@ -298,10 +482,19 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           final totalDeliveryFee = storeGroups.keys.fold<double>(0, (sum, id) => sum + (_storeDeliveryFee[id] ?? 0));
           final totalVendorContribution =
               storeGroups.keys.fold<double>(0, (sum, id) => sum + (_storeDeliveryContribution[id] ?? 0));
-          final totalWithDelivery = state.total + totalDeliveryFee;
+          final totalWithDelivery = _scopedTotal(state) + totalDeliveryFee;
+          // Gates the pay button: any store without an agreed delivery — including
+          // while its quote is still loading — blocks checkout.
           final deliveryUnagreed = storeGroups.keys.any((id) => _storeDeliveryAgreed[id] != true);
-          final unagreedStoreNames = storeGroups.keys
-              .where((id) => _storeDeliveryAgreed[id] != true)
+          // Drives the "no courier available, contact vendor" warning. Unlike the
+          // button gate, this only fires for stores whose quote search has fully
+          // resolved with no courier — never while still loading/retrying — so the
+          // warning can't flash before the search actually returns zero.
+          final unavailableStoreNames = storeGroups.keys
+              .where((id) =>
+                  _storeDeliveryAgreed[id] != true &&
+                  _storeQuoteResolved[id] == true &&
+                  _storeQuoteLoading[id] != true)
               .map((id) => _storeNames[id] ?? 'this vendor')
               .toList();
 
@@ -318,6 +511,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             padding: const EdgeInsets.all(16),
             children: [
               _deliveryAddressSection(),
+              if (deliveryUnagreed) _deliveryHelpBanner(),
               const SizedBox(height: 16),
               const Text('Order Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
@@ -400,7 +594,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 );
               }),
               const Divider(height: 32),
-              _summaryRow('Items subtotal', '\u20A6${format.format(state.total)}'),
+              _summaryRow('Items subtotal', '\u20A6${format.format(_scopedTotal(state))}'),
               ...storeGroups.keys.map((storeId) {
                 final type = _storeDeliveryType[storeId] ?? 'negotiate';
                 final storeName = _storeNames[storeId] ?? 'Store';
@@ -447,7 +641,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       style: TextStyle(fontSize: 11, color: Colors.grey[600])),
                 ],
               ),
-              if (deliveryUnagreed) ...[
+              if (unavailableStoreNames.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -462,7 +656,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Courier delivery isn\'t available for ${unagreedStoreNames.join(', ')} right now. '
+                          'Courier delivery isn\'t available for ${unavailableStoreNames.join(', ')} right now. '
                           'Chat with the vendor to arrange a delivery fee, or remove those items to check out.',
                           style: TextStyle(color: Colors.orange[800], fontSize: 13),
                         ),
@@ -563,51 +757,73 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 ),
               ),
               const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: (_isPayingWithCredit || deliveryUnagreed)
-                      ? null
-                      : () async {
-                          // KYC gate — a buyer must verify their NIN before buying.
-                          if (!await requireKyc(context)) return;
-                          if (!context.mounted) return;
-                          if (creditCoversFull) {
+              // Paying from a stored wallet balance was removed: buyers pay per
+              // order online (card / transfer / USSD) so no customer value is
+              // held on the platform. Kay's Credit is promotional, spend-only
+              // and non-withdrawable, so it stays.
+              if (creditCoversFull) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isPayingWithCredit
+                        ? null
+                        : () {
+                            if (deliveryUnagreed) {
+                              _showDeliveryBlockedSnack();
+                              return;
+                            }
                             _completeWithCredit(totalWithDelivery);
-                          } else {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => PaymentSimulationScreen(
-                                  storeDeliveryFees: _storeDeliveryFee,
-                                  storeCourierSelections: _buildCourierSelections(),
-                                ),
-                              ),
-                            );
-                          }
-                        },
-                  icon: _isPayingWithCredit
-                      ? const SizedBox(
-                          width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : Icon(creditCoversFull ? Icons.check_circle : Icons.lock),
-                  label: Text(creditCoversFull
-                      ? 'Complete with Credit'
-                      : 'Pay \u20A6${format.format(amountToPay)}'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primaryGreen,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
+                          },
+                    icon: _isPayingWithCredit
+                        ? const SizedBox(
+                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.check_circle),
+                    label: const Text('Complete with Credit'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryGreen,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                creditCoversFull
-                    ? 'Full order covered by Kay\'s Credit'
-                    : 'Payment secured by Paystack escrow',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: AppColors.mediumGray, fontSize: 12),
-              ),
+                const SizedBox(height: 8),
+                const Text(
+                  "Full order covered by Kay's Credit",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.mediumGray, fontSize: 12),
+                ),
+              ] else ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isPayingWithCard
+                        ? null
+                        : () {
+                            if (deliveryUnagreed) {
+                              _showDeliveryBlockedSnack();
+                              return;
+                            }
+                            _completeWithCard(totalWithDelivery, '');
+                          },
+                    icon: _isPayingWithCard
+                        ? const SizedBox(
+                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.account_balance),
+                    label: Text('Pay ₦${format.format(amountToPay)} online'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryGreen,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  "Pay by bank transfer • held in escrow",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.mediumGray, fontSize: 12),
+                ),
+              ],
             ],
           );
         },
@@ -641,43 +857,215 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     );
   }
 
-  Widget _deliveryAddressSection() {
-    final addr = _selectedAddress;
+  // Explains WHY the buyer can't pay yet, with the exact fix per store:
+  //  • no delivery address  → "Add address" (needed to price a courier)
+  //  • address set, but a store has no courier coverage → "Message vendor"
+  Widget _deliveryHelpBanner() {
+    // No address yet — the buyer must add one before any courier can be priced.
+    if (_selectedAddress == null) {
+      return _deliveryPromptCard(
+        icon: Icons.location_on,
+        color: AppColors.warningOrange,
+        title: 'Add your delivery address',
+        body: "We need it to show courier prices and let you pay.",
+        buttonLabel: 'Add address',
+        onTap: _changeAddress,
+      );
+    }
+    // Address set — flag any store whose courier search finished with no cover.
+    final blocked = _storeNames.keys.where((id) =>
+        _storeDeliveryAgreed[id] != true &&
+        _storeQuoteResolved[id] == true &&
+        _storeQuoteLoading[id] != true);
+    if (blocked.isEmpty) return const SizedBox.shrink();
+    return Column(
+      children: blocked
+          .map((id) => _deliveryPromptCard(
+                icon: Icons.local_shipping,
+                color: AppColors.errorRed,
+                title: 'No courier for ${_storeNames[id] ?? 'this vendor'}',
+                body: 'No courier covers this route. Message the vendor to arrange delivery.',
+                buttonLabel: 'Message vendor',
+                onTap: () => _messageVendor(id),
+              ))
+          .toList(),
+    );
+  }
+
+  Widget _deliveryPromptCard({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String body,
+    required String buttonLabel,
+    required VoidCallback onTap,
+  }) {
     return Container(
+      margin: const EdgeInsets.only(top: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFE8F5EB),
+        color: color.withAlpha(20),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.primaryGreen),
+        border: Border.all(color: color.withAlpha(80)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.location_on, color: AppColors.primaryGreen),
+          Icon(icon, color: color),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  addr == null ? 'Add a delivery address' : '${addr.label} • ${addr.city}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
-                ),
+                Text(title, style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 13)),
                 const SizedBox(height: 2),
-                Text(
-                  addr == null ? 'Needed to show courier delivery prices' : addr.address,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                Text(body, style: const TextStyle(fontSize: 12, color: AppColors.charcoal)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: onTap,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: color,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text(buttonLabel, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _messageVendor(String storeId) {
+    final vendorId = _storeVendorIds[storeId];
+    if (vendorId == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          orderId: 'product_$storeId',
+          buyerId: _buyerId,
+          vendorId: vendorId,
+          vendorName: _storeNames[storeId] ?? 'Vendor',
+          buyerName: 'You',
+        ),
+      ),
+    );
+  }
+
+  // Immediate, unmissable feedback when the buyer taps a blocked Pay button —
+  // a centre-screen dialog (not a bottom snackbar they might miss) with the fix.
+  void _showDeliveryBlockedSnack() {
+    final noAddress = _selectedAddress == null;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(noAddress ? Icons.location_on : Icons.local_shipping,
+            color: AppColors.warningOrange, size: 44),
+        title: Text(noAddress ? 'Add your delivery address' : 'Delivery not arranged yet'),
+        content: Text(
+          noAddress
+              ? 'You need a delivery address before you can pay — it lets us show courier prices and deliver your order.'
+              : 'Some items have no courier available for your area. Message the vendor to arrange delivery, then come back and pay.',
+          textAlign: TextAlign.center,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Not now')),
+          if (noAddress)
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _changeAddress();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryGreen,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Add address'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _deliveryAddressSection() {
+    final addr = _selectedAddress;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 2, bottom: 6),
+          child: Text(
+            'DELIVER TO',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.5,
+              color: AppColors.mediumGray,
+            ),
+          ),
+        ),
+        // Whole card is tappable to switch address, with an explicit Change
+        // button too — buyers with several saved addresses must be able to see
+        // and pick which one this order goes to, not silently get their default.
+        InkWell(
+          onTap: _changeAddress,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8F5EB),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.primaryGreen),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.location_on, color: AppColors.primaryGreen),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        addr == null ? 'Add a delivery address' : '${addr.label} • ${addr.city}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryGreen),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        addr == null ? 'Needed to show courier delivery prices' : addr.address,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _changeAddress,
+                  icon: Icon(addr == null ? Icons.add_location_alt : Icons.swap_horiz, size: 16),
+                  label: Text(addr == null ? 'Add' : 'Change'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primaryGreen,
+                    side: const BorderSide(color: AppColors.primaryGreen),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ),
               ],
             ),
           ),
-          TextButton(
-            onPressed: _changeAddress,
-            child: Text(addr == null ? 'Add' : 'Change'),
+        ),
+        if (addr != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 4, top: 5),
+            child: Text(
+              'Delivering somewhere else? Tap Change to pick another saved address.',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -687,16 +1075,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   Widget _courierSelector(String storeId) {
     final format = NumberFormat('#,##0');
     if (_storeQuoteLoading[storeId] == true) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 10),
-        child: Row(
-          children: [
-            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primaryGreen)),
-            SizedBox(width: 10),
-            Text('Getting delivery prices...', style: TextStyle(fontSize: 12, color: AppColors.mediumGray)),
-          ],
-        ),
-      );
+      return const RiderSearchingIndicator();
     }
 
     final quote = _storeQuotes[storeId];
@@ -710,7 +1089,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         const Text('🚚 Choose Delivery', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
         const SizedBox(height: 8),
         ...quote.couriers.map((courier) {
-          final isSelected = selected?.name == courier.name;
+          // Match on optionRef (unique per rate) so two options from the same
+          // courier (e.g. Chowdeck standard vs same-day) don't both highlight.
+          // Fallback to name+fee for options without a ref (free/negotiate).
+          final isSelected = selected != null &&
+              (courier.optionRef != null
+                  ? selected.optionRef == courier.optionRef
+                  : selected.name == courier.name && selected.fee == courier.fee);
           return GestureDetector(
             onTap: () => _selectCourier(storeId, courier),
             child: Container(
@@ -733,7 +1118,40 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(courier.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(courier.name,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            ),
+                            // TEMP DEBUG: shows which delivery company (provider)
+                            // returned this rider, to confirm BOTH companies are
+                            // populating. Remove before the production release.
+                            if (courier.provider != null) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: courier.provider == 'terminal'
+                                      ? const Color(0xFFFFF0E0)
+                                      : const Color(0xFFE0F0FF),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  courier.provider!,
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w600,
+                                    color: courier.provider == 'terminal'
+                                        ? const Color(0xFFB35A00)
+                                        : const Color(0xFF0066B3),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
                         if (courier.eta != null && courier.eta!.isNotEmpty)
                           Text(courier.eta!, style: const TextStyle(fontSize: 11, color: AppColors.mediumGray)),
                       ],
@@ -751,9 +1169,15 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 
   bool _isPayingWithCredit = false;
+  bool _isPayingWithCard = false;
+
+  /// Any payment method currently in flight. Handlers check this to block a
+  /// second payment starting, so we don't need to visually disable every button
+  /// when one is tapped (which looked like both buttons were being pressed).
+  bool get _paymentInFlight => _isPayingWithCredit || _isPayingWithCard;
 
   Future<void> _completeWithCredit(double total) async {
-    if (_buyerId.isEmpty || _isPayingWithCredit) return;
+    if (_buyerId.isEmpty || _paymentInFlight) return;
     setState(() => _isPayingWithCredit = true);
 
     try {
@@ -764,7 +1188,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final Map<String, List<Map<String, dynamic>>> vendorItemGroups = {};
       final Map<String, String> vendorStoreMap = {};
 
-      for (final item in cartState.items) {
+      for (final item in _scopedItems(cartState)) {
         final product = cartState.productMap[item.productId];
         if (product == null) continue;
         final storeId = product.storeId;
@@ -819,7 +1243,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       await CreditService.completeCreditOrder(buyerId: _buyerId, vendorOrders: vendorOrders);
 
       if (!mounted) return;
-      await context.read<CartCubit>().clearCart(_buyerId);
+      _paid = true; // payment taken — don't undo the Buy Now line
+      await _clearCheckedOut();
 
       showDialog(
         context: context,
@@ -842,11 +1267,138 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e'), backgroundColor: AppColors.errorRed),
+          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
         );
       }
     } finally {
       if (mounted) setState(() => _isPayingWithCredit = false);
     }
   }
+
+  /// Build one vendor order per store from the current cart, attaching any
+  /// courier selection. Shared by the wallet and card/transfer paths so both
+  /// send an identical shape to the server (which re-derives prices anyway).
+  /// Returns null (and shows a snackbar) if no valid items are found.
+  Future<List<Map<String, dynamic>>?> _buildVendorOrders() async {
+    final cartState = context.read<CartCubit>().state;
+
+    final Map<String, List<Map<String, dynamic>>> vendorItemGroups = {};
+    final Map<String, String> vendorStoreMap = {};
+
+    for (final item in _scopedItems(cartState)) {
+      final product = cartState.productMap[item.productId];
+      if (product == null) continue;
+      final storeId = product.storeId;
+      if (storeId.isEmpty) continue;
+
+      String vendorId = '';
+      final cachedStore = context.read<MarketplaceCubit>().state.stores[storeId];
+      if (cachedStore != null) {
+        vendorId = cachedStore.vendorId;
+      } else {
+        try {
+          final storeData = await SupabaseService.client
+              .from('stores')
+              .select('id, vendor_id')
+              .eq('id', storeId)
+              .maybeSingle();
+          if (storeData != null) vendorId = storeData['vendor_id'] as String;
+        } catch (_) {}
+      }
+      if (vendorId.isEmpty) continue;
+
+      vendorStoreMap[vendorId] = storeId;
+      final unitPrice = item.variantPrice ?? product.price;
+      final itemData = <String, dynamic>{
+        'product_id': product.id,
+        'name': product.name,
+        'price': unitPrice,
+        'quantity': item.quantity,
+      };
+      if (item.variantLabel != null) itemData['variant_label'] = item.variantLabel;
+      vendorItemGroups.putIfAbsent(vendorId, () => []).add(itemData);
+    }
+
+    if (vendorItemGroups.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No valid items found for checkout'), backgroundColor: AppColors.errorRed),
+        );
+      }
+      return null;
+    }
+
+    final courierSelections = _buildCourierSelections();
+    return vendorItemGroups.entries.map((e) {
+      final storeId = vendorStoreMap[e.key] ?? '';
+      final courier = courierSelections[storeId];
+      return <String, dynamic>{
+        'vendor_id': e.key,
+        'store_id': storeId,
+        'items': e.value,
+        if (courier != null) 'delivery_quote_id': courier['quote_id'],
+        if (courier != null) 'selected_courier_name': courier['courier_name'],
+        if (courier != null && courier['option_ref'] != null) 'selected_option_ref': courier['option_ref'],
+      };
+    }).toList();
+  }
+
+  /// Pay the whole order via Flutterwave (card + bank transfer + USSD). The
+  /// server (prepare-checkout) re-derives prices/delivery and returns a hosted
+  /// payment link; we open it in a webview. flutterwave-webhook creates the
+  /// orders + escrow once the charge completes — this path never touches money
+  /// client-side.
+  /// Open Flutterwave's inline checkout. With an empty [paymentOption] the buyer
+  /// sees Flutterwave's full "Payment Methods" list (card, transfer, USSD, eNaira,
+  /// …) all selectable and picks one there.
+  Future<void> _completeWithCard(double total, String paymentOption) async {
+    if (_buyerId.isEmpty || _paymentInFlight) return;
+    setState(() => _isPayingWithCard = true);
+
+    try {
+      final vendorOrders = await _buildVendorOrders();
+      if (vendorOrders == null) return;
+
+      final res = await PaymentService.prepareCheckout(
+        buyerId: _buyerId,
+        vendorOrders: vendorOrders,
+        paymentOption: paymentOption,
+      );
+      final txRef = res['tx_ref'] as String?;
+      final publicKey = res['public_key'] as String?;
+      final amount = (res['amount'] as num?)?.toDouble() ?? total;
+      final redirectUrl = res['redirect_url'] as String? ?? 'https://kaysmarket-legal.web.app/payment-complete';
+      final customer = (res['customer'] as Map?)?.cast<String, dynamic>() ?? {};
+      if (txRef == null || txRef.isEmpty || publicKey == null || publicKey.isEmpty) {
+        throw Exception("We couldn't start your payment. Please try again.");
+      }
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => FlutterwaveCheckoutScreen(
+            publicKey: publicKey,
+            txRef: txRef,
+            buyerId: _buyerId,
+            total: amount,
+            redirectUrl: redirectUrl,
+            paymentOption: paymentOption,
+            email: customer['email'] as String? ?? '',
+            name: customer['name'] as String? ?? '',
+            phone: customer['phone'] as String? ?? '',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.errorRed),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isPayingWithCard = false);
+    }
+  }
+
 }

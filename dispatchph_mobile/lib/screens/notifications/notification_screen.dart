@@ -39,36 +39,44 @@ class _NotificationScreenState extends State<NotificationScreen> {
   void _onTapNotification(AppNotification n) {
     context.read<NotificationCubit>().markAsRead(n.id);
 
-    if (n.referenceId == null) return;
-
+    final ref = n.referenceId;
     switch (n.type) {
       case 'order':
       case 'vendor_order':
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: n.referenceId!)),
-        );
+        if (ref != null) {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: ref)));
+          return;
+        }
         break;
       case 'chat':
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const ChatListScreen()),
-        );
-        break;
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatListScreen()));
+        return;
       case 'dispute':
         if (_userRole == 'vendor') {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const VendorDisputesScreen()),
-          );
-        } else {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => BuyerDisputeScreen(disputeId: n.referenceId!)),
-          );
+          Navigator.push(context, MaterialPageRoute(builder: (_) => const VendorDisputesScreen()));
+          return;
+        } else if (ref != null) {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => BuyerDisputeScreen(disputeId: ref)));
+          return;
         }
         break;
     }
+    // No screen to open (or no reference) — show the notification's own content
+    // so tapping always does something readable instead of nothing.
+    _showNotificationContent(n);
+  }
+
+  void _showNotificationContent(AppNotification n) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(n.title),
+        content: Text(n.body),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   IconData _iconForType(String type) {

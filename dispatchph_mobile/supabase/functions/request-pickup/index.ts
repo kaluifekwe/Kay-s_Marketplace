@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { quoteAll } from "../_shared/delivery/orchestrate.ts";
+import { getNumber } from "../_shared/settings.ts";
 
 // Vendor-triggered courier booking ("Request Pickup"). Courier orders are NOT
 // booked at payment anymore — the vendor packages the item, taps Ready, and we
@@ -19,7 +20,8 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 // Block absurd re-quote spikes (platform absorbs normal drift, not 50%+ jumps).
-const PRICE_SPIKE_TOLERANCE = 1.5;
+// Tunable in the admin console (app_settings); literal stays as the fallback.
+const PRICE_SPIKE_TOLERANCE_DEFAULT = 1.5;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -90,9 +92,58 @@ serve(async (req) => {
       return json({ error: "original_quote_unusable" }, 400);
     }
 
+    // The pickup address is the part that goes stale. It was copied onto the
+    // checkout quote from the vendor's default location; if the vendor has since
+    // corrected or moved that location, the OLD address would keep being sent to
+    // riders (who show up at the wrong place and bail — this is what caused the
+    // Trans-Amadi failed pickups). So at the moment we actually summon a rider,
+    // re-read the vendor's CURRENT default pickup location and use it. Only the
+    // pickup address is refreshed — the vendor's name/email/phone and the buyer
+    // receiver stay exactly as quoted. If the current location can't be read for
+    // any reason, fall back to the original snapshot so a booking never breaks.
+    let sender = bundle.sender;
+    let pickup = {
+      address: origQuote.pickup_address,
+      landmark: origQuote.pickup_landmark,
+      city: origQuote.pickup_city,
+      latitude: origQuote.pickup_latitude,
+      longitude: origQuote.pickup_longitude,
+    };
+    const { data: currentLoc } = await supabase
+      .from("vendor_locations")
+      .select("address, landmark, city, state, latitude, longitude")
+      .eq("vendor_id", order.vendor_id)
+      .order("is_default", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (
+      currentLoc &&
+      currentLoc.address &&
+      currentLoc.city &&
+      currentLoc.latitude != null &&
+      currentLoc.longitude != null
+    ) {
+      sender = {
+        ...bundle.sender,
+        address: currentLoc.address,
+        landmark: currentLoc.landmark,
+        city: currentLoc.city,
+        state: currentLoc.state || bundle.sender?.state,
+        latitude: currentLoc.latitude,
+        longitude: currentLoc.longitude,
+      };
+      pickup = {
+        address: currentLoc.address,
+        landmark: currentLoc.landmark,
+        city: currentLoc.city,
+        latitude: currentLoc.latitude,
+        longitude: currentLoc.longitude,
+      };
+    }
+
     // Re-quote fresh — the 15-min checkout quote is long gone.
     const { couriers, providerData, reason } = await quoteAll({
-      sender: bundle.sender,
+      sender,
       receiver: bundle.receiver,
       items: bundle.items,
     });
@@ -108,7 +159,12 @@ serve(async (req) => {
       couriers[0];
 
     // Guard against absurd price spikes; platform absorbs normal drift.
-    if (paidFee > 0 && chosen.fee > paidFee * PRICE_SPIKE_TOLERANCE) {
+    const priceSpikeTolerance = await getNumber(
+      "price_spike_tolerance",
+      "PRICE_SPIKE_TOLERANCE",
+      PRICE_SPIKE_TOLERANCE_DEFAULT,
+    );
+    if (paidFee > 0 && chosen.fee > paidFee * priceSpikeTolerance) {
       return json({
         booked: false,
         reason: "price_spike",
@@ -122,18 +178,18 @@ serve(async (req) => {
       .insert({
         vendor_id: order.vendor_id,
         buyer_id: order.buyer_id,
-        pickup_address: origQuote.pickup_address,
-        pickup_landmark: origQuote.pickup_landmark,
-        pickup_city: origQuote.pickup_city,
-        pickup_latitude: origQuote.pickup_latitude,
-        pickup_longitude: origQuote.pickup_longitude,
+        pickup_address: pickup.address,
+        pickup_landmark: pickup.landmark,
+        pickup_city: pickup.city,
+        pickup_latitude: pickup.latitude,
+        pickup_longitude: pickup.longitude,
         delivery_address: origQuote.delivery_address,
         delivery_landmark: origQuote.delivery_landmark,
         delivery_city: origQuote.delivery_city,
         delivery_latitude: origQuote.delivery_latitude,
         delivery_longitude: origQuote.delivery_longitude,
         item_weight: origQuote.item_weight,
-        available_couriers: { couriers, sender: bundle.sender, receiver: bundle.receiver, items: bundle.items },
+        available_couriers: { couriers, sender, receiver: bundle.receiver, items: bundle.items },
         provider_data: providerData,
         expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       })

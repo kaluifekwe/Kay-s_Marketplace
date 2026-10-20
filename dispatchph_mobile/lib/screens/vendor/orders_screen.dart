@@ -161,7 +161,7 @@ class _VendorOrdersScreenState extends State<VendorOrdersScreen> {
                                     const SizedBox(width: 6),
                                     Text(statusLabel, style: TextStyle(color: statusColor, fontSize: 12, fontWeight: FontWeight.w500)),
                                     const Spacer(),
-                                    Text('\u20A6${format.format(order.total)}',
+                                    Text('\u20A6${format.format(order.totalWithDelivery ?? order.total)}',
                                         style: const TextStyle(color: AppColors.primaryGreen, fontWeight: FontWeight.bold)),
                                   ],
                                 ),

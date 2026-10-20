@@ -8,7 +8,6 @@ list(APPEND FLUTTER_PLUGIN_LIST
   firebase_core
   gal
   geolocator_windows
-  passkeys_windows
   share_plus
   url_launcher_windows
 )

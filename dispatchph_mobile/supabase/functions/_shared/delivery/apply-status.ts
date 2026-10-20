@@ -12,6 +12,22 @@ import type { DeliveryStatus, WebhookEvent } from "./types.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const resendKey = Deno.env.get("RESEND_API_KEY") ?? "";
+const fromEmail = Deno.env.get("OTP_FROM_EMAIL") ?? "Kay's Market <onboarding@resend.dev>";
+
+// Transactional email via Resend (same setup as the OTP/password emails).
+async function sendEmail(to: string | null | undefined, subject: string, html: string) {
+  if (!to || !resendKey) return;
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: fromEmail, to: [to], subject, html }),
+    });
+  } catch (e) {
+    console.error("apply-status sendEmail failed:", e);
+  }
+}
 
 export function makeClient() {
   return createClient(supabaseUrl, supabaseServiceKey);
@@ -65,10 +81,7 @@ const NOTIF: Record<string, { buyer?: [string, string]; vendor?: [string, string
   delivered: {
     buyer: ["🎉 Order Arrived!", "Your order has been delivered! Please confirm receipt within 24h."],
   },
-  failed: {
-    buyer: ["⚠️ Delivery Issue", "There was an issue with your delivery. Contact support."],
-    vendor: ["⚠️ Delivery Failed", "Delivery was unsuccessful. Please contact Kay's support."],
-  },
+  // cancelled / failed are handled explicitly (refund + charge) in the body.
 };
 
 export async function applyDeliveryStatus(supabase: any, delivery: any, ev: WebhookEvent, location?: string | null) {
@@ -93,23 +106,6 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
     location: location ?? null,
     timestamp: nowIso,
   });
-
-  // Failed pickup: courier dispatched but the vendor had nothing ready (failed
-  // BEFORE pickup). The platform already paid the courier fee, so record it as a
-  // pending charge against the vendor — release-escrow nets it off a future
-  // payout. Idempotent via the unique (order_id, reason) index.
-  if (status === "failed" && !delivery.picked_up_at) {
-    await supabase.from("vendor_charges").upsert(
-      {
-        vendor_id: delivery.vendor_id,
-        order_id: delivery.order_id,
-        amount: delivery.shipbubble_fee ?? delivery.buyer_charged ?? 0,
-        reason: "failed_pickup",
-        status: "pending",
-      },
-      { onConflict: "order_id,reason", ignoreDuplicates: true },
-    );
-  }
 
   // Don't let a late courier event resurrect a CLOSED order. If the order was
   // already refunded or cancelled (e.g. an admin refund on a booked order), a
@@ -142,6 +138,86 @@ export async function applyDeliveryStatus(supabase: any, delivery: any, ev: Webh
       .eq("id", delivery.order_id);
   } else if (status === "picked_up" || status === "in_transit") {
     await supabase.from("orders").update({ status: "in_transit" }).eq("id", delivery.order_id);
+  } else if ((status === "cancelled" || status === "failed") && !delivery.picked_up_at) {
+    // Delivery didn't happen and the item was never collected — the buyer paid
+    // but got nothing. Auto-refund the buyer in full to their wallet via
+    // process-refund (idempotent) and notify both. We deliberately DON'T charge
+    // the vendor: Terminal refunds the platform the delivery fee on a no-show, so
+    // charging the vendor too would double-recover — and it's uncollectable from
+    // a first-time vendor who never sells again (no future payout to net against).
+    let refunded = false;
+    try {
+      const r = await fetch(`${supabaseUrl}/functions/v1/process-refund`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${supabaseServiceKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order_id: delivery.order_id,
+          reason: `delivery_${status}_before_pickup`,
+          refund_method: "wallet",
+        }),
+      });
+      refunded = r.ok;
+      if (!r.ok) console.error("apply-status auto-refund failed:", r.status, await r.text().catch(() => ""));
+    } catch (e) {
+      console.error("apply-status auto-refund error:", e);
+    }
+    await sendPush(
+      delivery.buyer_id,
+      "❌ Delivery Cancelled",
+      // Don't name the destination: process-refund routes a credit-funded order
+      // back to Kay's Credit, not the wallet, so "refunded to your wallet" would
+      // be wrong for those.
+      refunded
+        ? "The courier couldn't pick up your order, so you've been fully refunded."
+        : "There was a problem picking up your order. We're sorting your refund — contact support if it isn't resolved shortly.",
+      { type: "delivery_update", status, order_id: delivery.order_id, delivery_id: delivery.id, screen: "order_tracking" },
+    );
+    await sendPush(
+      delivery.vendor_id,
+      "❌ Pickup Cancelled",
+      "The courier couldn't collect this order, so it was cancelled and the buyer was refunded.",
+      { type: "delivery_update", status, order_id: delivery.order_id, screen: "vendor_orders" },
+    );
+    return;
+  } else if (status === "cancelled" || status === "failed") {
+    // Cancelled/failed AFTER pickup — the item was already collected, so we don't
+    // auto-refund. Move the order to 'delivery_failed' (no vendor auto-payout) so
+    // the buyer's order screen shows a "Report Issue" path into the dispute/refund
+    // flow (which refunds item-only), and notify both by push AND email.
+    await supabase
+      .from("orders")
+      .update({ status: "delivery_failed", auto_release_at: null })
+      .eq("id", delivery.order_id);
+
+    const { data: parties } = await supabase
+      .from("users")
+      .select("id, email")
+      .in("id", [delivery.buyer_id, delivery.vendor_id]);
+    const emailOf = (uid: string) => (parties || []).find((u: any) => u.id === uid)?.email as string | undefined;
+
+    await sendPush(
+      delivery.buyer_id,
+      "⚠️ Delivery Couldn't Be Completed",
+      "The rider couldn't deliver your order. Open the order and tap Report Issue to get your refund.",
+      { type: "delivery_update", status, order_id: delivery.order_id, delivery_id: delivery.id, screen: "order_tracking" },
+    );
+    await sendEmail(
+      emailOf(delivery.buyer_id),
+      "Your Kay's Market delivery couldn't be completed",
+      "<p>Hi,</p><p>Unfortunately the rider couldn't complete the delivery of your order, and it is being returned. Please open the order in the Kay's Market app and tap <b>Report Issue</b> to request your refund.</p><p>— Kay's Market</p>",
+    );
+    await sendPush(
+      delivery.vendor_id,
+      "⚠️ Delivery Failed — Item Returning",
+      "A delivery couldn't be completed and the item is being returned to you. The buyer's item payment will be refunded.",
+      { type: "delivery_update", status, order_id: delivery.order_id, screen: "vendor_orders" },
+    );
+    await sendEmail(
+      emailOf(delivery.vendor_id),
+      "A Kay's Market delivery couldn't be completed",
+      "<p>Hi,</p><p>A courier delivery for one of your orders couldn't be completed and the item is being returned to you. The buyer will be refunded the item value (the delivery fee is not refunded).</p><p>— Kay's Market</p>",
+    );
+    return;
   }
 
   const n = NOTIF[status];

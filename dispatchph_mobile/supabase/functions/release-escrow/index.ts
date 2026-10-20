@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { logAdminAction } from "../_shared/audit.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -57,7 +58,7 @@ serve(async (req) => {
 
     const { data: order, error: orderError } = await supabase
       .from("orders")
-      .select("id, buyer_id, vendor_id, store_id, status, payment_released, total, has_dispute, payout_attempts")
+      .select("id, buyer_id, vendor_id, store_id, status, payment_released, total, total_with_delivery, delivery_type, has_dispute, payout_attempts")
       .eq("id", order_id)
       .maybeSingle();
 
@@ -71,6 +72,8 @@ serve(async (req) => {
     // Only the order's own buyer can trigger release (on delivery confirmation),
     // the server itself (service role, used by the scheduled auto-release job),
     // or an admin manually approving early release from the order-review queue.
+    // Hoisted so the audit log below can attribute an admin-triggered release.
+    let adminCallerId: string | null = null;
     if (!isServiceRoleCall(req.headers.get("Authorization"))) {
       const callerId = getUserIdFromToken(req.headers.get("Authorization"));
       let isAdminCaller = false;
@@ -81,6 +84,7 @@ serve(async (req) => {
           .eq("id", callerId)
           .maybeSingle();
         isAdminCaller = callerUser?.role === "admin";
+        if (isAdminCaller) adminCallerId = callerId;
       }
       if (!callerId || (callerId !== order.buyer_id && !isAdminCaller)) {
         return new Response(
@@ -157,24 +161,26 @@ serve(async (req) => {
 
     const vendor_id = order.vendor_id;
 
-    const { data: tx } = await supabase
+    // Use the payment transaction's payout if present, but DON'T require it —
+    // fall back to computing from the order itself (courier = item subtotal only,
+    // since the platform pays the courier; otherwise item + delivery). limit(1)
+    // (not maybeSingle) so a duplicate payment tx can't throw. This makes release
+    // resilient to a missing/duplicate payment row, which was leaving confirmed
+    // orders stuck and unpaid.
+    const { data: txRows } = await supabase
       .from("transactions")
-      .select("*")
+      .select("vendor_payout, amount, platform_fee")
       .eq("order_id", order_id)
       .eq("status", "success")
       .eq("type", "payment")
-      .maybeSingle();
+      .limit(1);
+    const tx = (txRows && txRows[0]) || null;
 
-    if (!tx) {
-      // Release the claim so this can be retried once a payment exists.
-      await supabase.from("orders").update({ payment_released: false }).eq("id", order_id);
-      return new Response(
-        JSON.stringify({ error: "No successful payment found for this order" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const vendorPayout = tx.vendor_payout || tx.amount;
+    const orderPayout = order.delivery_type === "courier"
+      ? Number(order.total)
+      : Number(order.total_with_delivery ?? order.total);
+    const vendorPayout = (tx && (Number(tx.vendor_payout) || Number(tx.amount))) || orderPayout;
+    const platformFee = tx ? (Number(tx.platform_fee) || 0) : 0;
 
     // Net any pending charges (e.g. failed-pickup courier fees) off this payout.
     // Settle whole charges that fit within the payout; larger ones wait for the
@@ -202,41 +208,7 @@ serve(async (req) => {
       }
     };
 
-    const { data: bankAccount } = await supabase
-      .from("vendor_bank_accounts")
-      .select("*")
-      .eq("user_id", vendor_id)
-      .eq("is_verified", true)
-      .maybeSingle();
-
-    if (!bankAccount || !bankAccount.paystack_recipient_code) {
-      console.error(`No verified bank account for vendor ${vendor_id}`);
-      // Held for the vendor but can't be transferred yet — surfaced in the
-      // payout-attention queue (payout_status='pending_bank') so it's chased up,
-      // not silently stuck.
-      await supabase
-        .from("orders")
-        .update({ payment_released: true, status: "auto_released", payout_status: "pending_bank" })
-        .eq("id", order_id);
-
-      await supabase.from("transactions").insert({
-        order_id,
-        buyer_id: order.buyer_id,
-        vendor_id,
-        store_id: order.store_id,
-        amount: vendorPayout,
-        status: "pending",
-        type: "release",
-        metadata: JSON.stringify({ reason: "vendor_no_bank_account" }),
-      });
-
-      return new Response(
-        JSON.stringify({ success: true, message: "Released but vendor has no bank account" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Payout fully consumed by pending charges — nothing to transfer.
+    // Payout fully consumed by pending charges — nothing to credit.
     if (netPayout <= 0) {
       await settleCharges();
       await supabase.from("orders").update({ payment_released: true, status: "auto_released", payout_status: "paid" }).eq("id", order_id);
@@ -246,7 +218,7 @@ serve(async (req) => {
         vendor_id,
         store_id: order.store_id,
         amount: 0,
-        platform_fee: tx.platform_fee,
+        platform_fee: platformFee,
         vendor_payout: 0,
         status: "success",
         type: "release",
@@ -258,82 +230,75 @@ serve(async (req) => {
       );
     }
 
-    // A fresh reference per attempt — a failed transfer can be retried without
-    // Paystack rejecting it as a duplicate reference.
-    const attempt = (order.payout_attempts ?? 0) + 1;
-    const reference = `rel_${order_id}_${attempt}`;
-
-    const transferResponse = await fetch("https://api.paystack.co/transfer", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${paystackSecretKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        source: "balance",
-        amount: Math.round(netPayout * 100),
-        recipient: bankAccount.paystack_recipient_code,
-        reason: `Order ${order_id.substring(0, 8)} payment release`,
-        reference,
-      }),
+    // Credit the vendor's WALLET (provider-agnostic — no bank transfer here).
+    // Synchronous and idempotent on reference, so there's no async "processing"
+    // state or transfer webhook anymore. The vendor withdraws to bank later via
+    // wallet-withdraw. No bank account is required just to RECEIVE the payout.
+    const creditRef = `rel_${order_id}`;
+    const { error: creditErr } = await supabase.rpc("wallet_credit", {
+      p_user_id: vendor_id,
+      p_amount: netPayout,
+      p_type: "escrow_release",
+      p_reference: creditRef,
+      p_order_id: order_id,
+      p_description: "Sale proceeds",
     });
 
-    const transferData = await transferResponse.json();
-
-    if (!transferData.status) {
-      console.error("Paystack transfer error:", transferData);
-      // The transfer never left Paystack — fully revert so it can be retried.
+    if (creditErr) {
+      console.error("wallet_credit (escrow_release) error:", creditErr);
+      // Couldn't credit — revert the claim so it can be retried.
       await supabase
         .from("orders")
-        .update({ payment_released: false, payout_status: "failed", payout_attempts: attempt })
+        .update({ payment_released: false, payout_status: "failed" })
         .eq("id", order_id);
       return new Response(
-        JSON.stringify({ error: transferData.message || "Transfer failed" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Failed to credit vendor wallet" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Paystack transfers complete ASYNCHRONOUSLY. Do NOT mark paid yet — record
-    // it as 'processing' and let the transfer.success webhook confirm it (and
-    // settle the netted charges then). transfer.failed reverts for retry.
+    await settleCharges();
+
     await supabase.from("transactions").insert({
       order_id,
       buyer_id: order.buyer_id,
       vendor_id,
       store_id: order.store_id,
       amount: netPayout,
-      platform_fee: tx.platform_fee,
+      platform_fee: platformFee,
       vendor_payout: netPayout,
-      status: "processing",
+      status: "success",
       type: "release",
-      paystack_reference: transferData.data.reference || reference,
-      metadata: JSON.stringify({
-        transfer_code: transferData.data.transfer_code,
-        charge_deduct: chargeDeduct,
-        gross_payout: vendorPayout,
-        charges_to_settle: chargesToSettle,
-      }),
+      metadata: JSON.stringify({ funding_target: "wallet", charge_deduct: chargeDeduct, gross_payout: vendorPayout }),
     });
 
     await supabase
       .from("orders")
-      .update({
-        payment_released: true,
-        status: "auto_released",
-        payout_status: "processing",
-        payout_attempts: attempt,
-      })
+      .update({ payment_released: true, status: "auto_released", payout_status: "paid" })
       .eq("id", order_id);
 
-    console.log(`Escrow payout initiated: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct}), ref=${reference}`);
+    await supabase.from("notifications").insert({
+      user_id: vendor_id,
+      title: "Payment received",
+      body: `₦${netPayout.toLocaleString()} from a completed order was added to your wallet.`,
+      type: "vendor_order",
+      reference_id: order_id,
+    });
+
+    console.log(`Escrow released to wallet: order=${order_id}, vendor=${vendor_id}, amount=${netPayout} (gross=${vendorPayout}, charges=${chargeDeduct})`);
+
+    // Only when an admin forced the release — buyer confirmations and the
+    // scheduled auto-release job are ordinary flow, not admin actions.
+    if (adminCallerId) {
+      await logAdminAction({
+        adminId: adminCallerId, action: "order.release_escrow", targetType: "order", targetId: order_id,
+        summary: `Released ₦${netPayout.toLocaleString()} escrow to the vendor`,
+        metadata: { vendor_id, net: netPayout, gross: vendorPayout, charges: chargeDeduct },
+      });
+    }
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        status: "processing",
-        amount_released: netPayout,
-        transfer_reference: transferData.data.reference || reference,
-      }),
+      JSON.stringify({ success: true, amount_released: netPayout, credited_to: "wallet" }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: any) {

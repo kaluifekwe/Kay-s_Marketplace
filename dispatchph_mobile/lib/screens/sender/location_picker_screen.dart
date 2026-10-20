@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:uuid/uuid.dart';
 import '../../theme/app_theme.dart';
 import '../../services/geocoding_service.dart';
 
@@ -20,12 +20,17 @@ class LocationPickerScreen extends StatefulWidget {
   final double? initialLng;
   final String title;
 
+  /// Optional city ("Lagos" / "Abuja" / "Port Harcourt") used to bias address
+  /// suggestions toward the relevant area.
+  final String? city;
+
   const LocationPickerScreen({
     super.key,
     this.initialAddress,
     this.initialLat,
     this.initialLng,
     this.title = 'Select Location',
+    this.city,
   });
 
   @override
@@ -33,16 +38,31 @@ class LocationPickerScreen extends StatefulWidget {
 }
 
 class _LocationPickerScreenState extends State<LocationPickerScreen> {
-  final MapController _mapController = MapController();
+  final Completer<GoogleMapController> _mapController = Completer<GoogleMapController>();
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
-  LatLng _center = const LatLng(4.8156, 7.0498); // PH default
+  static const LatLng _phDefault = LatLng(4.8156, 7.0498); // Port Harcourt
+  LatLng _center = _phDefault;
   String _address = '';
   bool _loading = true;
   bool _searching = false;
-  List<Map<String, dynamic>> _suggestions = [];
+  List<PlacePrediction> _suggestions = [];
   Timer? _debounce;
+
+  // One session token per search session: reused across keystrokes + the final
+  // details lookup, then regenerated. Lets Google bill the search as one unit.
+  String _sessionToken = const Uuid().v4();
+
+  // Set when we move the camera ourselves (a search pick, or the locate
+  // button). The resulting onCameraIdle must not reverse-geocode over an
+  // address the user deliberately chose — a rooftop coordinate often reverses
+  // to a Plus Code or an unnamed road, which is worse than what they picked.
+  bool _programmaticMove = false;
+
+  // Guards against a slow reverse-geocode landing after a newer one and
+  // putting a stale address on screen.
+  int _addressRequest = 0;
 
   @override
   void initState() {
@@ -59,23 +79,39 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
 
   @override
   void dispose() {
-    _mapController.dispose();
     _searchController.dispose();
     _searchFocus.dispose();
     _debounce?.cancel();
     super.dispose();
   }
 
+  Future<void> _moveCamera(LatLng target, double zoom) async {
+    _programmaticMove = true;
+    final controller = await _mapController.future;
+    await controller.animateCamera(CameraUpdate.newLatLngZoom(target, zoom));
+  }
+
+  // The map settled. If we drove it there we already know the address; only a
+  // drag by the user means "tell me what is under the pin now".
+  void _onCameraIdle() {
+    if (_programmaticMove) {
+      _programmaticMove = false;
+      return;
+    }
+    _updateAddress(_center);
+  }
+
   Future<void> _getCurrentLocation() async {
     try {
       final pos = await Geolocator.getCurrentPosition();
       if (!mounted) return;
+      final point = LatLng(pos.latitude, pos.longitude);
       setState(() {
-        _center = LatLng(pos.latitude, pos.longitude);
+        _center = point;
         _loading = false;
       });
-      _mapController.move(_center, 15);
-      _updateAddress(_center);
+      await _moveCamera(point, 16);
+      _updateAddress(point);
     } catch (_) {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -84,48 +120,59 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   }
 
   Future<void> _updateAddress(LatLng point) async {
+    final request = ++_addressRequest;
     final address = await GeocodingService.reverseGeocode(point.latitude, point.longitude);
-    if (!mounted) return;
-    setState(() {
-      _address = address;
-      _center = point;
-    });
-  }
-
-  void _onMapMoved() {
-    final center = _mapController.camera.center;
-    _updateAddress(center);
+    if (!mounted || request != _addressRequest) return;
+    // A failed lookup leaves the previous address in place. Blanking it, or
+    // replacing it with coordinates, would lose an address that was fine.
+    if (address == null || address.isEmpty) return;
+    setState(() => _address = address);
   }
 
   void _onSearchChanged(String query) {
     _debounce?.cancel();
-    if (query.length < 3) {
+    if (query.trim().length < 3) {
       setState(() => _suggestions = []);
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 500), () async {
+    _debounce = Timer(const Duration(milliseconds: 400), () async {
       setState(() => _searching = true);
-      final results = await GeocodingService.searchAddress(query);
-      if (!mounted) return;
-      setState(() {
-        _searching = false;
-        _suggestions = results;
-      });
+      try {
+        final results = await GeocodingService.autocomplete(
+          query,
+          sessionToken: _sessionToken,
+          city: widget.city,
+        );
+        if (!mounted) return;
+        setState(() => _suggestions = results);
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _suggestions = []);
+      } finally {
+        if (mounted) setState(() => _searching = false);
+      }
     });
   }
 
-  void _selectSuggestion(Map<String, dynamic> suggestion) {
-    final lat = suggestion['lat'] as double;
-    final lng = suggestion['lng'] as double;
-    final addr = suggestion['display_name'] as String;
-    setState(() {
-      _center = LatLng(lat, lng);
-      _address = addr;
-      _searchController.text = addr;
-      _suggestions = [];
-    });
-    _mapController.move(_center, 16);
+  Future<void> _selectSuggestion(PlacePrediction prediction) async {
     _searchFocus.unfocus();
+    setState(() {
+      _searching = true;
+      _suggestions = [];
+      _searchController.text = prediction.description;
+    });
+    final details = await GeocodingService.details(prediction.placeId, sessionToken: _sessionToken);
+    // A details call closes the billing session — start a fresh token next time.
+    _sessionToken = const Uuid().v4();
+    if (!mounted) return;
+    setState(() => _searching = false);
+    if (details == null) return;
+    final point = LatLng(details.lat, details.lng);
+    setState(() {
+      _center = point;
+      _address = details.address.isNotEmpty ? details.address : prediction.description;
+    });
+    await _moveCamera(point, 17);
   }
 
   void _goToCurrentLocation() async {
@@ -133,18 +180,16 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
       final pos = await Geolocator.getCurrentPosition();
       if (!mounted) return;
       final point = LatLng(pos.latitude, pos.longitude);
-      setState(() => _center = point);
-      _mapController.move(point, 15);
+      await _moveCamera(point, 16);
       _updateAddress(point);
     } catch (_) {}
   }
 
   void _confirm() {
-    Navigator.pop(context, LocationPickerResult(
-      address: _address,
-      lat: _center.latitude,
-      lng: _center.longitude,
-    ));
+    Navigator.pop(
+      context,
+      LocationPickerResult(address: _address, lat: _center.latitude, lng: _center.longitude),
+    );
   }
 
   @override
@@ -154,10 +199,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.my_location),
-            onPressed: _goToCurrentLocation,
-          ),
+          IconButton(icon: const Icon(Icons.my_location), onPressed: _goToCurrentLocation),
         ],
       ),
       body: Column(
@@ -168,7 +210,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
               controller: _searchController,
               focusNode: _searchFocus,
               decoration: InputDecoration(
-                hintText: 'Search address (e.g., Mile 4, PH)',
+                hintText: 'Search address (e.g., 12 Aba Rd, PH)',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _searching
                     ? const SizedBox(
@@ -194,7 +236,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
           ),
           if (_suggestions.isNotEmpty)
             Container(
-              constraints: const BoxConstraints(maxHeight: 200),
+              constraints: const BoxConstraints(maxHeight: 240),
               decoration: BoxDecoration(
                 color: AppColors.white,
                 boxShadow: [BoxShadow(color: Colors.black.withAlpha(20), blurRadius: 4)],
@@ -208,7 +250,10 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
                   return ListTile(
                     dense: true,
                     leading: const Icon(Icons.location_on, size: 18),
-                    title: Text(s['display_name'] as String, maxLines: 2, overflow: TextOverflow.ellipsis),
+                    title: Text(s.primary, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: s.secondary.isEmpty
+                        ? null
+                        : Text(s.secondary, maxLines: 1, overflow: TextOverflow.ellipsis),
                     onTap: () => _selectSuggestion(s),
                   );
                 },
@@ -218,30 +263,24 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : Stack(
+                    alignment: Alignment.center,
                     children: [
-                      FlutterMap(
-                        mapController: _mapController,
-                        options: MapOptions(
-                          initialCenter: _center,
-                          initialZoom: 14,
-                          onMapEvent: (event) {
-                            if (event is MapEventMoveEnd) _onMapMoved();
-                          },
-                        ),
-                        children: [
-                          TileLayer(
-                            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                            userAgentPackageName: 'com.dispatchph.mobile',
-                          ),
-                          MarkerLayer(
-                            markers: [
-                              Marker(
-                                point: _center,
-                                child: const Icon(Icons.location_on, color: AppColors.errorRed, size: 40),
-                              ),
-                            ],
-                          ),
-                        ],
+                      GoogleMap(
+                        initialCameraPosition: CameraPosition(target: _center, zoom: 16),
+                        onMapCreated: (controller) {
+                          if (!_mapController.isCompleted) _mapController.complete(controller);
+                        },
+                        onCameraMove: (pos) => _center = pos.target,
+                        onCameraIdle: _onCameraIdle,
+                        myLocationEnabled: true,
+                        myLocationButtonEnabled: false,
+                        zoomControlsEnabled: false,
+                      ),
+                      // Fixed centre pin — the map slides under it; the target is
+                      // whatever sits beneath this marker when the camera settles.
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 40),
+                        child: Icon(Icons.location_on, color: AppColors.errorRed, size: 44),
                       ),
                       Positioned(
                         bottom: 16,
@@ -258,7 +297,9 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
                             children: [
                               Expanded(
                                 child: Text(
-                                  _address.isNotEmpty ? _address : 'Move map to select location',
+                                  _address.isNotEmpty
+                                      ? _address
+                                      : 'Search above, or move the map to pick a spot',
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(

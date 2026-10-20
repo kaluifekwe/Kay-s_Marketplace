@@ -196,7 +196,7 @@ class _OrdersList extends StatelessWidget {
               children: [
                 Text(status, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500)),
                 const SizedBox(height: 2),
-                Text('\u20A6${format.format(order.total)}',
+                Text('\u20A6${format.format(order.totalWithDelivery ?? order.total)}',
                     style: const TextStyle(color: AppColors.primaryGreen)),
               ],
             ),

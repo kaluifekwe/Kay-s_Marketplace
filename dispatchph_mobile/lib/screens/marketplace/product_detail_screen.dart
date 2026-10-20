@@ -11,6 +11,7 @@ import '../../core/services/share_service.dart';
 import '../kyc/kyc_screen.dart';
 import 'vendor_store_screen.dart';
 import '../chat/chat_screen.dart';
+import '../orders/checkout_screen.dart';
 
 class ProductDetailScreen extends StatefulWidget {
   final dynamic product;
@@ -68,7 +69,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   }
 
   Future<void> _loadVariants() async {
-    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id);
+    // Force a fresh fetch so newly added/edited variants always show, rather
+    // than a stale cached list from earlier in the session.
+    final variants = await context.read<MarketplaceCubit>().loadVariants(widget.product.id, forceRefresh: true);
     if (!mounted) return;
 
     if (variants.isNotEmpty && mounted) {
@@ -335,36 +338,69 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       bottomNavigationBar: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _displayStock > 0 ? () => _handleAddToCart(context) : null,
-                  icon: Icon(_isAvailableInState ? Icons.shopping_cart : Icons.lock),
-                  label: Text(
-                    _displayStock == 0
-                        ? 'Out of Stock'
-                        : _isAvailableInState
-                            ? 'Add to Cart'
-                            : 'Not Available',
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primaryGreen,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.grey.shade300,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _contactVendor(context),
-                  icon: const Icon(Icons.chat),
-                  label: const Text('Contact'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primaryGreen,
+              // Single-product express checkout: adds this item then checks out
+              // ONLY it, leaving any other cart items untouched.
+              if (_isAvailableInState && _displayStock > 0) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () => _handleBuyNow(context),
+                    icon: const Icon(Icons.flash_on),
+                    label: const Text('Buy Now'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.riderYellow,
+                      foregroundColor: AppColors.charcoal,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
                   ),
                 ),
+                const SizedBox(height: 10),
+              ],
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _displayStock > 0 ? () => _handleAddToCart(context) : null,
+                      icon: Icon(_isAvailableInState ? Icons.shopping_cart : Icons.lock),
+                      label: Text(
+                        _displayStock == 0
+                            ? 'Out of Stock'
+                            : _isAvailableInState
+                                ? 'Add to Cart'
+                                : 'Not Available',
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primaryGreen,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: Colors.grey.shade300,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => _contactVendor(context),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.primaryGreen,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                      child: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.chat, size: 18),
+                            SizedBox(width: 6),
+                            Text('Chat with Vendor'),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -404,6 +440,45 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       return;
     }
     await _addToCart(context);
+  }
+
+  /// Express single-product checkout. Adds this item (awaited so checkout sees
+  /// it), then opens a checkout scoped to ONLY this product — other cart items
+  /// are left untouched.
+  Future<void> _handleBuyNow(BuildContext context) async {
+    if (!_isAvailableInState) {
+      await _handleAddToCart(context); // shows the "not available in your state" dialog
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final buyerId = prefs.getString('auth_user_id') ?? '';
+    if (buyerId.isEmpty) return;
+
+    // Only add when the product isn't already in the cart. addItem() does
+    // quantity+1, so an abandoned Buy Now used to leave a line behind and the
+    // next Buy Now on the same product silently made it 2, then 3…
+    // If it WAS already there, check out the line as the buyer configured it
+    // and leave it alone afterwards — we didn't create it.
+    final cart = context.read<CartCubit>();
+    final alreadyInCart = cart.state.items.any((i) => i.productId == widget.product.id);
+    if (!alreadyInCart) {
+      await cart.addItem(
+        buyerId,
+        widget.product.id,
+        variantLabel: _selectedVariant?.label,
+        variantPrice: _selectedVariant?.price,
+      );
+    }
+    if (!context.mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CheckoutScreen(
+          onlyProductId: widget.product.id,
+          removeIfUnpaid: !alreadyInCart,
+        ),
+      ),
+    );
   }
 
   Widget _deliveryInfoRow({

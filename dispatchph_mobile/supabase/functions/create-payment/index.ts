@@ -66,20 +66,14 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Intrastate restriction: buyer can only checkout with vendors in their own state.
+    // Buyers are NOT identity-gated to buy (only vendors, and buyers withdrawing
+    // to a bank, verify). We still enforce the intrastate rule, which needs the
+    // buyer's state.
     const { data: buyerRow, error: buyerErr } = await supabase
       .from("users")
-      .select("state, kyc_status")
+      .select("state")
       .eq("id", buyer_id)
       .maybeSingle();
-
-    // KYC gate: a buyer must be identity-verified (NIN) before they can buy.
-    if (buyerRow?.kyc_status !== "verified") {
-      return new Response(
-        JSON.stringify({ error: "kyc_required", message: "Verify your identity (NIN) before buying." }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
 
     if (buyerErr || !buyerRow?.state) {
       return new Response(

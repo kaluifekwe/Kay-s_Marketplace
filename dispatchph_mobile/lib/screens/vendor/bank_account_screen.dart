@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../../core/services/error_text.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../theme/app_theme.dart';
 import '../../core/services/auth_service.dart';
@@ -219,7 +220,7 @@ class _BankAccountScreenState extends State<BankAccountScreen> {
         setState(() => _isVerifying = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Account verification failed: $e'),
+            content: Text(friendlyError(e, fallback: "We couldn't confirm that account. Check the number and bank.")),
             backgroundColor: AppColors.errorRed,
           ),
         );
@@ -283,7 +284,7 @@ class _BankAccountScreenState extends State<BankAccountScreen> {
         setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to save: $e'),
+            content: Text(friendlyError(e, fallback: "We couldn't save your bank account. Please try again.")),
             backgroundColor: AppColors.errorRed,
           ),
         );

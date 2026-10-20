@@ -11,6 +11,7 @@ export interface Address {
   landmark?: string;
   city?: string;
   state?: string;
+  zip?: string; // real postcode when known; Terminal resolves one from coords otherwise
   latitude?: number | null;
   longitude?: number | null;
 }
@@ -39,6 +40,9 @@ export interface CourierOption {
   fee: number;
   currency: string;
   eta?: string;
+  // Numeric ETA in hours when the provider gives one (Terminal's delivery_eta).
+  // More precise than parsing `eta`, which stays the human-readable label.
+  etaHours?: number;
   // Provider-specific data needed to book this option, persisted with the quote.
   meta?: Record<string, unknown>;
 }

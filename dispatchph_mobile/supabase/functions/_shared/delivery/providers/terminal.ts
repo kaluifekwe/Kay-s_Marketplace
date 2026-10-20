@@ -1,6 +1,6 @@
 // Terminal Africa (TShip) provider adapter.
 // Flow: GET /packaging (cached) -> POST /addresses x2 -> POST /parcels
-//       -> GET /rates/shipment  (quote)
+//       -> GET /rates/shipment/stream, falling back to GET /rates/shipment  (quote)
 //       -> POST /shipments/pickup with rate_id  (book)
 // Docs: https://docs.terminal.africa/tship
 //
@@ -20,6 +20,7 @@ import type {
   QuoteInput,
   WebhookEvent,
 } from "../types.ts";
+import { getBool } from "../../settings.ts";
 
 const KEY = Deno.env.get("TERMINAL_API_KEY") ?? "";
 
@@ -65,8 +66,94 @@ function toIntlPhone(phone: string): string {
   return `+234${p}`;
 }
 
-// Terminal requires a zip/postcode to arrange deliveries; our address records
-// don't store one, so use a representative postcode per supported city.
+// Terminal requires a zip/postcode to arrange deliveries and takes no
+// coordinates: it locates the address from line1 + city + state + zip. Our
+// address records don't store a postcode, so it is resolved in this order:
+//   1. the address's own zip, if a caller ever supplies one
+//   2. Google reverse geocode of the picker's lat/lng (same server key as
+//      places-proxy; Google's Nigerian postcode coverage is patchy)
+//   3. the state capital's NIPOST code, so a Rivers or Oyo address is never
+//      sent with a Lagos postcode
+//   4. the old per-city default
+const GOOGLE_KEY = Deno.env.get("GOOGLE_MAPS_SERVER_KEY") ?? "";
+const ZIP_RE = /^\d{6}$/;
+
+// Keyed by coords rounded to ~11m. Bounded so a hot instance can't grow it forever.
+const zipCache = new Map<string, string | null>();
+
+async function googlePostcode(lat?: number | null, lng?: number | null): Promise<string | null> {
+  if (!GOOGLE_KEY || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const k = `${(lat as number).toFixed(4)},${(lng as number).toFixed(4)}`;
+  if (zipCache.has(k)) return zipCache.get(k)!;
+  let zip: string | null = null;
+  try {
+    const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+    url.searchParams.set("latlng", k);
+    url.searchParams.set("result_type", "postal_code");
+    url.searchParams.set("key", GOOGLE_KEY);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!resp.ok) return null;
+    const r = await resp.json();
+    // Only a real answer is cached. A quota or auth error (status
+    // OVER_QUERY_LIMIT, REQUEST_DENIED) is retried on the next quote.
+    if (r.status !== "OK" && r.status !== "ZERO_RESULTS") return null;
+    for (const res of r.results ?? []) {
+      const c = (res.address_components ?? []).find((c: any) => c.types?.includes("postal_code"));
+      if (c && ZIP_RE.test(c.long_name)) {
+        zip = c.long_name;
+        break;
+      }
+    }
+  } catch (e) {
+    // A slow or failed lookup must never block a quote; fall through to the
+    // table without caching, so the next quote tries again. Log only the error
+    // name: Deno's fetch errors include the request URL, which holds the key.
+    console.warn(`terminal postcode lookup failed: ${e instanceof Error ? e.name : "unknown"}`);
+    return null;
+  }
+  if (zipCache.size > 500) zipCache.clear();
+  zipCache.set(k, zip);
+  return zip;
+}
+
+// NIPOST codes for each state capital. Fallback only, used when the
+// coordinates give no postcode.
+const STATE_ZIP: Record<string, string> = {
+  "lagos": "100001",
+  "ogun": "110001",
+  "oyo": "200001",
+  "osun": "230001",
+  "kwara": "240001",
+  "kogi": "260001",
+  "edo": "300001",
+  "delta": "320001",
+  "ondo": "340001",
+  "ekiti": "360001",
+  "enugu": "400001",
+  "anambra": "420001",
+  "abia": "440001",
+  "imo": "460001",
+  "ebonyi": "480001",
+  "rivers": "500001",
+  "akwa ibom": "520001",
+  "cross river": "540001",
+  "kano": "700001",
+  "kaduna": "800001",
+  "abuja": "900001",
+  "niger": "920001",
+  "plateau": "930001",
+  "benue": "970001",
+};
+
+async function resolveZip(a: Address): Promise<{ zip: string; via: string }> {
+  if (a.zip && ZIP_RE.test(a.zip)) return { zip: a.zip, via: "address" };
+  const g = await googlePostcode(a.latitude, a.longitude);
+  if (g) return { zip: g, via: "google" };
+  const s = STATE_ZIP[normState(a.state).toLowerCase().replace(/\s+state$/, "")];
+  if (s) return { zip: s, via: "state" };
+  return { zip: cityZip(a.city), via: "city" };
+}
+
 function cityZip(city?: string): string {
   switch ((city || "").toLowerCase()) {
     case "lagos":
@@ -85,6 +172,108 @@ function splitName(name: string): { first: string; last: string } {
   if (parts.length === 0) return { first: "Kay", last: "Customer" };
   if (parts.length === 1) return { first: parts[0], last: "Customer" };
   return { first: parts[0], last: parts.slice(1).join(" ") };
+}
+
+type CarrierError = { carrier_slug?: string; carrier_name?: string; message?: string };
+type RatesResult = { rates: any[]; errors: CarrierError[]; via: string; message?: string };
+
+function tryJson(s: string): any {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+// The stream sends a "start" event, one "carrier" event per carrier, then a
+// "complete" event holding every rate plus an `errors` list saying why each
+// missing carrier gave no rate. Accepts SSE ("data: {...}") or one JSON object
+// per line. Prefers the complete event; otherwise pools the carrier events.
+function parseRateStream(text: string): { rates: any[]; errors: CarrierError[]; complete: boolean; message?: string } {
+  const events: any[] = [];
+  const whole = tryJson(text.trim());
+  if (whole) {
+    events.push(...(Array.isArray(whole) ? whole : [whole]));
+  } else {
+    for (const line of text.split(/\r?\n/)) {
+      let s = line.trim();
+      if (!s || s.startsWith(":") || s.startsWith("event:") || s.startsWith("id:")) continue;
+      if (s.startsWith("data:")) s = s.slice(5).trim();
+      const o = tryJson(s);
+      if (o) events.push(o);
+    }
+  }
+  const done = events.find((e) => e?.type === "complete") ?? (Array.isArray(whole?.data) ? whole : null);
+  if (done) {
+    return {
+      rates: Array.isArray(done.data) ? done.data : [],
+      errors: Array.isArray(done.errors) ? done.errors : [],
+      complete: true,
+      message: done.message,
+    };
+  }
+  const rates = events.filter((e) => e?.type === "carrier").flatMap((e) => (Array.isArray(e.rates) ? e.rates : []));
+  return { rates, errors: [], complete: false };
+}
+
+// Stream first: it rates the same carriers as GET /rates/shipment but also
+// reports per-carrier failures, which the plain endpoint throws away. Any
+// problem with the stream (HTTP error, timeout, a body we can't read) falls
+// back to the plain endpoint, so checkout behaves exactly as before at worst.
+// Switch off with TERMINAL_RATES_STREAM=false.
+//
+// Both attempts are time-boxed so the worst case (stream times out, then the
+// plain call is slow) stays well inside the edge function's wall clock.
+const STREAM_TIMEOUT_MS = 20_000;
+const SINGLE_TIMEOUT_MS = 25_000;
+const STREAM_MAX_BYTES = 2_000_000; // a full rate list is tens of KB
+
+// res.text() with a size cap, so a runaway stream can't exhaust memory.
+async function readCapped(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`stream exceeded ${maxBytes} bytes`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+async function fetchRates(query: URLSearchParams): Promise<RatesResult> {
+  if (await getBool("terminal_rates_stream", "TERMINAL_RATES_STREAM", true)) {
+    try {
+      const res = await fetch(`${BASE}/rates/shipment/stream?${query.toString()}`, {
+        headers: { ...headers(), Accept: "text/event-stream, application/json" },
+        signal: AbortSignal.timeout(STREAM_TIMEOUT_MS),
+      });
+      const text = await readCapped(res, STREAM_MAX_BYTES);
+      if (res.ok) {
+        const parsed = parseRateStream(text);
+        if (parsed.rates.length > 0 || parsed.complete) {
+          return { rates: parsed.rates, errors: parsed.errors, via: "stream", message: parsed.message };
+        }
+      }
+      console.warn(`terminal stream unusable (http ${res.status}), falling back: ${text.slice(0, 200)}`);
+    } catch (e) {
+      console.warn("terminal stream failed, falling back:", e);
+    }
+  }
+  const r = await api(`/rates/shipment?${query.toString()}`, { signal: AbortSignal.timeout(SINGLE_TIMEOUT_MS) });
+  return {
+    rates: r.ok && Array.isArray(r.data?.data) ? r.data.data : [],
+    errors: Array.isArray(r.data?.errors) ? r.data.errors : [],
+    via: "single",
+    message: r.data?.message,
+  };
 }
 
 let cachedPackaging: string | null = null;
@@ -122,6 +311,8 @@ async function packagingId(): Promise<string | null> {
 
 async function createAddress(a: Address): Promise<{ id: string | null; message?: string }> {
   const { first, last } = splitName(a.name);
+  const { zip, via } = await resolveZip(a);
+  console.log(`terminal zip ${zip} via ${via} (${a.city ?? "?"}, ${a.state ?? "?"})`);
   const { ok, data } = await api("/addresses", {
     method: "POST",
     body: JSON.stringify({
@@ -134,7 +325,7 @@ async function createAddress(a: Address): Promise<{ id: string | null; message?:
       city: a.city || "",
       state: normState(a.state),
       country: "NG",
-      zip: cityZip(a.city),
+      zip,
       is_residential: true,
     }),
   });
@@ -187,32 +378,60 @@ export const terminal: DeliveryProvider = {
       return { provider: "terminal", couriers: [], providerData: {}, reason: `parcel_failed (${parcelRes.data?.message ?? "no parcel"})` };
     }
 
-    // Rates-by-address: Terminal auto-creates a shipment behind each rate and
-    // returns its id on the rate (rate.shipment). We keep that id per option so
-    // book() can arrange the pickup against (shipment_id, rate_id).
-    // Single-parcel endpoint is a GET with query params (parcel_id, addresses).
+    // Rates-by-address with a single parcel_id (both endpoints are GETs with
+    // the same query). book() arranges the pickup against the rate_id, plus the
+    // draft shipment id when the plain endpoint returned one.
     const ratesQuery = new URLSearchParams({
       currency: "NGN",
       pickup_address: from.id,
       delivery_address: to.id,
       parcel_id: parcelId,
     });
-    const ratesRes = await api(`/rates/shipment?${ratesQuery.toString()}`);
-    const rates = ratesRes.data?.data;
-    if (!ratesRes.ok || !Array.isArray(rates) || rates.length === 0) {
-      return { provider: "terminal", couriers: [], providerData: {}, reason: `no_rates (${ratesRes.data?.message ?? "empty"})` };
+    const fetched = await fetchRates(ratesQuery);
+    const { errors, via, message } = fetched;
+    // A rate is only bookable with an id and a real price (0 is allowed).
+    const rates = fetched.rates.filter((r: any) => {
+      const amount = typeof r?.amount === "string" ? r.amount.trim() : r?.amount;
+      return typeof r?.rate_id === "string" && r.rate_id.length > 0 &&
+        amount !== null && amount !== undefined && amount !== "" &&
+        Number.isFinite(Number(amount)) && Number(amount) >= 0;
+    });
+    if (rates.length < fetched.rates.length) {
+      console.warn(`terminal dropped ${fetched.rates.length - rates.length} rate(s) with no rate_id or price`);
     }
 
-    const couriers: CourierOption[] = rates.map((r: any) => ({
-      provider: "terminal",
-      optionRef: r.rate_id,
-      name: r.carrier_name ?? "Courier",
-      logo: r.carrier_logo,
-      fee: Number(r.amount),
-      currency: r.currency ?? "NGN",
-      eta: r.delivery_time,
-      meta: { shipment: r.shipment }, // shipment id needed by /shipments/pickup
-    }));
+    // One line per quote naming every carrier that did and didn't rate, and why.
+    // This is the record that answers "why only Chowdeck for this route?".
+    const errorSummary = errors
+      .map((e) => `${e.carrier_slug ?? e.carrier_name ?? "?"}: ${e.message ?? "no reason"}`)
+      .join("; ");
+    console.log(
+      `terminal rates via=${via} ok=[${rates.map((r: any) => r.carrier_slug ?? r.carrier_name).join(",")}] ` +
+      `errors=[${errorSummary}]`,
+    );
+
+    if (rates.length === 0) {
+      const why = (errorSummary || message || "empty").slice(0, 300);
+      return { provider: "terminal", couriers: [], providerData: {}, reason: `no_rates (${why})` };
+    }
+
+    const couriers: CourierOption[] = rates.map((r: any) => {
+      // delivery_eta is minutes from now, pickup included.
+      const etaMin = Number(r.delivery_eta);
+      return {
+        provider: "terminal",
+        optionRef: r.rate_id,
+        name: r.carrier_name ?? "Courier",
+        logo: r.carrier_logo,
+        fee: Number(r.amount),
+        currency: r.currency ?? "NGN",
+        eta: r.delivery_time,
+        etaHours: Number.isFinite(etaMin) && etaMin > 0 ? etaMin / 60 : undefined,
+        // Draft shipment id when the plain endpoint returns one. The stream
+        // doesn't, and /shipments/pickup then creates the shipment from the rate.
+        meta: { shipment: r.shipment },
+      };
+    });
 
     return {
       provider: "terminal",

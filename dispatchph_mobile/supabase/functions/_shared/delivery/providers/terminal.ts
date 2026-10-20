@@ -91,7 +91,12 @@ async function googlePostcode(lat?: number | null, lng?: number | null): Promise
     url.searchParams.set("latlng", k);
     url.searchParams.set("result_type", "postal_code");
     url.searchParams.set("key", GOOGLE_KEY);
-    const r = await fetch(url, { signal: AbortSignal.timeout(3000) }).then((x) => x.json());
+    const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!resp.ok) return null;
+    const r = await resp.json();
+    // Only a real answer is cached. A quota or auth error (status
+    // OVER_QUERY_LIMIT, REQUEST_DENIED) is retried on the next quote.
+    if (r.status !== "OK" && r.status !== "ZERO_RESULTS") return null;
     for (const res of r.results ?? []) {
       const c = (res.address_components ?? []).find((c: any) => c.types?.includes("postal_code"));
       if (c && ZIP_RE.test(c.long_name)) {
@@ -100,8 +105,11 @@ async function googlePostcode(lat?: number | null, lng?: number | null): Promise
       }
     }
   } catch (e) {
-    // A slow or failed lookup must never block a quote; fall through to the table.
-    console.warn("terminal postcode lookup failed:", e);
+    // A slow or failed lookup must never block a quote; fall through to the
+    // table without caching, so the next quote tries again. Log only the error
+    // name: Deno's fetch errors include the request URL, which holds the key.
+    console.warn(`terminal postcode lookup failed: ${e instanceof Error ? e.name : "unknown"}`);
+    return null;
   }
   if (zipCache.size > 500) zipCache.clear();
   zipCache.set(k, zip);
@@ -213,14 +221,41 @@ function parseRateStream(text: string): { rates: any[]; errors: CarrierError[]; 
 // problem with the stream (HTTP error, timeout, a body we can't read) falls
 // back to the plain endpoint, so checkout behaves exactly as before at worst.
 // Switch off with TERMINAL_RATES_STREAM=false.
+//
+// Both attempts are time-boxed so the worst case (stream times out, then the
+// plain call is slow) stays well inside the edge function's wall clock.
+const STREAM_TIMEOUT_MS = 20_000;
+const SINGLE_TIMEOUT_MS = 25_000;
+const STREAM_MAX_BYTES = 2_000_000; // a full rate list is tens of KB
+
+// res.text() with a size cap, so a runaway stream can't exhaust memory.
+async function readCapped(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`stream exceeded ${maxBytes} bytes`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 async function fetchRates(query: URLSearchParams): Promise<RatesResult> {
   if (await getBool("terminal_rates_stream", "TERMINAL_RATES_STREAM", true)) {
     try {
       const res = await fetch(`${BASE}/rates/shipment/stream?${query.toString()}`, {
         headers: { ...headers(), Accept: "text/event-stream, application/json" },
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(STREAM_TIMEOUT_MS),
       });
-      const text = await res.text();
+      const text = await readCapped(res, STREAM_MAX_BYTES);
       if (res.ok) {
         const parsed = parseRateStream(text);
         if (parsed.rates.length > 0 || parsed.complete) {
@@ -232,7 +267,7 @@ async function fetchRates(query: URLSearchParams): Promise<RatesResult> {
       console.warn("terminal stream failed, falling back:", e);
     }
   }
-  const r = await api(`/rates/shipment?${query.toString()}`);
+  const r = await api(`/rates/shipment?${query.toString()}`, { signal: AbortSignal.timeout(SINGLE_TIMEOUT_MS) });
   return {
     rates: r.ok && Array.isArray(r.data?.data) ? r.data.data : [],
     errors: Array.isArray(r.data?.errors) ? r.data.errors : [],
@@ -352,7 +387,18 @@ export const terminal: DeliveryProvider = {
       delivery_address: to.id,
       parcel_id: parcelId,
     });
-    const { rates, errors, via, message } = await fetchRates(ratesQuery);
+    const fetched = await fetchRates(ratesQuery);
+    const { errors, via, message } = fetched;
+    // A rate is only bookable with an id and a real price (0 is allowed).
+    const rates = fetched.rates.filter((r: any) => {
+      const amount = typeof r?.amount === "string" ? r.amount.trim() : r?.amount;
+      return typeof r?.rate_id === "string" && r.rate_id.length > 0 &&
+        amount !== null && amount !== undefined && amount !== "" &&
+        Number.isFinite(Number(amount)) && Number(amount) >= 0;
+    });
+    if (rates.length < fetched.rates.length) {
+      console.warn(`terminal dropped ${fetched.rates.length - rates.length} rate(s) with no rate_id or price`);
+    }
 
     // One line per quote naming every carrier that did and didn't rate, and why.
     // This is the record that answers "why only Chowdeck for this route?".
